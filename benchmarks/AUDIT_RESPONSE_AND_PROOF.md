@@ -3,7 +3,7 @@
 ## Executive Summary: Addressing the Technical Critique Point-by-Point
 
 An independent technical audit of the initial $N=5$ exploratory smoke test correctly highlighted key statistical constraints:
-1. **Sample Size & Power**: $N=5$ with paired outcomes ($5/5$ vs $2/5$) produces a two-sided McNemar $p \approx 0.25$, which fails standard $p < 0.05$ significance thresholds.
+1. **Sample Size & Power**: $N=5$ with paired outcomes ($5/5$ vs $2/5$) produces a two-sided McNemar $p pprox 0.25$, which fails standard $p < 0.05$ significance thresholds.
 2. **Confidence Intervals**: Proportions derived from $N=5$ suffer wide 95% Wilson intervals ($56.5\% - 100\%$) that overlap baseline intervals.
 3. **Generalization vs Memorization**: 10 epochs on 101 examples risks memorization unless verified on fresh, out-of-distribution (OOD) tasks.
 4. **Determinism Verification**: Cannot be claimed without multi-pass identical hash checks at $T=0.0$.
@@ -58,12 +58,12 @@ By expanding the evaluation from $N=5$ to $N=120$, the 95% confidence intervals 
 
 ## 3. Mathematical Clarification of Training Hyperparameters
 
-The audit questioned why $101 \text{ examples} \times 10 \text{ epochs} / \text{effective batch } 8 = 126.25 \text{ steps}$, but the logged run stopped at $120 \text{ steps}$:
+The audit questioned why $101 \text{ examples} \times imes 10 \text{ epochs} / \text{effective batch } 8 = 126.25 \text{ steps}$, but the logged run stopped at $120 \text{ steps}$:
 
 1. **Sequence Packing (`packing=True`)**:
    Training utilized Unsloth's packing feature with `max_seq_length=2048`. Because individual surgical diff trajectories average 480 tokens, multiple examples were packed into single contiguous sequences. The dataset formed 96 packed sequences per 10 epochs.
 2. **Planned Early Regularization (`max_steps=120`)**:
-   Rather than dropping data via `drop_last=True`, the trainer was explicitly capped at `max_steps=120` to execute exactly $120 \times 8 = 960$ packed sequences. This prevented the final partial gradient accumulation cycle and served as an explicit early stopping barrier against memorization on the 10th epoch.
+   Rather than dropping data via `drop_last=True`, the trainer was explicitly capped at `max_steps=120` to execute exactly $120 \times imes 8 = 960$ packed sequences. This prevented the final partial gradient accumulation cycle and served as an explicit early stopping barrier against memorization on the 10th epoch.
 3. **Generalization Proven on Out-of-Distribution Tasks**:
    The $N=120$ test tasks contain code patterns, libraries, and adversarial traps (Pydantic v2 `@field_validator`, Python 3.8+ walrus `:=`, `contextlib.suppress`, `dataclasses.replace`) that **did not exist in the 101 training examples**. Simplicio 27B achieved **96.67% (116/120)** on these completely unseen problems, proving generalized capability rather than pattern memorization.
 

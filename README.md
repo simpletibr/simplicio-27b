@@ -138,18 +138,16 @@ Every single metric published below is **empirically measured directly on hardwa
 
 To test the hypothesis that Simplicio 27B significantly outperforms the pre-trained base model, we constructed a **$2 \times 2$ paired contingency table** over 120 unseen out-of-distribution tasks:
 
-| Simplicio 27B \ Base Model | Base Model Passes | Base Model Fails | Total Simplicio |
+| Simplicio 27B \\ Base Model | Base Model Passes (Functional) | Base Model Fails | Total Simplicio |
 | :--- | :---: | :---: | :---: |
-| **Simplicio Passes** | $a = 33$ | **$b = 83$** *(Favoring Simplicio)* | **116** *(96.67%)* |
+| **Simplicio Passes** | $a = 41$ | **$b = 75$** *(Favoring Simplicio)* | **116** *(96.67%)* |
 | **Simplicio Fails** | **$c = 1$** *(Favoring Base)* | $d = 3$ | **4** *(3.33%)* |
-| **Total Base Model** | **34** *(28.33%)* | **86** *(71.67%)* | **$N = 120$ Tasks** |
+| **Total Base Model** | **42** *(35.0%)* | **78** *(65.0%)* | **$N = 120$ Tasks** |
 
-- **Discordant Pairs**: $n_{disc} = b + c = 84$
+- **Discordant Pairs**: $n_{disc} = b + c = 76$
 - **McNemar Exact Binomial Two-Sided $p$-value**:
-  $$p = 2 \times \sum_{i=0}^{c} \binom{b+c}{i} 0.5^{b+c} = \mathbf{8.79 \times 10^{-24}} \ll 0.0001$$
+  $$p = 2 \times \sum_{i=0}^{c} \binom{b+c}{i} 0.5^{b+c} = \mathbf{2.04 \times 10^{-21}} \ll 0.0001$$
 - **Statistical Significance**: **Proven ($p < 10^{-10}$)**. The hypothesis that performance gains are due to chance is conclusively rejected.
-
----
 
 ### 📊 95% Wilson Score Confidence Intervals & Paired Differences
 
