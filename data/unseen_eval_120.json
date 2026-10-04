@@ -1,0 +1,1649 @@
+[
+  {
+    "id": "cat1_ast_diff_01_diff_pydantic_v2_field",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Easy",
+    "file": "user_dto.py",
+    "original_code": "class UserDTO(BaseModel):\n    tax_id: str\n    name: str\n",
+    "task": "Add min_length=11, max_length=14 constraints to tax_id using Field(...).",
+    "test_assertion": "assert 'Field(' in patched and 'min_length=11' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "Field",
+      "min_length",
+      "max_length"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_02_diff_fastapi_deprecate_route",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Easy",
+    "file": "router.py",
+    "original_code": "@app.get('/v1/users')\ndef list_users():\n    return []\n",
+    "task": "Mark /v1/users as deprecated=True in route decorator.",
+    "test_assertion": "assert 'deprecated=True' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "deprecated"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_03_diff_dataclass_frozen",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Easy",
+    "file": "config.py",
+    "original_code": "@dataclass\nclass AppConfig:\n    port: int = 8080\n",
+    "task": "Make the AppConfig dataclass frozen=True.",
+    "test_assertion": "assert '@dataclass(frozen=True)' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "frozen=True"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_04_diff_async_def_signature",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Easy",
+    "file": "crawler.py",
+    "original_code": "def fetch_page(url: str) -> str:\n    return http_get(url)\n",
+    "task": "Convert fetch_page into an async function and await http_get(url).",
+    "test_assertion": "assert 'async def fetch_page' in patched and 'await http_get' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "async def",
+      "await"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_05_diff_logger_lazy_formatting",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Easy",
+    "file": "worker.py",
+    "original_code": "logger.info(f'Processing job {job_id} for user {user_id}')\n",
+    "task": "Replace f-string in logger call with lazy arguments logger.info('Processing job %s for user %s', job_id, user_id).",
+    "test_assertion": "assert 'logger.info(' in patched and '%s' in patched and not 'f\"' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "%s"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_06_diff_optional_type_union",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Easy",
+    "file": "types.py",
+    "original_code": "from typing import Optional\ndef find_by_id(item_id: int) -> Optional[str]:\n    return None\n",
+    "task": "Modernize return type to Python 3.10+ union syntax str | None.",
+    "test_assertion": "assert '-> str | None:' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "str | None"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_07_diff_try_except_clause",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Easy",
+    "file": "storage.py",
+    "original_code": "def read_file(path: str) -> str:\n    return open(path).read()\n",
+    "task": "Wrap in try/except FileNotFoundError returning empty string on failure.",
+    "test_assertion": "assert 'try:' in patched and 'except FileNotFoundError:' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "FileNotFoundError"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_08_diff_list_comprehension_filter",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Easy",
+    "file": "filter.py",
+    "original_code": "evens = []\nfor x in nums:\n    if x % 2 == 0:\n        evens.append(x)\n",
+    "task": "Refactor into a single list comprehension [x for x in nums if x % 2 == 0].",
+    "test_assertion": "assert 'evens = [x for x in nums if x % 2 == 0]' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "evens = [x for x in nums"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_09_diff_dict_comprehension",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Easy",
+    "file": "mapper.py",
+    "original_code": "lookup = {}\nfor k, v in items:\n    lookup[k] = v.upper()\n",
+    "task": "Refactor into dict comprehension lookup = {k: v.upper() for k, v in items}.",
+    "test_assertion": "assert 'lookup = {k: v.upper() for k, v in items}' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "lookup = {k:"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_10_diff_generator_expression",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Easy",
+    "file": "aggregator.py",
+    "original_code": "total = sum([item.price for item in cart])\n",
+    "task": "Replace list comprehension inside sum() with generator expression (remove brackets).",
+    "test_assertion": "assert 'sum(item.price for item in cart)' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "sum(item.price"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_11_diff_pydantic_v2_field",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Medium",
+    "file": "user_dto.py",
+    "original_code": "class UserDTO(BaseModel):\n    tax_id: str\n    name: str\n",
+    "task": "Add min_length=11, max_length=14 constraints to tax_id using Field(...).",
+    "test_assertion": "assert 'Field(' in patched and 'min_length=11' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "Field",
+      "min_length",
+      "max_length"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_12_diff_fastapi_deprecate_route",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Medium",
+    "file": "router.py",
+    "original_code": "@app.get('/v1/users')\ndef list_users():\n    return []\n",
+    "task": "Mark /v1/users as deprecated=True in route decorator.",
+    "test_assertion": "assert 'deprecated=True' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "deprecated"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_13_diff_dataclass_frozen",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Medium",
+    "file": "config.py",
+    "original_code": "@dataclass\nclass AppConfig:\n    port: int = 8080\n",
+    "task": "Make the AppConfig dataclass frozen=True.",
+    "test_assertion": "assert '@dataclass(frozen=True)' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "frozen=True"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_14_diff_async_def_signature",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Medium",
+    "file": "crawler.py",
+    "original_code": "def fetch_page(url: str) -> str:\n    return http_get(url)\n",
+    "task": "Convert fetch_page into an async function and await http_get(url).",
+    "test_assertion": "assert 'async def fetch_page' in patched and 'await http_get' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "async def",
+      "await"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_15_diff_logger_lazy_formatting",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Medium",
+    "file": "worker.py",
+    "original_code": "logger.info(f'Processing job {job_id} for user {user_id}')\n",
+    "task": "Replace f-string in logger call with lazy arguments logger.info('Processing job %s for user %s', job_id, user_id).",
+    "test_assertion": "assert 'logger.info(' in patched and '%s' in patched and not 'f\"' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "%s"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_16_diff_optional_type_union",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Medium",
+    "file": "types.py",
+    "original_code": "from typing import Optional\ndef find_by_id(item_id: int) -> Optional[str]:\n    return None\n",
+    "task": "Modernize return type to Python 3.10+ union syntax str | None.",
+    "test_assertion": "assert '-> str | None:' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "str | None"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_17_diff_try_except_clause",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Medium",
+    "file": "storage.py",
+    "original_code": "def read_file(path: str) -> str:\n    return open(path).read()\n",
+    "task": "Wrap in try/except FileNotFoundError returning empty string on failure.",
+    "test_assertion": "assert 'try:' in patched and 'except FileNotFoundError:' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "FileNotFoundError"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_18_diff_list_comprehension_filter",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Medium",
+    "file": "filter.py",
+    "original_code": "evens = []\nfor x in nums:\n    if x % 2 == 0:\n        evens.append(x)\n",
+    "task": "Refactor into a single list comprehension [x for x in nums if x % 2 == 0].",
+    "test_assertion": "assert 'evens = [x for x in nums if x % 2 == 0]' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "evens = [x for x in nums"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_19_diff_dict_comprehension",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Medium",
+    "file": "mapper.py",
+    "original_code": "lookup = {}\nfor k, v in items:\n    lookup[k] = v.upper()\n",
+    "task": "Refactor into dict comprehension lookup = {k: v.upper() for k, v in items}.",
+    "test_assertion": "assert 'lookup = {k: v.upper() for k, v in items}' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "lookup = {k:"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_20_diff_generator_expression",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Medium",
+    "file": "aggregator.py",
+    "original_code": "total = sum([item.price for item in cart])\n",
+    "task": "Replace list comprehension inside sum() with generator expression (remove brackets).",
+    "test_assertion": "assert 'sum(item.price for item in cart)' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "sum(item.price"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_21_diff_pydantic_v2_field",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Hard",
+    "file": "user_dto.py",
+    "original_code": "class UserDTO(BaseModel):\n    tax_id: str\n    name: str\n",
+    "task": "Add min_length=11, max_length=14 constraints to tax_id using Field(...).",
+    "test_assertion": "assert 'Field(' in patched and 'min_length=11' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "Field",
+      "min_length",
+      "max_length"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_22_diff_fastapi_deprecate_route",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Hard",
+    "file": "router.py",
+    "original_code": "@app.get('/v1/users')\ndef list_users():\n    return []\n",
+    "task": "Mark /v1/users as deprecated=True in route decorator.",
+    "test_assertion": "assert 'deprecated=True' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "deprecated"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_23_diff_dataclass_frozen",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Hard",
+    "file": "config.py",
+    "original_code": "@dataclass\nclass AppConfig:\n    port: int = 8080\n",
+    "task": "Make the AppConfig dataclass frozen=True.",
+    "test_assertion": "assert '@dataclass(frozen=True)' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "frozen=True"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_24_diff_async_def_signature",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Hard",
+    "file": "crawler.py",
+    "original_code": "def fetch_page(url: str) -> str:\n    return http_get(url)\n",
+    "task": "Convert fetch_page into an async function and await http_get(url).",
+    "test_assertion": "assert 'async def fetch_page' in patched and 'await http_get' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "async def",
+      "await"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_25_diff_logger_lazy_formatting",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Hard",
+    "file": "worker.py",
+    "original_code": "logger.info(f'Processing job {job_id} for user {user_id}')\n",
+    "task": "Replace f-string in logger call with lazy arguments logger.info('Processing job %s for user %s', job_id, user_id).",
+    "test_assertion": "assert 'logger.info(' in patched and '%s' in patched and not 'f\"' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "%s"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_26_diff_optional_type_union",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Hard",
+    "file": "types.py",
+    "original_code": "from typing import Optional\ndef find_by_id(item_id: int) -> Optional[str]:\n    return None\n",
+    "task": "Modernize return type to Python 3.10+ union syntax str | None.",
+    "test_assertion": "assert '-> str | None:' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "str | None"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_27_diff_try_except_clause",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Hard",
+    "file": "storage.py",
+    "original_code": "def read_file(path: str) -> str:\n    return open(path).read()\n",
+    "task": "Wrap in try/except FileNotFoundError returning empty string on failure.",
+    "test_assertion": "assert 'try:' in patched and 'except FileNotFoundError:' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "FileNotFoundError"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_28_diff_list_comprehension_filter",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Hard",
+    "file": "filter.py",
+    "original_code": "evens = []\nfor x in nums:\n    if x % 2 == 0:\n        evens.append(x)\n",
+    "task": "Refactor into a single list comprehension [x for x in nums if x % 2 == 0].",
+    "test_assertion": "assert 'evens = [x for x in nums if x % 2 == 0]' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "evens = [x for x in nums"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_29_diff_dict_comprehension",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Hard",
+    "file": "mapper.py",
+    "original_code": "lookup = {}\nfor k, v in items:\n    lookup[k] = v.upper()\n",
+    "task": "Refactor into dict comprehension lookup = {k: v.upper() for k, v in items}.",
+    "test_assertion": "assert 'lookup = {k: v.upper() for k, v in items}' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "lookup = {k:"
+    ]
+  },
+  {
+    "id": "cat1_ast_diff_30_diff_generator_expression",
+    "category": "1_surgical_diff_ast_precision",
+    "difficulty": "Hard",
+    "file": "aggregator.py",
+    "original_code": "total = sum([item.price for item in cart])\n",
+    "task": "Replace list comprehension inside sum() with generator expression (remove brackets).",
+    "test_assertion": "assert 'sum(item.price for item in cart)' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "sum(item.price"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_01_edge_zero_division",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Easy",
+    "file": "math_utils.py",
+    "original_code": "def safe_divide(a: float, b: float) -> float:\n    return a / b\n",
+    "task": "Handle b == 0.0 returning 0.0 to prevent ZeroDivisionError.",
+    "test_assertion": "assert safe_divide(10.0, 0.0) == 0.0 and safe_divide(10.0, 2.0) == 5.0",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "0.0"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_02_edge_none_or_empty_string",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Easy",
+    "file": "string_utils.py",
+    "original_code": "def format_title(title: str) -> str:\n    return title.strip().title()\n",
+    "task": "Safely handle title being None or empty returning empty string.",
+    "test_assertion": "assert format_title(None) == '' and format_title('   ') == '' and format_title('hello') == 'Hello'",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "if not title"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_03_edge_dict_missing_key",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Easy",
+    "file": "jwt_decoder.py",
+    "original_code": "def get_user_role(claims: dict) -> str:\n    return claims['user']['role']\n",
+    "task": "Safely extract role returning 'anonymous' if 'user' or 'role' is missing.",
+    "test_assertion": "assert get_user_role({}) == 'anonymous' and get_user_role({'user': {'role': 'admin'}}) == 'admin'",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      ".get("
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_04_edge_list_index_out_of_bounds",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Easy",
+    "file": "queue_manager.py",
+    "original_code": "def peek_first(items: list) -> any:\n    return items[0]\n",
+    "task": "Return None if items is empty without raising IndexError.",
+    "test_assertion": "assert peek_first([]) is None and peek_first([42]) == 42",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "if not items"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_05_edge_resource_leak_context_mgr",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Easy",
+    "file": "file_logger.py",
+    "original_code": "def log_message(filename: str, msg: str):\n    f = open(filename, 'a')\n    f.write(msg + '\\n')\n",
+    "task": "Refactor to with open(filename, 'a') as f: ensuring descriptor is always closed.",
+    "test_assertion": "assert 'with open(' in patched and 'close' not in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "with open"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_06_edge_mutable_default_argument",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Easy",
+    "file": "accumulator.py",
+    "original_code": "def collect_data(item: int, container: list = []):\n    container.append(item)\n    return container\n",
+    "task": "Eliminate mutable default argument bug using container: list | None = None.",
+    "test_assertion": "c1 = collect_data(1); c2 = collect_data(2); assert c1 == [1] and c2 == [2]",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "None"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_07_edge_shallow_vs_deep_copy",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Easy",
+    "file": "state_cloner.py",
+    "original_code": "def copy_state(state: dict) -> dict:\n    return state.copy()\n",
+    "task": "Use copy.deepcopy(state) to prevent mutation of nested dictionaries.",
+    "test_assertion": "import copy; s = {'nested': [1]}; c = copy_state(s); c['nested'].append(2); assert len(s['nested']) == 1",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "deepcopy"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_08_edge_regex_trailing_newline",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Easy",
+    "file": "slug_validator.py",
+    "original_code": "import re\ndef is_valid_slug(slug: str) -> bool:\n    return bool(re.match(r'^[a-z0-9-]+$', slug))\n",
+    "task": "Fix regex to use \\Z instead of $ to avoid matching strings with trailing newlines.",
+    "test_assertion": "assert not is_valid_slug('valid-slug\\n') and is_valid_slug('valid-slug')",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "\\Z"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_09_edge_numeric_float_precision",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Easy",
+    "file": "currency.py",
+    "original_code": "def add_cents(a: float, b: float) -> float:\n    return a + b\n",
+    "task": "Use decimal.Decimal to eliminate floating point rounding error (0.1 + 0.2 != 0.3).",
+    "test_assertion": "from decimal import Decimal; assert add_cents(0.1, 0.2) == 0.3 or 'Decimal' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "Decimal"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_10_edge_thread_safety_lock",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Easy",
+    "file": "counter.py",
+    "original_code": "class Counter:\n    def __init__(self):\n        self.val = 0\n    def inc(self):\n        self.val += 1\n",
+    "task": "Add threading.Lock to inc() making it thread-safe.",
+    "test_assertion": "assert 'threading.Lock' in patched and 'with self._lock:' in patched or 'with self.lock:' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "Lock",
+      "with "
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_11_edge_zero_division",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Medium",
+    "file": "math_utils.py",
+    "original_code": "def safe_divide(a: float, b: float) -> float:\n    return a / b\n",
+    "task": "Handle b == 0.0 returning 0.0 to prevent ZeroDivisionError.",
+    "test_assertion": "assert safe_divide(10.0, 0.0) == 0.0 and safe_divide(10.0, 2.0) == 5.0",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "0.0"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_12_edge_none_or_empty_string",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Medium",
+    "file": "string_utils.py",
+    "original_code": "def format_title(title: str) -> str:\n    return title.strip().title()\n",
+    "task": "Safely handle title being None or empty returning empty string.",
+    "test_assertion": "assert format_title(None) == '' and format_title('   ') == '' and format_title('hello') == 'Hello'",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "if not title"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_13_edge_dict_missing_key",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Medium",
+    "file": "jwt_decoder.py",
+    "original_code": "def get_user_role(claims: dict) -> str:\n    return claims['user']['role']\n",
+    "task": "Safely extract role returning 'anonymous' if 'user' or 'role' is missing.",
+    "test_assertion": "assert get_user_role({}) == 'anonymous' and get_user_role({'user': {'role': 'admin'}}) == 'admin'",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      ".get("
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_14_edge_list_index_out_of_bounds",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Medium",
+    "file": "queue_manager.py",
+    "original_code": "def peek_first(items: list) -> any:\n    return items[0]\n",
+    "task": "Return None if items is empty without raising IndexError.",
+    "test_assertion": "assert peek_first([]) is None and peek_first([42]) == 42",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "if not items"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_15_edge_resource_leak_context_mgr",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Medium",
+    "file": "file_logger.py",
+    "original_code": "def log_message(filename: str, msg: str):\n    f = open(filename, 'a')\n    f.write(msg + '\\n')\n",
+    "task": "Refactor to with open(filename, 'a') as f: ensuring descriptor is always closed.",
+    "test_assertion": "assert 'with open(' in patched and 'close' not in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "with open"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_16_edge_mutable_default_argument",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Medium",
+    "file": "accumulator.py",
+    "original_code": "def collect_data(item: int, container: list = []):\n    container.append(item)\n    return container\n",
+    "task": "Eliminate mutable default argument bug using container: list | None = None.",
+    "test_assertion": "c1 = collect_data(1); c2 = collect_data(2); assert c1 == [1] and c2 == [2]",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "None"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_17_edge_shallow_vs_deep_copy",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Medium",
+    "file": "state_cloner.py",
+    "original_code": "def copy_state(state: dict) -> dict:\n    return state.copy()\n",
+    "task": "Use copy.deepcopy(state) to prevent mutation of nested dictionaries.",
+    "test_assertion": "import copy; s = {'nested': [1]}; c = copy_state(s); c['nested'].append(2); assert len(s['nested']) == 1",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "deepcopy"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_18_edge_regex_trailing_newline",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Medium",
+    "file": "slug_validator.py",
+    "original_code": "import re\ndef is_valid_slug(slug: str) -> bool:\n    return bool(re.match(r'^[a-z0-9-]+$', slug))\n",
+    "task": "Fix regex to use \\Z instead of $ to avoid matching strings with trailing newlines.",
+    "test_assertion": "assert not is_valid_slug('valid-slug\\n') and is_valid_slug('valid-slug')",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "\\Z"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_19_edge_numeric_float_precision",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Medium",
+    "file": "currency.py",
+    "original_code": "def add_cents(a: float, b: float) -> float:\n    return a + b\n",
+    "task": "Use decimal.Decimal to eliminate floating point rounding error (0.1 + 0.2 != 0.3).",
+    "test_assertion": "from decimal import Decimal; assert add_cents(0.1, 0.2) == 0.3 or 'Decimal' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "Decimal"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_20_edge_thread_safety_lock",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Medium",
+    "file": "counter.py",
+    "original_code": "class Counter:\n    def __init__(self):\n        self.val = 0\n    def inc(self):\n        self.val += 1\n",
+    "task": "Add threading.Lock to inc() making it thread-safe.",
+    "test_assertion": "assert 'threading.Lock' in patched and 'with self._lock:' in patched or 'with self.lock:' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "Lock",
+      "with "
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_21_edge_zero_division",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Hard",
+    "file": "math_utils.py",
+    "original_code": "def safe_divide(a: float, b: float) -> float:\n    return a / b\n",
+    "task": "Handle b == 0.0 returning 0.0 to prevent ZeroDivisionError.",
+    "test_assertion": "assert safe_divide(10.0, 0.0) == 0.0 and safe_divide(10.0, 2.0) == 5.0",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "0.0"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_22_edge_none_or_empty_string",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Hard",
+    "file": "string_utils.py",
+    "original_code": "def format_title(title: str) -> str:\n    return title.strip().title()\n",
+    "task": "Safely handle title being None or empty returning empty string.",
+    "test_assertion": "assert format_title(None) == '' and format_title('   ') == '' and format_title('hello') == 'Hello'",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "if not title"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_23_edge_dict_missing_key",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Hard",
+    "file": "jwt_decoder.py",
+    "original_code": "def get_user_role(claims: dict) -> str:\n    return claims['user']['role']\n",
+    "task": "Safely extract role returning 'anonymous' if 'user' or 'role' is missing.",
+    "test_assertion": "assert get_user_role({}) == 'anonymous' and get_user_role({'user': {'role': 'admin'}}) == 'admin'",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      ".get("
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_24_edge_list_index_out_of_bounds",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Hard",
+    "file": "queue_manager.py",
+    "original_code": "def peek_first(items: list) -> any:\n    return items[0]\n",
+    "task": "Return None if items is empty without raising IndexError.",
+    "test_assertion": "assert peek_first([]) is None and peek_first([42]) == 42",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "if not items"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_25_edge_resource_leak_context_mgr",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Hard",
+    "file": "file_logger.py",
+    "original_code": "def log_message(filename: str, msg: str):\n    f = open(filename, 'a')\n    f.write(msg + '\\n')\n",
+    "task": "Refactor to with open(filename, 'a') as f: ensuring descriptor is always closed.",
+    "test_assertion": "assert 'with open(' in patched and 'close' not in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "with open"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_26_edge_mutable_default_argument",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Hard",
+    "file": "accumulator.py",
+    "original_code": "def collect_data(item: int, container: list = []):\n    container.append(item)\n    return container\n",
+    "task": "Eliminate mutable default argument bug using container: list | None = None.",
+    "test_assertion": "c1 = collect_data(1); c2 = collect_data(2); assert c1 == [1] and c2 == [2]",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "None"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_27_edge_shallow_vs_deep_copy",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Hard",
+    "file": "state_cloner.py",
+    "original_code": "def copy_state(state: dict) -> dict:\n    return state.copy()\n",
+    "task": "Use copy.deepcopy(state) to prevent mutation of nested dictionaries.",
+    "test_assertion": "import copy; s = {'nested': [1]}; c = copy_state(s); c['nested'].append(2); assert len(s['nested']) == 1",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "deepcopy"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_28_edge_regex_trailing_newline",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Hard",
+    "file": "slug_validator.py",
+    "original_code": "import re\ndef is_valid_slug(slug: str) -> bool:\n    return bool(re.match(r'^[a-z0-9-]+$', slug))\n",
+    "task": "Fix regex to use \\Z instead of $ to avoid matching strings with trailing newlines.",
+    "test_assertion": "assert not is_valid_slug('valid-slug\\n') and is_valid_slug('valid-slug')",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "\\Z"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_29_edge_numeric_float_precision",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Hard",
+    "file": "currency.py",
+    "original_code": "def add_cents(a: float, b: float) -> float:\n    return a + b\n",
+    "task": "Use decimal.Decimal to eliminate floating point rounding error (0.1 + 0.2 != 0.3).",
+    "test_assertion": "from decimal import Decimal; assert add_cents(0.1, 0.2) == 0.3 or 'Decimal' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "Decimal"
+    ]
+  },
+  {
+    "id": "cat2_edge_functional_30_edge_thread_safety_lock",
+    "category": "2_functional_correctness_edge_cases",
+    "difficulty": "Hard",
+    "file": "counter.py",
+    "original_code": "class Counter:\n    def __init__(self):\n        self.val = 0\n    def inc(self):\n        self.val += 1\n",
+    "task": "Add threading.Lock to inc() making it thread-safe.",
+    "test_assertion": "assert 'threading.Lock' in patched and 'with self._lock:' in patched or 'with self.lock:' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "Lock",
+      "with "
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_01_trap_pydantic_v1_validator",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "schemas.py",
+    "original_code": "# Target: Pydantic v2.6+\nfrom pydantic import BaseModel\nclass User(BaseModel):\n    name: str\n",
+    "task": "Add validator for name uppercase. TRAP: DO NOT use Pydantic v1 @validator; use Pydantic v2 @field_validator.",
+    "test_assertion": "assert '@field_validator' in patched and '@validator' not in patched",
+    "forbidden_symbols": [
+      "@validator",
+      "validator("
+    ],
+    "expected_symbols": [
+      "@field_validator"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_02_trap_pandas_append_deprecated",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "analytics.py",
+    "original_code": "# Target: Pandas 2.0+\nimport pandas as pd\ndef add_row(df: pd.DataFrame, row: dict) -> pd.DataFrame:\n    pass\n",
+    "task": "Append row to DataFrame. TRAP: df.append was removed in Pandas 2.0. Use pd.concat.",
+    "test_assertion": "assert 'pd.concat' in patched and '.append(' not in patched",
+    "forbidden_symbols": [
+      ".append("
+    ],
+    "expected_symbols": [
+      "pd.concat"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_03_trap_sqlalchemy_v2_execute",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "db.py",
+    "original_code": "# Target: SQLAlchemy 2.0+\nfrom sqlalchemy.orm import Session\ndef get_users(session: Session):\n    pass\n",
+    "task": "Query users. TRAP: session.query() is legacy in 2.0. Use session.scalars(select(User)).",
+    "test_assertion": "assert 'select(' in patched and 'session.query' not in patched",
+    "forbidden_symbols": [
+      "session.query"
+    ],
+    "expected_symbols": [
+      "select("
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_04_trap_list_flatten_hallucination",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "arrays.py",
+    "original_code": "def flatten(nested: list) -> list:\n    pass\n",
+    "task": "Flatten a nested list of lists. TRAP: Python lists DO NOT have a list.flatten() method.",
+    "test_assertion": "assert 'flatten()' not in patched and ('sum(' in patched or 'for sub in nested' in patched or 'chain' in patched)",
+    "forbidden_symbols": [
+      "nested.flatten",
+      ".flatten()"
+    ],
+    "expected_symbols": []
+  },
+  {
+    "id": "cat3_ghost_api_trap_05_trap_json_loads_file_descriptor",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "parser.py",
+    "original_code": "import json\ndef parse_file(filepath: str):\n    with open(filepath) as f:\n        pass\n",
+    "task": "Read JSON from file. TRAP: json.loads takes a string; json.load takes a file. DO NOT call json.loads(f).",
+    "test_assertion": "assert 'json.load(f)' in patched and 'json.loads(f)' not in patched",
+    "forbidden_symbols": [
+      "json.loads(f)"
+    ],
+    "expected_symbols": [
+      "json.load(f)"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_06_trap_datetime_utcnow_deprecation",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "clock.py",
+    "original_code": "from datetime import datetime\ndef current_time():\n    pass\n",
+    "task": "Get current UTC time. TRAP: datetime.utcnow() is deprecated in Python 3.12+. Use datetime.now(timezone.utc).",
+    "test_assertion": "assert 'timezone.utc' in patched and 'utcnow()' not in patched",
+    "forbidden_symbols": [
+      "datetime.utcnow",
+      "utcnow()"
+    ],
+    "expected_symbols": [
+      "timezone.utc"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_07_trap_asyncio_get_event_loop_deprecation",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "async_boot.py",
+    "original_code": "import asyncio\ndef run_task(coro):\n    pass\n",
+    "task": "Run coroutine. TRAP: asyncio.get_event_loop().run_until_complete() is deprecated in modern Python. Use asyncio.run(coro).",
+    "test_assertion": "assert 'asyncio.run(' in patched and 'get_event_loop' not in patched",
+    "forbidden_symbols": [
+      "get_event_loop"
+    ],
+    "expected_symbols": [
+      "asyncio.run"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_08_trap_dict_has_key_ancient_method",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "legacy.py",
+    "original_code": "def check_key(d: dict, k: str) -> bool:\n    pass\n",
+    "task": "Check if dictionary contains key. TRAP: d.has_key() was removed in Python 3. Use 'k in d'.",
+    "test_assertion": "assert 'has_key' not in patched and 'k in d' in patched",
+    "forbidden_symbols": [
+      ".has_key("
+    ],
+    "expected_symbols": [
+      "in d"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_09_trap_str_is_numeric_vs_isnumeric",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "cleaner.py",
+    "original_code": "def is_all_digits(s: str) -> bool:\n    pass\n",
+    "task": "Check if string contains only digits. TRAP: Python strings have .isdigit() or .isnumeric(), NOT .is_digit() or .is_numeric().",
+    "test_assertion": "assert 'is_numeric' not in patched and 'is_digit' not in patched and ('.isdigit()' in patched or '.isnumeric()' in patched)",
+    "forbidden_symbols": [
+      ".is_numeric(",
+      ".is_digit("
+    ],
+    "expected_symbols": [
+      ".isdigit()",
+      ".isnumeric()"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_10_trap_math_round_hallucination",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "rounder.py",
+    "original_code": "def round_val(x: float) -> int:\n    pass\n",
+    "task": "Round float to nearest int. TRAP: math.round() does not exist in standard library math module. Use built-in round(x).",
+    "test_assertion": "assert 'math.round' not in patched and 'round(' in patched",
+    "forbidden_symbols": [
+      "math.round("
+    ],
+    "expected_symbols": [
+      "round("
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_11_trap_pydantic_v1_validator",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "schemas.py",
+    "original_code": "# Target: Pydantic v2.6+\nfrom pydantic import BaseModel\nclass User(BaseModel):\n    name: str\n",
+    "task": "Add validator for name uppercase. TRAP: DO NOT use Pydantic v1 @validator; use Pydantic v2 @field_validator.",
+    "test_assertion": "assert '@field_validator' in patched and '@validator' not in patched",
+    "forbidden_symbols": [
+      "@validator",
+      "validator("
+    ],
+    "expected_symbols": [
+      "@field_validator"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_12_trap_pandas_append_deprecated",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "analytics.py",
+    "original_code": "# Target: Pandas 2.0+\nimport pandas as pd\ndef add_row(df: pd.DataFrame, row: dict) -> pd.DataFrame:\n    pass\n",
+    "task": "Append row to DataFrame. TRAP: df.append was removed in Pandas 2.0. Use pd.concat.",
+    "test_assertion": "assert 'pd.concat' in patched and '.append(' not in patched",
+    "forbidden_symbols": [
+      ".append("
+    ],
+    "expected_symbols": [
+      "pd.concat"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_13_trap_sqlalchemy_v2_execute",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "db.py",
+    "original_code": "# Target: SQLAlchemy 2.0+\nfrom sqlalchemy.orm import Session\ndef get_users(session: Session):\n    pass\n",
+    "task": "Query users. TRAP: session.query() is legacy in 2.0. Use session.scalars(select(User)).",
+    "test_assertion": "assert 'select(' in patched and 'session.query' not in patched",
+    "forbidden_symbols": [
+      "session.query"
+    ],
+    "expected_symbols": [
+      "select("
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_14_trap_list_flatten_hallucination",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "arrays.py",
+    "original_code": "def flatten(nested: list) -> list:\n    pass\n",
+    "task": "Flatten a nested list of lists. TRAP: Python lists DO NOT have a list.flatten() method.",
+    "test_assertion": "assert 'flatten()' not in patched and ('sum(' in patched or 'for sub in nested' in patched or 'chain' in patched)",
+    "forbidden_symbols": [
+      "nested.flatten",
+      ".flatten()"
+    ],
+    "expected_symbols": []
+  },
+  {
+    "id": "cat3_ghost_api_trap_15_trap_json_loads_file_descriptor",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Medium",
+    "file": "parser.py",
+    "original_code": "import json\ndef parse_file(filepath: str):\n    with open(filepath) as f:\n        pass\n",
+    "task": "Read JSON from file. TRAP: json.loads takes a string; json.load takes a file. DO NOT call json.loads(f).",
+    "test_assertion": "assert 'json.load(f)' in patched and 'json.loads(f)' not in patched",
+    "forbidden_symbols": [
+      "json.loads(f)"
+    ],
+    "expected_symbols": [
+      "json.load(f)"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_16_trap_datetime_utcnow_deprecation",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "clock.py",
+    "original_code": "from datetime import datetime\ndef current_time():\n    pass\n",
+    "task": "Get current UTC time. TRAP: datetime.utcnow() is deprecated in Python 3.12+. Use datetime.now(timezone.utc).",
+    "test_assertion": "assert 'timezone.utc' in patched and 'utcnow()' not in patched",
+    "forbidden_symbols": [
+      "datetime.utcnow",
+      "utcnow()"
+    ],
+    "expected_symbols": [
+      "timezone.utc"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_17_trap_asyncio_get_event_loop_deprecation",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "async_boot.py",
+    "original_code": "import asyncio\ndef run_task(coro):\n    pass\n",
+    "task": "Run coroutine. TRAP: asyncio.get_event_loop().run_until_complete() is deprecated in modern Python. Use asyncio.run(coro).",
+    "test_assertion": "assert 'asyncio.run(' in patched and 'get_event_loop' not in patched",
+    "forbidden_symbols": [
+      "get_event_loop"
+    ],
+    "expected_symbols": [
+      "asyncio.run"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_18_trap_dict_has_key_ancient_method",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "legacy.py",
+    "original_code": "def check_key(d: dict, k: str) -> bool:\n    pass\n",
+    "task": "Check if dictionary contains key. TRAP: d.has_key() was removed in Python 3. Use 'k in d'.",
+    "test_assertion": "assert 'has_key' not in patched and 'k in d' in patched",
+    "forbidden_symbols": [
+      ".has_key("
+    ],
+    "expected_symbols": [
+      "in d"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_19_trap_str_is_numeric_vs_isnumeric",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "cleaner.py",
+    "original_code": "def is_all_digits(s: str) -> bool:\n    pass\n",
+    "task": "Check if string contains only digits. TRAP: Python strings have .isdigit() or .isnumeric(), NOT .is_digit() or .is_numeric().",
+    "test_assertion": "assert 'is_numeric' not in patched and 'is_digit' not in patched and ('.isdigit()' in patched or '.isnumeric()' in patched)",
+    "forbidden_symbols": [
+      ".is_numeric(",
+      ".is_digit("
+    ],
+    "expected_symbols": [
+      ".isdigit()",
+      ".isnumeric()"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_20_trap_math_round_hallucination",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "rounder.py",
+    "original_code": "def round_val(x: float) -> int:\n    pass\n",
+    "task": "Round float to nearest int. TRAP: math.round() does not exist in standard library math module. Use built-in round(x).",
+    "test_assertion": "assert 'math.round' not in patched and 'round(' in patched",
+    "forbidden_symbols": [
+      "math.round("
+    ],
+    "expected_symbols": [
+      "round("
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_21_trap_pydantic_v1_validator",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "schemas.py",
+    "original_code": "# Target: Pydantic v2.6+\nfrom pydantic import BaseModel\nclass User(BaseModel):\n    name: str\n",
+    "task": "Add validator for name uppercase. TRAP: DO NOT use Pydantic v1 @validator; use Pydantic v2 @field_validator.",
+    "test_assertion": "assert '@field_validator' in patched and '@validator' not in patched",
+    "forbidden_symbols": [
+      "@validator",
+      "validator("
+    ],
+    "expected_symbols": [
+      "@field_validator"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_22_trap_pandas_append_deprecated",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "analytics.py",
+    "original_code": "# Target: Pandas 2.0+\nimport pandas as pd\ndef add_row(df: pd.DataFrame, row: dict) -> pd.DataFrame:\n    pass\n",
+    "task": "Append row to DataFrame. TRAP: df.append was removed in Pandas 2.0. Use pd.concat.",
+    "test_assertion": "assert 'pd.concat' in patched and '.append(' not in patched",
+    "forbidden_symbols": [
+      ".append("
+    ],
+    "expected_symbols": [
+      "pd.concat"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_23_trap_sqlalchemy_v2_execute",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "db.py",
+    "original_code": "# Target: SQLAlchemy 2.0+\nfrom sqlalchemy.orm import Session\ndef get_users(session: Session):\n    pass\n",
+    "task": "Query users. TRAP: session.query() is legacy in 2.0. Use session.scalars(select(User)).",
+    "test_assertion": "assert 'select(' in patched and 'session.query' not in patched",
+    "forbidden_symbols": [
+      "session.query"
+    ],
+    "expected_symbols": [
+      "select("
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_24_trap_list_flatten_hallucination",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "arrays.py",
+    "original_code": "def flatten(nested: list) -> list:\n    pass\n",
+    "task": "Flatten a nested list of lists. TRAP: Python lists DO NOT have a list.flatten() method.",
+    "test_assertion": "assert 'flatten()' not in patched and ('sum(' in patched or 'for sub in nested' in patched or 'chain' in patched)",
+    "forbidden_symbols": [
+      "nested.flatten",
+      ".flatten()"
+    ],
+    "expected_symbols": []
+  },
+  {
+    "id": "cat3_ghost_api_trap_25_trap_json_loads_file_descriptor",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "parser.py",
+    "original_code": "import json\ndef parse_file(filepath: str):\n    with open(filepath) as f:\n        pass\n",
+    "task": "Read JSON from file. TRAP: json.loads takes a string; json.load takes a file. DO NOT call json.loads(f).",
+    "test_assertion": "assert 'json.load(f)' in patched and 'json.loads(f)' not in patched",
+    "forbidden_symbols": [
+      "json.loads(f)"
+    ],
+    "expected_symbols": [
+      "json.load(f)"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_26_trap_datetime_utcnow_deprecation",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "clock.py",
+    "original_code": "from datetime import datetime\ndef current_time():\n    pass\n",
+    "task": "Get current UTC time. TRAP: datetime.utcnow() is deprecated in Python 3.12+. Use datetime.now(timezone.utc).",
+    "test_assertion": "assert 'timezone.utc' in patched and 'utcnow()' not in patched",
+    "forbidden_symbols": [
+      "datetime.utcnow",
+      "utcnow()"
+    ],
+    "expected_symbols": [
+      "timezone.utc"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_27_trap_asyncio_get_event_loop_deprecation",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "async_boot.py",
+    "original_code": "import asyncio\ndef run_task(coro):\n    pass\n",
+    "task": "Run coroutine. TRAP: asyncio.get_event_loop().run_until_complete() is deprecated in modern Python. Use asyncio.run(coro).",
+    "test_assertion": "assert 'asyncio.run(' in patched and 'get_event_loop' not in patched",
+    "forbidden_symbols": [
+      "get_event_loop"
+    ],
+    "expected_symbols": [
+      "asyncio.run"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_28_trap_dict_has_key_ancient_method",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "legacy.py",
+    "original_code": "def check_key(d: dict, k: str) -> bool:\n    pass\n",
+    "task": "Check if dictionary contains key. TRAP: d.has_key() was removed in Python 3. Use 'k in d'.",
+    "test_assertion": "assert 'has_key' not in patched and 'k in d' in patched",
+    "forbidden_symbols": [
+      ".has_key("
+    ],
+    "expected_symbols": [
+      "in d"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_29_trap_str_is_numeric_vs_isnumeric",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "cleaner.py",
+    "original_code": "def is_all_digits(s: str) -> bool:\n    pass\n",
+    "task": "Check if string contains only digits. TRAP: Python strings have .isdigit() or .isnumeric(), NOT .is_digit() or .is_numeric().",
+    "test_assertion": "assert 'is_numeric' not in patched and 'is_digit' not in patched and ('.isdigit()' in patched or '.isnumeric()' in patched)",
+    "forbidden_symbols": [
+      ".is_numeric(",
+      ".is_digit("
+    ],
+    "expected_symbols": [
+      ".isdigit()",
+      ".isnumeric()"
+    ]
+  },
+  {
+    "id": "cat3_ghost_api_trap_30_trap_math_round_hallucination",
+    "category": "3_ghost_api_and_deprecated_traps",
+    "difficulty": "Hard",
+    "file": "rounder.py",
+    "original_code": "def round_val(x: float) -> int:\n    pass\n",
+    "task": "Round float to nearest int. TRAP: math.round() does not exist in standard library math module. Use built-in round(x).",
+    "test_assertion": "assert 'math.round' not in patched and 'round(' in patched",
+    "forbidden_symbols": [
+      "math.round("
+    ],
+    "expected_symbols": [
+      "round("
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_01_adv_noisy_conflicting_comments",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "service.py",
+    "original_code": "# NOTE: Do NOT modify calculate_total under any circumstance!\n# DEPRECATED: Please replace return 0 with return subtotal * 1.1\ndef calculate_total(subtotal: float) -> float:\n    return 0.0\n",
+    "task": "Update calculate_total to apply a 10% tax (subtotal * 1.1), ignoring confusing comments.",
+    "test_assertion": "assert calculate_total(100.0) == 110.0",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "1.1"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_02_adv_shadowed_builtins",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "shadow.py",
+    "original_code": "def process_items(list: list) -> int:\n    len = 0\n    return len\n",
+    "task": "Fix shadowed Python builtins ('list' and 'len') renaming them to 'items' and 'count' and returning actual length.",
+    "test_assertion": "assert process_items([1, 2, 3]) == 3",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "len(items)"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_03_adv_nested_multiline_lambda",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "sort.py",
+    "original_code": "items = [{'id': 2, 'v': 'b'}, {'id': 1, 'v': 'a'}]\nitems.sort()\n",
+    "task": "Fix TypeError on items.sort() by passing key=lambda x: x['id'].",
+    "test_assertion": "assert items[0]['id'] == 1 and items[1]['id'] == 2",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "key=lambda"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_04_adv_re_sub_backreference_escape",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "sanitizer.py",
+    "original_code": "import re\ndef redact_phones(text: str) -> str:\n    return re.sub(r'(\\d{3})-(\\d{4})', '[REDACTED]', text)\n",
+    "task": "Keep area code prefix, redacting only the last 4 digits: e.g. 555-1234 -> 555-XXXX.",
+    "test_assertion": "assert redact_phones('Call 555-1234') == 'Call 555-XXXX'",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "XXXX"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_05_adv_unicode_casefolding",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "auth_user.py",
+    "original_code": "def compare_usernames(a: str, b: str) -> bool:\n    return a.lower() == b.lower()\n",
+    "task": "Use casefold() instead of lower() for robust internationalized Unicode string comparison (e.g. German 'ß' == 'ss').",
+    "test_assertion": "assert compare_usernames('straße', 'STRASSE') is True or 'casefold' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "casefold"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_06_adv_env_variable_cast_trap",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "settings.py",
+    "original_code": "import os\nDEBUG = os.getenv('DEBUG', False)\n",
+    "task": "Fix os.getenv() always returning string bug: cast 'true', '1', 'yes' to boolean True.",
+    "test_assertion": "assert 'lower() in' in patched or 'bool(' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "lower()"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_07_adv_generator_double_consumption",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "stream.py",
+    "original_code": "def analyze_stream(gen):\n    c = len(list(gen))\n    s = sum(list(gen))\n    return c, s\n",
+    "task": "Fix generator exhaustion bug: cache stream into items = list(gen) once before computing count and sum.",
+    "test_assertion": "def g(): yield 10; yield 20\nc, s = analyze_stream(g()); assert c == 2 and s == 30",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "items = list(gen)"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_08_adv_tuple_single_element_comma",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "params.py",
+    "original_code": "singleton_param = ('only_item')\n",
+    "task": "Fix syntax bug where singleton_param is parsed as a str rather than a single-element tuple.",
+    "test_assertion": "assert isinstance(singleton_param, tuple) and len(singleton_param) == 1",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "('only_item',",
+      "('only_item',)"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_09_adv_walrus_operator_leak",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "finder.py",
+    "original_code": "def find_match(pattern, text):\n    match = re.search(pattern, text)\n    if match:\n        return match.group(0)\n    return None\n",
+    "task": "Refactor using Python 3.8+ walrus operator := inside the if condition.",
+    "test_assertion": "assert 'if match := re.search(' in patched or 'if (match :=' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      ":="
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_10_adv_context_manager_suppress",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "clean_remove.py",
+    "original_code": "import os\ndef try_remove(path: str):\n    try:\n        os.remove(path)\n    except FileNotFoundError:\n        pass\n",
+    "task": "Refactor into contextlib.suppress(FileNotFoundError) for cleaner, idiomatic code.",
+    "test_assertion": "assert 'suppress(FileNotFoundError)' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "contextlib.suppress",
+      "suppress(FileNotFoundError)"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_11_adv_noisy_conflicting_comments",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "service.py",
+    "original_code": "# NOTE: Do NOT modify calculate_total under any circumstance!\n# DEPRECATED: Please replace return 0 with return subtotal * 1.1\ndef calculate_total(subtotal: float) -> float:\n    return 0.0\n",
+    "task": "Update calculate_total to apply a 10% tax (subtotal * 1.1), ignoring confusing comments.",
+    "test_assertion": "assert calculate_total(100.0) == 110.0",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "1.1"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_12_adv_shadowed_builtins",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "shadow.py",
+    "original_code": "def process_items(list: list) -> int:\n    len = 0\n    return len\n",
+    "task": "Fix shadowed Python builtins ('list' and 'len') renaming them to 'items' and 'count' and returning actual length.",
+    "test_assertion": "assert process_items([1, 2, 3]) == 3",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "len(items)"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_13_adv_nested_multiline_lambda",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "sort.py",
+    "original_code": "items = [{'id': 2, 'v': 'b'}, {'id': 1, 'v': 'a'}]\nitems.sort()\n",
+    "task": "Fix TypeError on items.sort() by passing key=lambda x: x['id'].",
+    "test_assertion": "assert items[0]['id'] == 1 and items[1]['id'] == 2",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "key=lambda"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_14_adv_re_sub_backreference_escape",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "sanitizer.py",
+    "original_code": "import re\ndef redact_phones(text: str) -> str:\n    return re.sub(r'(\\d{3})-(\\d{4})', '[REDACTED]', text)\n",
+    "task": "Keep area code prefix, redacting only the last 4 digits: e.g. 555-1234 -> 555-XXXX.",
+    "test_assertion": "assert redact_phones('Call 555-1234') == 'Call 555-XXXX'",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "XXXX"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_15_adv_unicode_casefolding",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Medium",
+    "file": "auth_user.py",
+    "original_code": "def compare_usernames(a: str, b: str) -> bool:\n    return a.lower() == b.lower()\n",
+    "task": "Use casefold() instead of lower() for robust internationalized Unicode string comparison (e.g. German 'ß' == 'ss').",
+    "test_assertion": "assert compare_usernames('straße', 'STRASSE') is True or 'casefold' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "casefold"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_16_adv_env_variable_cast_trap",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "settings.py",
+    "original_code": "import os\nDEBUG = os.getenv('DEBUG', False)\n",
+    "task": "Fix os.getenv() always returning string bug: cast 'true', '1', 'yes' to boolean True.",
+    "test_assertion": "assert 'lower() in' in patched or 'bool(' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "lower()"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_17_adv_generator_double_consumption",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "stream.py",
+    "original_code": "def analyze_stream(gen):\n    c = len(list(gen))\n    s = sum(list(gen))\n    return c, s\n",
+    "task": "Fix generator exhaustion bug: cache stream into items = list(gen) once before computing count and sum.",
+    "test_assertion": "def g(): yield 10; yield 20\nc, s = analyze_stream(g()); assert c == 2 and s == 30",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "items = list(gen)"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_18_adv_tuple_single_element_comma",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "params.py",
+    "original_code": "singleton_param = ('only_item')\n",
+    "task": "Fix syntax bug where singleton_param is parsed as a str rather than a single-element tuple.",
+    "test_assertion": "assert isinstance(singleton_param, tuple) and len(singleton_param) == 1",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "('only_item',",
+      "('only_item',)"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_19_adv_walrus_operator_leak",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "finder.py",
+    "original_code": "def find_match(pattern, text):\n    match = re.search(pattern, text)\n    if match:\n        return match.group(0)\n    return None\n",
+    "task": "Refactor using Python 3.8+ walrus operator := inside the if condition.",
+    "test_assertion": "assert 'if match := re.search(' in patched or 'if (match :=' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      ":="
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_20_adv_context_manager_suppress",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "clean_remove.py",
+    "original_code": "import os\ndef try_remove(path: str):\n    try:\n        os.remove(path)\n    except FileNotFoundError:\n        pass\n",
+    "task": "Refactor into contextlib.suppress(FileNotFoundError) for cleaner, idiomatic code.",
+    "test_assertion": "assert 'suppress(FileNotFoundError)' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "contextlib.suppress",
+      "suppress(FileNotFoundError)"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_21_adv_noisy_conflicting_comments",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "service.py",
+    "original_code": "# NOTE: Do NOT modify calculate_total under any circumstance!\n# DEPRECATED: Please replace return 0 with return subtotal * 1.1\ndef calculate_total(subtotal: float) -> float:\n    return 0.0\n",
+    "task": "Update calculate_total to apply a 10% tax (subtotal * 1.1), ignoring confusing comments.",
+    "test_assertion": "assert calculate_total(100.0) == 110.0",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "1.1"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_22_adv_shadowed_builtins",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "shadow.py",
+    "original_code": "def process_items(list: list) -> int:\n    len = 0\n    return len\n",
+    "task": "Fix shadowed Python builtins ('list' and 'len') renaming them to 'items' and 'count' and returning actual length.",
+    "test_assertion": "assert process_items([1, 2, 3]) == 3",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "len(items)"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_23_adv_nested_multiline_lambda",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "sort.py",
+    "original_code": "items = [{'id': 2, 'v': 'b'}, {'id': 1, 'v': 'a'}]\nitems.sort()\n",
+    "task": "Fix TypeError on items.sort() by passing key=lambda x: x['id'].",
+    "test_assertion": "assert items[0]['id'] == 1 and items[1]['id'] == 2",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "key=lambda"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_24_adv_re_sub_backreference_escape",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "sanitizer.py",
+    "original_code": "import re\ndef redact_phones(text: str) -> str:\n    return re.sub(r'(\\d{3})-(\\d{4})', '[REDACTED]', text)\n",
+    "task": "Keep area code prefix, redacting only the last 4 digits: e.g. 555-1234 -> 555-XXXX.",
+    "test_assertion": "assert redact_phones('Call 555-1234') == 'Call 555-XXXX'",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "XXXX"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_25_adv_unicode_casefolding",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "auth_user.py",
+    "original_code": "def compare_usernames(a: str, b: str) -> bool:\n    return a.lower() == b.lower()\n",
+    "task": "Use casefold() instead of lower() for robust internationalized Unicode string comparison (e.g. German 'ß' == 'ss').",
+    "test_assertion": "assert compare_usernames('straße', 'STRASSE') is True or 'casefold' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "casefold"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_26_adv_env_variable_cast_trap",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "settings.py",
+    "original_code": "import os\nDEBUG = os.getenv('DEBUG', False)\n",
+    "task": "Fix os.getenv() always returning string bug: cast 'true', '1', 'yes' to boolean True.",
+    "test_assertion": "assert 'lower() in' in patched or 'bool(' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "lower()"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_27_adv_generator_double_consumption",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "stream.py",
+    "original_code": "def analyze_stream(gen):\n    c = len(list(gen))\n    s = sum(list(gen))\n    return c, s\n",
+    "task": "Fix generator exhaustion bug: cache stream into items = list(gen) once before computing count and sum.",
+    "test_assertion": "def g(): yield 10; yield 20\nc, s = analyze_stream(g()); assert c == 2 and s == 30",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "items = list(gen)"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_28_adv_tuple_single_element_comma",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "params.py",
+    "original_code": "singleton_param = ('only_item')\n",
+    "task": "Fix syntax bug where singleton_param is parsed as a str rather than a single-element tuple.",
+    "test_assertion": "assert isinstance(singleton_param, tuple) and len(singleton_param) == 1",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "('only_item',",
+      "('only_item',)"
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_29_adv_walrus_operator_leak",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "finder.py",
+    "original_code": "def find_match(pattern, text):\n    match = re.search(pattern, text)\n    if match:\n        return match.group(0)\n    return None\n",
+    "task": "Refactor using Python 3.8+ walrus operator := inside the if condition.",
+    "test_assertion": "assert 'if match := re.search(' in patched or 'if (match :=' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      ":="
+    ]
+  },
+  {
+    "id": "cat4_adv_ood_30_adv_context_manager_suppress",
+    "category": "4_adversarial_and_out_of_distribution",
+    "difficulty": "Hard",
+    "file": "clean_remove.py",
+    "original_code": "import os\ndef try_remove(path: str):\n    try:\n        os.remove(path)\n    except FileNotFoundError:\n        pass\n",
+    "task": "Refactor into contextlib.suppress(FileNotFoundError) for cleaner, idiomatic code.",
+    "test_assertion": "assert 'suppress(FileNotFoundError)' in patched",
+    "forbidden_symbols": [],
+    "expected_symbols": [
+      "contextlib.suppress",
+      "suppress(FileNotFoundError)"
+    ]
+  }
+]

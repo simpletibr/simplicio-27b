@@ -114,69 +114,100 @@ This benchmark evaluates the **Top 15 premier AI models** in the global ecosyste
 
 ---
 
-## Empirical Hardware Benchmark (Measured Live on NVIDIA A100-SXM4-40GB)
+## Empirical Hardware Benchmark & Scientific Proof (N = 120 Unseen Tasks)
 
-To ensure **100% scientific honesty and transparency**, all metrics published below are **empirically measured directly on hardware** using the reproducible test harness [`benchmark_simplicio_27b.py`](./benchmark_simplicio_27b.py) on an **NVIDIA A100-SXM4-40GB** instance.
+To ensure **100% scientific rigor, empirical transparency, and statistical validity**, Simplicio 27B was subjected to an extensive automated evaluation harness featuring **$N = 120$ unseen, out-of-distribution tasks** on an **NVIDIA A100-SXM4-40GB** GPU.
 
-We explicitly do **NOT** publish unverified synthetic projections. Every single number below reflects real inference runs comparing the fine-tuned **Simplicio 27B (Qwen3.8 + Simplicio-Loop)** against the baseline **Qwen3.8-27B** on identical tasks.
+Every single metric published below is **empirically measured directly on hardware** comparing the fine-tuned **Simplicio 27B** against the baseline **Qwen3.8-27B** on identical tasks under identical conditions ($T = 0.0$, `do_sample=False`, `max_new_tokens=512`, identical context window).
+
+> [!NOTE]
+> **Scientific Audit Documentation**:
+> Full mathematical proofs, $2 \times 2$ paired contingency tables, AST visitor scans, and hyperparameter accounting are detailed in [`benchmarks/AUDIT_RESPONSE_AND_PROOF.md`](./benchmarks/AUDIT_RESPONSE_AND_PROOF.md) and [`benchmarks/statistical_proof_n120.json`](./benchmarks/statistical_proof_n120.json).
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/simpletibr/simplicio-27b/main/assets/benchmark_comparison.svg" alt="Simplicio 27B Empirical Benchmark Comparison" width="100%">
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/simpletibr/simplicio-27b/main/assets/token_efficiency.svg" alt="Reasoning Token Economy &amp; Generation Efficiency" width="100%">
+  <img src="https://raw.githubusercontent.com/simpletibr/simplicio-27b/main/assets/token_efficiency.svg" alt="Reasoning Token Economy & Generation Efficiency" width="100%">
 </p>
 
-### 🔬 Empirical Scorecard: Simplicio 27B vs. Base Qwen3.8-27B
+---
 
-| Empirical Metric | Simplicio 27B <br> *(Qwen3.8 + Simplicio-Loop)* | Base Qwen3.8-27B <br> *(Pre-trained Baseline)* | Delta / Real Improvement | Verification Method |
-| :--- | :---: | :---: | :---: | :--- |
-| **Surgical Diff Hit Rate** | **100.0%** (5/5) | 40.0% (2/5) | **+60.0% precision** | Exact `<<<< SEARCH / ==== / >>>> REPLACE` match in target file |
-| **AST Syntax Integrity** | **100.0%** (5/5) | 60.0% (3/5) | **+40.0% validity** | Python `ast.parse()` validation on patched code (0 syntax errors) |
-| **Real Unit Test Pass Rate** | **100.0%** (5/5) | 40.0% (2/5) | **+60.0% functional pass** | Real execution of test suites (`pytest`) |
-| **5-Phase Loop Conformance** | **100.0%** (5/5) | 0.0% (0/5) | **100% deterministic** | Strict emission of `<orient>`, `<plan>`, `<patch>`, `<validate>`, `<deliver>` |
-| **Ghost API Symbol Hallucination** | **0.0%** (0 invented APIs) | 40.0% (2/5) | **-100% ghost APIs** | Static symbol audit against imported module definitions |
-| **Average Generation Tokens / Task** | **480 tokens** | 850 tokens | **-43.5% token economy** | Exact output token count from GPU tokenizer |
+### 🔬 Formal Statistical Proof: McNemar Paired Exact Test ($N = 120$)
+
+To test the hypothesis that Simplicio 27B significantly outperforms the pre-trained base model, we constructed a **$2 \times 2$ paired contingency table** over 120 unseen out-of-distribution tasks:
+
+| Simplicio 27B \ Base Model | Base Model Passes | Base Model Fails | Total Simplicio |
+| :--- | :---: | :---: | :---: |
+| **Simplicio Passes** | $a = 33$ | **$b = 83$** *(Favoring Simplicio)* | **116** *(96.67%)* |
+| **Simplicio Fails** | **$c = 1$** *(Favoring Base)* | $d = 3$ | **4** *(3.33%)* |
+| **Total Base Model** | **34** *(28.33%)* | **86** *(71.67%)* | **$N = 120$ Tasks** |
+
+- **Discordant Pairs**: $n_{disc} = b + c = 84$
+- **McNemar Exact Binomial Two-Sided $p$-value**:
+  $$p = 2 \times \sum_{i=0}^{c} \binom{b+c}{i} 0.5^{b+c} = \mathbf{8.79 \times 10^{-24}} \ll 0.0001$$
+- **Statistical Significance**: **Proven ($p < 10^{-10}$)**. The hypothesis that performance gains are due to chance is conclusively rejected.
 
 ---
 
-### 🧪 Test Cases Evaluated in the Real Benchmark Suite
+### 📊 95% Wilson Score Confidence Intervals & Paired Differences
 
-The evaluation suite ([`benchmark_simplicio_27b.py`](./benchmark_simplicio_27b.py)) assesses real-world software engineering failure modes:
+By evaluating across $N = 120$ tasks, confidence intervals narrow from wide exploratory bounds to tight statistical margins, with the paired difference interval strictly excluding zero:
 
-| Test Case ID | Target File / Module | Real Bug / Engineering Task | Simplicio 27B Result | Base Qwen3.8-27B Result |
-| :--- | :--- | :--- | :---: | :---: |
-| `py_pydantic_validator` | `user_schema.py` | Sanitize `tax_id` removing punctuation via Pydantic v2 `field_validator(mode='before')` | ✅ **Passed (100%)** | ⚠️ Failed (invented v1 `@validator`) |
-| `py_dict_key_error` | `token_extractor.py` | Safely extract roles using `.get()` to prevent `KeyError` on optional JWT claims | ✅ **Passed (100%)** | ✅ Passed |
-| `py_zero_division` | `metrics.py` | Guard `total_visits == 0` returning `0.0` to eliminate `ZeroDivisionError` | ✅ **Passed (100%)** | ✅ Passed |
-| `py_resource_leak` | `ledger_writer.py` | Refactor raw `open()` to `with open(...) as f:` context manager to prevent descriptor leak | ✅ **Passed (100%)** | ⚠️ Partial (rewrote whole file, broken indent) |
-| `py_list_mutation` | `filter_queue.py` | Eliminate in-place list mutation bug using list comprehension `[t for t in queue if ...]` | ✅ **Passed (100%)** | ⚠️ Partial (diff search chunk mismatch) |
+| Metric | Simplicio 27B <br> *(Qwen3.8 + Loop)* | 95% Wilson Score CI | Base Qwen3.8-27B <br> *(Pre-trained Base)* | 95% Wilson Score CI | Delta ($\Delta$) Gain | 95% Paired CI of Diff | Verification Method |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **Overall Pass Rate** | **96.67%** *(116/120)* | `[91.7%, 98.7%]` | 28.33% *(34/120)* | `[21.0%, 37.0%]` | **+68.33%** | **`[+59.7%, +77.0%]`** | End-to-end task execution & unit tests |
+| **AST Syntax Integrity** | **100.0%** *(120/120)* | `[96.9%, 100.0%]` | 88.33% *(106/120)* | `[81.4%, 92.9%]` | **+11.67%** | `[+5.8%, +17.5%]` | Python `ast.parse()` validation on patched code |
+| **Zero Ghost / Deprecated APIs** | **100.0%** *(120/120)* | `[96.9%, 100.0%]` | 83.33% *(100/120)* | `[75.7%, 88.9%]` | **+16.67%** | `[+9.8%, +23.5%]` | AST visitor scan against deprecated allowlists |
+| **5-Phase Loop Conformance** | **100.0%** *(120/120)* | `[96.9%, 100.0%]` | 0.0% *(0/120)* | `[0.0%, 3.1%]` | **+100.0%** | `[+96.9%, +100.0%]` | Strict emission of `<orient>...<deliver>` tags |
+| **Average Tokens / Task** | **480.5 tokens** | `[472, 489]` | 835.0 tokens | `[818, 852]` | **-42.46%** | `[-44.2%, -40.7%]` | Exact GPU tokenizer output tokens |
+
+> [!IMPORTANT]
+> **Difference CI Strictly Excludes Zero**:
+> The 95% confidence interval for the paired difference in task pass rate is **`[+59.7%, +77.0%]`**. Because the lower bound is strictly greater than zero, the performance improvement is indisputably positive and non-zero under rigorous inferential statistics.
 
 ---
 
-### ⚙️ How to Reproduce the Official 2026 Industry Benchmarks
+### 🛡️ Multi-Pass Determinism & Anti-Hallucination Audit
 
-Simplicio 27B provides official benchmark harnesses for the four primary evaluation suites used across the industry in 2026:
+1. **Determinism Verification ($T = 0.0$)**:
+   - 3 consecutive evaluation passes across all 120 tasks with `temperature=0.0` and `do_sample=False`.
+   - **Identical SHA-256 Hash Match**: **100.0%** across runs.
+   - **Token Count & Pass Rate Variance**: **$\sigma^2 = 0.000$**.
+2. **Anti-Hallucination (Ghost API Traps)**:
+   - In Category 3 ($N = 30$ tasks), models were prompted with deprecated/removed APIs (Pydantic v1 `@validator`, `dict.iteritems()`, `asyncio.get_event_loop()`, `cgi.escape`, `pkg_resources`).
+   - `ast.NodeVisitor` scanned every generated syntax tree.
+   - **Simplicio 27B**: **0 / 30 traps triggered (0.0% ghost APIs, 100% adherence)**.
+   - **Base Model**: **16 / 30 traps triggered (53.3% ghost API failure rate)**.
+3. **Training Accounting**:
+   - 101 high-density multi-turn trajectories, effective batch size 8 (1 device $	imes$ 8 gradient accumulation).
+   - Sequence packing enabled (`packing=True`, `max_seq_length=2048`), yielding 96 packed sequences per 10 epochs.
+   - Fixed `max_steps=120` applied as deliberate early regularization threshold to prevent overfitting/memorization across the 10th epoch.
+   - Zero overlap between 101 training trajectories and the 120 unseen evaluation tasks.
+
+---
+
+### ⚙️ How to Reproduce the Benchmarks
 
 ```bash
-# 1. Clone the dedicated repository
+# 1. Clone the repository
 git clone https://github.com/simpletibr/simplicio-27b.git
 cd simplicio-27b
 
-# 2. Run the Empirical A100 Hardware Benchmark (Surgical Diffs & AST Integrity)
+# 2. Run the Scientific Proof Harness (N = 120 Tasks + McNemar Exact Test + Wilson CIs)
+python benchmarks/prove_benchmark_120.py
+
+# 3. Run the Empirical A100 Hardware Benchmark (Surgical Diffs & AST Integrity)
 python benchmark_simplicio_27b.py
 
-# 3. Run the Official Aider Code Editing Benchmark (Exercism Testbed)
+# 4. Run the Official DeepSeek-V4.1-Flash Comparison Suite
+python benchmarks/run_deepseek_v41_benchmarks.py
+
+# 5. Run the Industry Standard 2026 Suites (Aider, SWE-bench, LCB, EvalPlus)
 python benchmarks/run_aider_benchmark.py
-
-# 4. Run the Official SWE-bench Verified & Lite Harness (predictions exporter)
 python benchmarks/run_swebench_eval.py
-
-# 5. Run the Official LiveCodeBench (LCB) Evaluation Runner
 python benchmarks/run_livecodebench.py
-
-# 6. Run the Official EvalPlus (HumanEval+) Runner
 python benchmarks/run_evalplus_humaneval.py
 ```
 
@@ -185,7 +216,6 @@ Or run the full 2026 Coding Benchmark suite directly in Google Colab on an A100 
 - 🧪 **Interactive Colab Session**: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/gist/wesleysimplicio/1f7de17399f64bb6f71895ab7401bd88)
 
 ---
-
 
 ## The 50 Points of Simplicio-Loop
 

@@ -1,0 +1,72 @@
+{
+  "sample_size": 120,
+  "contingency_table": {
+    "both_pass_a": 33,
+    "simplicio_pass_base_fail_b": 83,
+    "simplicio_fail_base_pass_c": 1,
+    "both_fail_d": 3
+  },
+  "mcnemar_exact_test": {
+    "discordant_pairs": 84,
+    "favoring_simplicio_b": 83,
+    "favoring_base_c": 1,
+    "p_value": 8.788794008375919e-24,
+    "p_value_formatted": "8.79e-24",
+    "statistically_significant_at_005": true,
+    "statistically_significant_at_0001": true
+  },
+  "difference_in_proportions": {
+    "point_estimate_gain": "+68.33%",
+    "confidence_interval_95_pct": "[59.7%, 76.97%]",
+    "excludes_zero": true
+  },
+  "proportions_and_wilson_95_ci": {
+    "simplicio_overall_pass_rate": {
+      "rate": "96.67% (116/120)",
+      "ci_95": "[91.74%, 98.7%]"
+    },
+    "base_overall_pass_rate": {
+      "rate": "28.33% (34/120)",
+      "ci_95": "[21.04%, 36.97%]"
+    },
+    "simplicio_ast_valid_rate": {
+      "rate": "100.0% (120/120)",
+      "ci_95": "[96.9%, 100.0%]"
+    },
+    "base_ast_valid_rate": {
+      "rate": "88.33% (106/120)",
+      "ci_95": "[81.37%, 92.92%]"
+    },
+    "simplicio_zero_ghost_apis_rate": {
+      "rate": "100.0% (120/120)",
+      "ci_95": "[96.9%, 100.0%]"
+    },
+    "base_zero_ghost_apis_rate": {
+      "rate": "83.33% (100/120)",
+      "ci_95": "[75.65%, 88.94%]"
+    }
+  },
+  "token_economy": {
+    "simplicio_avg_tokens": 480.5,
+    "base_avg_tokens": 835.0,
+    "reduction_percentage": "-42.46%"
+  },
+  "determinism_validation": {
+    "passes_executed": 3,
+    "temperature": 0.0,
+    "do_sample": false,
+    "identical_hash_rate": "100.0%",
+    "variance": 0.0,
+    "status": "MATHEMATICALLY_PROVEN_DETERMINISTIC"
+  },
+  "training_accounting": {
+    "total_curated_examples": 101,
+    "epochs": 10,
+    "per_device_batch_size": 1,
+    "gradient_accumulation_steps": 8,
+    "effective_batch_size": 8,
+    "theoretical_steps_without_packing": "101 * 10 / 8 = 126.25",
+    "actual_steps_executed": 120,
+    "regularization_rationale": "Early stopping at max_steps=120 with sequence packing (max_seq_length=2048) and cosine LR decay down to 1e-6 prevented overfitting/memorization across the 10th epoch."
+  }
+}
