@@ -1,10 +1,12 @@
 import os
 
+with open('/Users/wesleysimplicio/Projetos/ai/simplicio-27b/assets/simplicio_logo_symbol.snippet') as f:
+    LOGO_SNIPPET = f.read()
+
 def create_top10_real_2026_svg(output_path):
     width = 1000
     height = 680
     
-    # TOP 10 2026 MODELS FROM OPENROUTER & ARTIFICIAL ANALYSIS (OCTOBER 2026)
     models = [
         {"rank": "01", "name": "Claude Opus 5.5", "org": "Anthropic (Sep 2026)", "type": "Closed", "params": "Frontier SOTA", "diff": 89.5, "swe": 89.9, "tokens": 1500, "score": 98.0, "highlight": False},
         {"rank": "02", "name": "GPT-6.1 Sol Pro", "org": "OpenAI (Sep 2026)", "type": "Closed", "params": "Frontier Reason", "diff": 86.0, "swe": 84.2, "tokens": 1400, "score": 96.5, "highlight": False},
@@ -46,11 +48,16 @@ def create_top10_real_2026_svg(output_path):
   <rect width="{width}" height="{height}" rx="16" fill="url(#bg)"/>
   <rect width="{width}" height="{height}" rx="16" fill="none" stroke="#1E293B" stroke-width="2"/>
 
+  <!-- Official SimpleTI Logo Embed -->
+  <g transform="translate(36, 32) scale(0.24)">
+    {LOGO_SNIPPET}
+  </g>
+
   <!-- Title & Meta -->
-  <g transform="translate(36, 44)">
-    <rect x="0" y="0" width="7" height="42" rx="3.5" fill="url(#headerGrad)"/>
-    <text x="20" y="24" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="22" font-weight="800" letter-spacing="-0.5">Top 10 Coding LLM Leaderboard (Exclusively 2026 Launches)</text>
-    <text x="20" y="44" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13">Verified Live Market Data from OpenRouter API &amp; Artificial Analysis · September-October 2026</text>
+  <g transform="translate(94, 44)">
+    <rect x="0" y="0" width="6" height="42" rx="3" fill="url(#headerGrad)"/>
+    <text x="16" y="24" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="22" font-weight="800" letter-spacing="-0.5">Top 10 Coding LLM Leaderboard (Exclusively 2026 Launches)</text>
+    <text x="16" y="44" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13">simpleti.com.br · OpenRouter API &amp; Artificial Analysis Verified Data (Sep-Oct 2026)</text>
   </g>
 
   <!-- Table Header -->
@@ -101,7 +108,6 @@ def create_top10_real_2026_svg(output_path):
         else:
             type_badge = f'<rect x="490" y="{y+11}" width="54" height="22" rx="4" fill="#374151" fill-opacity="0.6"/><text x="517" y="{y+26}" fill="#9CA3AF" font-family="-apple-system, sans-serif" font-size="11" font-weight="600" text-anchor="middle">Closed</text>'
         
-        # Highlight colors
         name_color = "#38BDF8" if is_highlight else "#F8FAFC"
         name_weight = "800" if is_highlight else "600"
         diff_color = "#34D399" if is_highlight else ("#38BDF8" if m["diff"] > 85 else "#F1F5F9")
@@ -124,13 +130,13 @@ def create_top10_real_2026_svg(output_path):
   <!-- Footer Note -->
   <g transform="translate(36, {height - 24})">
     <text x="0" y="0" fill="#64748B" font-family="-apple-system, sans-serif" font-size="11.5">⚡ Simplicio 27B achieves #1 Surgical Diff Accuracy (96.5%) with -68% Token Waste compared to frontier heavyweight models.</text>
-    <text x="928" y="0" fill="#64748B" font-family="-apple-system, sans-serif" font-size="11.5" text-anchor="end">Official Benchmark Suite · simpletibr/simplicio-loop (2026)</text>
+    <text x="928" y="0" fill="#64748B" font-family="-apple-system, sans-serif" font-size="11.5" text-anchor="end">Official Benchmark Suite · simpleti.com.br</text>
   </g>
 </svg>"""
 
     with open(output_path, "w") as f:
         f.write(svg)
-    print(f"Generated Top 10 SVG: {output_path}")
+    print(f"Generated Top 10 SVG with Logo: {output_path}")
 
 def create_tier_list_top10_svg(output_path):
     width = 960
@@ -147,10 +153,15 @@ def create_tier_list_top10_svg(output_path):
   <rect width="{width}" height="{height}" rx="16" fill="url(#tierBg)"/>
   <rect width="{width}" height="{height}" rx="16" fill="none" stroke="#1E293B" stroke-width="2"/>
 
+  <!-- Official Logo -->
+  <g transform="translate(32, 26) scale(0.22)">
+    {LOGO_SNIPPET}
+  </g>
+
   <!-- Header -->
-  <g transform="translate(32, 36)">
+  <g transform="translate(86, 36)">
     <text x="0" y="0" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="20" font-weight="800">2026 Autonomous Coding &amp; Software Engineering Tier List</text>
-    <text x="0" y="22" fill="#94A3B8" font-family="-apple-system, sans-serif" font-size="12.5">Strictly evaluating the Top 10 models launched in 2026 on Real-World Coding &amp; Diff Precision</text>
+    <text x="0" y="22" fill="#94A3B8" font-family="-apple-system, sans-serif" font-size="12.5">simpleti.com.br · Top 10 models launched in 2026 evaluated on Real-World Coding &amp; Diff Precision</text>
   </g>
 
   <!-- S+ TIER -->
@@ -241,12 +252,12 @@ def create_tier_list_top10_svg(output_path):
   </g>
 
   <!-- Footer note -->
-  <text x="32" y="505" fill="#64748B" font-family="-apple-system, sans-serif" font-size="11.5">Evaluated against the official 2026 model release catalog on OpenRouter &amp; Artificial Analysis.</text>
+  <text x="32" y="505" fill="#64748B" font-family="-apple-system, sans-serif" font-size="11.5">Evaluated against the official 2026 model release catalog on OpenRouter &amp; Artificial Analysis · simpleti.com.br</text>
 </svg>"""
 
     with open(output_path, "w") as f:
         f.write(svg)
-    print(f"Generated Tier List Top 10 SVG: {output_path}")
+    print(f"Generated Tier List Top 10 SVG with Logo: {output_path}")
 
 def create_token_cost_top10_svg(output_path):
     width = 960
@@ -276,10 +287,15 @@ def create_token_cost_top10_svg(output_path):
   <rect width="{width}" height="{height}" rx="16" fill="url(#costBg)"/>
   <rect width="{width}" height="{height}" rx="16" fill="none" stroke="#1E293B" stroke-width="2"/>
 
+  <!-- Logo -->
+  <g transform="translate(36, 28) scale(0.22)">
+    {LOGO_SNIPPET}
+  </g>
+
   <!-- Header -->
-  <g transform="translate(36, 40)">
+  <g transform="translate(90, 40)">
     <text x="0" y="0" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="20" font-weight="800">2026 Reasoning Economy: Useful Code vs. CoT Overhead (Top 10 Models)</text>
-    <text x="0" y="22" fill="#94A3B8" font-family="-apple-system, sans-serif" font-size="12.5">Empirically measured token consumption per bug-fix task · Lower total tokens is vastly superior</text>
+    <text x="0" y="22" fill="#94A3B8" font-family="-apple-system, sans-serif" font-size="12.5">simpleti.com.br · Empirically measured token consumption per bug-fix task</text>
   </g>
 
   <!-- Legend -->
@@ -339,7 +355,7 @@ def create_token_cost_top10_svg(output_path):
 
     with open(output_path, "w") as f:
         f.write(svg)
-    print(f"Generated Token Cost Top 10 SVG: {output_path}")
+    print(f"Generated Token Cost Top 10 SVG with Logo: {output_path}")
 
 def create_benchmark_comparison_top10_svg(output_path):
     width = 960
@@ -369,10 +385,15 @@ def create_benchmark_comparison_top10_svg(output_path):
   <rect width="{width}" height="{height}" rx="16" fill="url(#compBg)"/>
   <rect width="{width}" height="{height}" rx="16" fill="none" stroke="#1E293B" stroke-width="2"/>
 
+  <!-- Logo -->
+  <g transform="translate(36, 28) scale(0.22)">
+    {LOGO_SNIPPET}
+  </g>
+
   <!-- Header -->
-  <g transform="translate(36, 40)">
+  <g transform="translate(90, 40)">
     <text x="0" y="0" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="20" font-weight="800">Official 2026 Coding Benchmarks Suite Comparison (Top 10 Models)</text>
-    <text x="0" y="22" fill="#94A3B8" font-family="-apple-system, sans-serif" font-size="12.5">Comprehensive Evaluation: Aider Diff, SWE-bench Verified/Pro, LiveCodeBench &amp; EvalPlus</text>
+    <text x="0" y="22" fill="#94A3B8" font-family="-apple-system, sans-serif" font-size="12.5">simpleti.com.br · Comprehensive Evaluation: Aider Diff, SWE-bench Pro, LiveCodeBench &amp; EvalPlus</text>
   </g>
 
   <!-- Table Header -->
@@ -409,18 +430,17 @@ def create_benchmark_comparison_top10_svg(output_path):
     svg += f"""
   </g>
   <g transform="translate(36, 525)">
-    <text x="0" y="0" fill="#64748B" font-family="-apple-system, sans-serif" font-size="11.5">Official 2026 Industry Benchmarks Evaluated on A100 GPU · simpletibr/simplicio-loop (2026)</text>
+    <text x="0" y="0" fill="#64748B" font-family="-apple-system, sans-serif" font-size="11.5">Official 2026 Industry Benchmarks Evaluated on A100 GPU · simpleti.com.br</text>
   </g>
 </svg>"""
 
     with open(output_path, "w") as f:
         f.write(svg)
-    print(f"Generated Benchmark Comparison Top 10 SVG: {output_path}")
+    print(f"Generated Benchmark Comparison Top 10 SVG with Logo: {output_path}")
 
 if __name__ == "__main__":
     assets_dir = "/Users/wesleysimplicio/Projetos/ai/simplicio-27b/assets"
     create_top10_real_2026_svg(os.path.join(assets_dir, "leaderboard_top10.svg"))
-    # Also update leaderboard_top15.svg with the crisp Top 10 presentation as requested
     create_top10_real_2026_svg(os.path.join(assets_dir, "leaderboard_top15.svg"))
     create_tier_list_top10_svg(os.path.join(assets_dir, "tier_list_coding.svg"))
     create_token_cost_top10_svg(os.path.join(assets_dir, "token_economy_cost.svg"))
