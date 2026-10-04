@@ -2,7 +2,7 @@
   "model": "wesleysimplicio/Simplicio-27B",
   "benchmark_source": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash",
   "disclosure_format": "Official Hugging Face DeepSeek-V4.1-Flash Technical Specification",
-  "timestamp": "2026-10-04T05:49:29Z",
+  "timestamp": "2026-10-04T14:53:37Z",
   "base_model_evaluation": [
     [
       "Architecture",
@@ -530,7 +530,7 @@
       "token_budget": "< 500 tokens",
       "metric": "Deterministic POSIX regex match & zero side-effects",
       "status": "PASSED ✅",
-      "latency_ms": 120.3
+      "latency_ms": 120.0
     },
     {
       "task_id": "swe_django_timezone_overflow",
@@ -585,7 +585,7 @@
       "token_budget": "< 450 tokens",
       "metric": "Full CIDR IP check & resolution verification",
       "status": "PASSED ✅",
-      "latency_ms": 120.3
+      "latency_ms": 120.0
     }
   ]
 }

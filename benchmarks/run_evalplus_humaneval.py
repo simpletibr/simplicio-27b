@@ -3,6 +3,7 @@ Official 2026 EvalPlus (HumanEval+) Benchmark Runner for Simplicio 27B
 Evaluates edge cases, rigorous assertions, and runtime test-driven execution.
 """
 
+import os
 import sys
 import json
 import time

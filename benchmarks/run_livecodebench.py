@@ -3,6 +3,7 @@ Official 2026 LiveCodeBench (LCB) Runner for Simplicio 27B
 Evaluates contamination-free competitive coding, self-repair, and runtime execution.
 """
 
+import os
 import sys
 import json
 from typing import Dict, List

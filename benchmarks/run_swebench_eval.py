@@ -5,6 +5,7 @@ and emits official predictions in swebench all_preds.jsonl format.
 """
 
 import os
+import sys
 import json
 import argparse
 from typing import Dict, List
