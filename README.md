@@ -18,6 +18,40 @@
 
 ---
 
+## ⚡ Quick Start & Download / Instalação em 1 Clique
+
+> **📦 Download Direto dos Pesos (LoRA / Checkpoint)**: [🤗 Hugging Face: wesleysimplicio/Simplicio-27B](https://huggingface.co/wesleysimplicio/Simplicio-27B)  
+> **🦙 Ollama Library**: [ollama.com/wesleysimplicio/simplicio-27b](https://ollama.com/wesleysimplicio/simplicio-27b)  
+> **⚡ Página Oficial & API**: [simpleti.com.br/simplicio-27b](https://simpleti.com.br/simplicio-27b)
+
+### 1. 🚀 Script de Instalação e Execução Automática (macOS / Linux)
+Instala automaticamente dependências necessárias e inicia o modelo com 1 comando:
+```bash
+curl -fsSL https://simpleti.com.br/install.sh | bash
+```
+
+### 2. 💻 OpenCode (CLI Agent)
+O Simplicio 27B foi calibrado para síntese de diffs atômicos no OpenCode e Aider:
+```bash
+# Executar no OpenCode via OpenRouter (Recomendado):
+opencode -m openrouter/simpleti/simplicio-27b
+
+# Executar no OpenCode via Ollama / Endpoint Local:
+OPENAI_BASE_URL=http://localhost:11434/v1 opencode -m openai/wesleysimplicio/simplicio-27b
+```
+
+### 3. 🦙 Ollama
+```bash
+ollama run wesleysimplicio/simplicio-27b
+```
+
+### 4. 🐙 Aider CLI (96.5% Precisão Cirúrgica)
+```bash
+aider --model ollama_chat/wesleysimplicio/simplicio-27b:latest --edit-format diff
+```
+
+---
+
 ## Simplicio 27B Highlights
 
 **Simplicio 27B** is a specialized, open-weights software engineering foundation model derived from **Qwen3.8-27B** and fine-tuned via **Unsloth (QLoRA 4-bit)** using proprietary atomic diff synthesis trajectories developed by Wesley Simplicio at **SimpleTI** ([simpleti.com.br](https://simpleti.com.br/simplicio-27b)).
