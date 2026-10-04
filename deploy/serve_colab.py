@@ -45,6 +45,19 @@ while time.time() - start < 30:
         break
 
 if public_url:
+    # Vincula automaticamente o túnel com o domínio oficial simpleti.com.br
+    try:
+        import urllib.request, json
+        sync_req = urllib.request.Request(
+            'https://simpleti.com.br/api/set_upstream.php?key=simpleti_2026_simplicio_key',
+            data=json.dumps({'upstream_url': public_url}).encode('utf-8'),
+            headers={'Content-Type': 'application/json', 'User-Agent': 'SimpleTI-Worker/1.0'}
+        )
+        with urllib.request.urlopen(sync_req, timeout=10) as resp:
+            print('🔗 [SYNC] Vinculado com sucesso ao domínio oficial https://simpleti.com.br/v1 !')
+    except Exception as e:
+        print(f'⚠️ Não foi possível sincronizar automaticamente com o site: {e}')
+
     print("\n==================================================================")
     print(f"🎉 ENDPOINT ATIVO COM SUCESSO (CUSTO ZERO DE GPU FIXA):")
     print(f"👉 Base URL: {public_url}/v1")
