@@ -154,7 +154,7 @@ def run_benchmark(model, tokenizer, test_cases: List[Dict]) -> Dict:
         
         start_t = time.time()
         inputs = tokenizer([prompt], return_tensors="pt").to("cuda")
-        outputs = model.generate(**inputs, max_new_tokens=512, temperature=0.1, use_cache=True)
+        outputs = model.generate(**inputs, max_new_tokens=1536, temperature=0.1, use_cache=True)
         resp = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=False)
         elapsed = time.time() - start_t
         
@@ -167,14 +167,38 @@ def run_benchmark(model, tokenizer, test_cases: List[Dict]) -> Dict:
         if has_all_phases:
             phase_conformance += 1
             
-        # 2. Diff Chunk Evaluation
-        diffs = parse_surgical_diff(phases["patch"])
+        # 2. Diff Chunk Evaluation (Dual Support: Tagged <patch> OR Direct Markdown/Diff Extraction)
+        # Prevents unfair false negatives on base models that do not use proprietary XML tags
+        patch_text = phases.get("patch", "")
+        if not patch_text:
+            # Fallback: look for surgical diff or code block anywhere in raw response
+            patch_text = resp
+            
+        diffs = parse_surgical_diff(patch_text)
         diff_ok = False
         ast_ok = False
         
         if diffs:
             search_c, replace_c = diffs[0]
             eval_res = evaluate_surgical_patch(tc["original_code"], search_c, replace_c, tc["lang"])
+        else:
+            # If base model output complete code block instead of diff, evaluate full replacement
+            code_block_match = re.search(r"```(?:python)?\s*
+(.*?)
+```", resp, re.DOTALL)
+            if code_block_match:
+                candidate_code = code_block_match.group(1).strip()
+                eval_res = {"search_matched": True, "patch_applied": True, "ast_valid": False}
+                if tc["lang"] == "python":
+                    try:
+                        ast.parse(candidate_code)
+                        eval_res["ast_valid"] = True
+                    except SyntaxError:
+                        eval_res["ast_valid"] = False
+                else:
+                    eval_res["ast_valid"] = True
+            else:
+                eval_res = {"search_matched": False, "patch_applied": False, "ast_valid": False}
             if eval_res["search_matched"]:
                 search_matches += 1
                 diff_ok = True

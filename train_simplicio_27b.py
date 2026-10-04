@@ -21,6 +21,8 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=1, help="Tamanho do batch por dispositivo")
     parser.add_argument("--grad_accum", type=int, default=8, help="Passos de acumulacao de gradiente (efetivo batch 8)")
     parser.add_argument("--max_steps", type=int, default=150, help="Numero maximo de passos de treino")
+    parser.add_argument("--freeze_bottom_layers", type=int, default=48, help="Congelar N primeiras camadas (ex: 48 de 64 para focar treino no topo)")
+    parser.add_argument("--attention_only_lora", action="store_true", default=False, help="Restringir LoRA apenas a atencao (q_proj, v_proj), preservando MLPs intactos")
     parser.add_argument("--learning_rate", type=float, default=2e-4, help="Taxa de aprendizado inicial")
     parser.add_argument("--save_method", type=str, default="lora", choices=["lora", "merged_16bit", "both"], help="Metodo de publicacao no Hub")
     parser.add_argument("--output_dir", type=str, default="./simplicio-27b-checkpoints", help="Diretorio local de saida")
@@ -94,19 +96,37 @@ def main():
         load_in_4bit = True,
     )
 
-    # 5. Configurar Adaptadores LoRA
-    print(f"Configurando LoRA (r={args.lora_r}, alpha={args.lora_alpha})...")
+    # 5. Registrar Special Tokens de Protocolo e Configurar Adaptadores LoRA
+    special_tokens = ["<orient>", "</orient>", "<plan>", "</plan>", "<patch>", "</patch>", "<validate>", "</validate>", "<deliver>", "</deliver>"]
+    num_added = tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
+    if num_added > 0:
+        print(f"Adicionados {num_added} special tokens dedicados para ancoragem de atencao: {special_tokens}")
+        model.resize_token_embeddings(len(tokenizer))
+
+    target_mods = ["q_proj", "v_proj", "o_proj"] if args.attention_only_lora else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    print(f"Configurando LoRA (r={args.lora_r}, alpha={args.lora_alpha}, target_modules={target_mods})...")
     model = FastLanguageModel.get_peft_model(
         model,
         r = args.lora_r,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                          "gate_proj", "up_proj", "down_proj"],
+        target_modules = target_mods,
         lora_alpha = args.lora_alpha,
         lora_dropout = 0,
         bias = "none",
         use_gradient_checkpointing = "unsloth",
         random_state = 3407,
     )
+
+    # Congelamento Seletivo de Camadas (Selective Layer Freezing) para evitar Catastrophic Forgetting
+    if args.freeze_bottom_layers > 0:
+        print(f"Aplicando Selective Freezing: Congelando as {args.freeze_bottom_layers} primeiras camadas do modelo (0 a {args.freeze_bottom_layers - 1})...")
+        frozen_count = 0
+        for name, param in model.named_parameters():
+            for layer_idx in range(args.freeze_bottom_layers):
+                if f"layers.{layer_idx}." in name:
+                    param.requires_grad = False
+                    frozen_count += 1
+                    break
+        print(f"Total de tensores congelados nas camadas inferiores: {frozen_count}. Preservando raciocinio base intacto.")
 
     # 6. Carregar e Formatar Dataset do Simplicio-Loop
     if not os.path.exists(args.data_file):
