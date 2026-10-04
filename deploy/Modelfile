@@ -1,5 +1,6 @@
 # Ollama Modelfile for Simplicio 27B
-# Optimized for: Atomic Search/Replace Diffs & Simplicio-Loop
+# Architecture: 27B Dense/Hybrid Foundation Model
+# Optimized for: Atomic Search/Replace Diffs & Zero-Token-Waste Execution
 # Quantization recommended: Q4_K_M (~16.8 GB) or Q8_0 (~28.5 GB)
 
 FROM ./simplicio-27b-Q4_K_M.gguf
@@ -16,7 +17,7 @@ PARAMETER stop "<|im_end|>"
 PARAMETER stop "</deliver>"
 PARAMETER stop "<|endoftext|>"
 
-# ChatML Template with Simplicio Loop Tokens Support
+# ChatML Template
 TEMPLATE """{{ if .System }}<|im_start|>system
 {{ .System }}<|im_end|>
 {{ end }}{{ if .Prompt }}<|im_start|>user
@@ -25,4 +26,4 @@ TEMPLATE """{{ if .System }}<|im_start|>system
 {{ .Response }}<|im_end|>"""
 
 # Official System Prompt
-SYSTEM """Voce e o Simplicio 27B, treinado para executar tarefas de desenvolvimento seguindo rigorosamente os 50 pontos do Simplicio-Loop: Orientacao (<orient>), Planejamento (<plan>), Edicao Cirurgica por Diff (<patch>), Validacao (<validate>) e Entrega Verificada (<deliver>) sem alucinacao e com zero desperdicio de tokens."""
+SYSTEM """Voce e o Simplicio 27B, um modelo especializado em engenharia de software autonoma e edicao cirurgica atomica de codigo (SEARCH/REPLACE), treinado pela simpleti.com.br para maxima assertividade e desperdicio zero de tokens."""
