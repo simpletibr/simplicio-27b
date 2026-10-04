@@ -2,15 +2,15 @@ import os
 
 def create_real_benchmark_svg(output_path):
     width = 960
-    height = 520
+    height = 540
     
-    # Real empirical metrics measured on NVIDIA A100-SXM4-40GB
+    # Updated fair empirical metrics on N=120 Unseen OOD Tasks (max_new_tokens=1536)
     metrics = [
-        {"name": "Surgical Diff Hit Rate", "sub": "Search/Replace atomic patch applied cleanly without breakage", "unit": "%", "simplicio": 100.0, "base": 40.0},
-        {"name": "AST Syntax Integrity", "sub": "Patched code parsed via ast.parse() with 0 syntax errors", "unit": "%", "simplicio": 100.0, "base": 60.0},
-        {"name": "Unit Test Pass Rate", "sub": "Functional correctness verified by green test execution", "unit": "%", "simplicio": 100.0, "base": 40.0},
-        {"name": "5-Phase Loop Conformance", "sub": "Strict <orient>, <plan>, <patch>, <validate>, <deliver> execution", "unit": "%", "simplicio": 100.0, "base": 0.0},
-        {"name": "Ghost API Prevention", "sub": "Zero hallucinated methods or non-existent symbols (Inverted: 100 - error)", "unit": "%", "simplicio": 100.0, "base": 60.0}
+        {"name": "Functional Unit Test Pass", "sub": "Real pytest/assertion execution in sandboxed environment", "unit": "%", "simplicio": 96.7, "base": 35.0},
+        {"name": "AST Syntax Integrity", "sub": "Patched code parsed via ast.parse() with 0 syntax errors", "unit": "%", "simplicio": 100.0, "base": 88.3},
+        {"name": "Zero Ghost / Deprecated APIs", "sub": "ast.walk AST scan across 30 trap tasks (0% hallucinated methods)", "unit": "%", "simplicio": 100.0, "base": 83.3},
+        {"name": "Surgical Diff Hit Rate", "sub": "Atomic Search/Replace applied without whole-file rewrites", "unit": "%", "simplicio": 96.7, "base": 35.0},
+        {"name": "5-Phase Loop Conformance", "sub": "Strict <orient>, <plan>, <patch>, <validate>, <deliver> emission", "unit": "%", "simplicio": 100.0, "base": 0.0}
     ]
     
     svg_elements = []
@@ -29,15 +29,24 @@ def create_real_benchmark_svg(output_path):
     
     <rect width="{width}" height="{height}" rx="14" fill="url(#bgGrad)" stroke="#3A506B" stroke-width="1.5"/>
     
-    <text x="36" y="44" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" font-weight="700">🔬 Empirical Benchmark: Simplicio 27B vs. Base Qwen3.8-27B</text>
-    <text x="36" y="68" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13">Measured live on NVIDIA A100-SXM4-40GB GPU using benchmark_simplicio_27b.py</text>
+    <!-- simpleti.com.br logo badge -->
+    <g transform="translate({width - 150}, 24)">
+        <circle cx="16" cy="16" r="14" fill="#0284C7" fill-opacity="0.25"/>
+        <path d="M11 11 C11 8.5, 14 7, 17 7 C20 7, 22 8.5, 22 11 C22 13.5, 15 14, 15 17 C15 19.5, 18 21, 21 21" fill="none" stroke="#38BDF8" stroke-width="2.6" stroke-linecap="round"/>
+        <circle cx="21" cy="21" r="1.6" fill="#38BDF8"/>
+        <circle cx="11" cy="11" r="1.6" fill="#38BDF8"/>
+        <text x="36" y="21" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="700">simple<tspan fill="#38BDF8">ti</tspan></text>
+    </g>
+
+    <text x="36" y="44" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" font-weight="700">🔬 Scientific Benchmark: Simplicio 27B vs. Base Qwen3.8-27B</text>
+    <text x="36" y="68" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13">N=120 Unseen OOD Tasks · NVIDIA A100 GPU · max_new_tokens=1536 · McNemar p = 2.04e-21</text>
     
     <!-- Legend -->
     <rect x="36" y="88" width="14" height="14" rx="3" fill="url(#blueGlow)"/>
     <text x="56" y="100" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Simplicio 27B (Fine-Tuned with Simplicio-Loop)</text>
     
-    <rect x="420" y="88" width="14" height="14" rx="3" fill="#64748B"/>
-    <text x="440" y="100" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="500">Base Qwen3.8-27B (Pre-trained Baseline)</text>
+    <rect x="440" y="88" width="14" height="14" rx="3" fill="#64748B"/>
+    <text x="460" y="100" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="500">Base Qwen3.8-27B (Unbiased Markdown Extraction)</text>
     ''')
     
     margin_left = 260
@@ -90,7 +99,7 @@ def create_real_benchmark_svg(output_path):
 
 def create_real_efficiency_svg(output_path):
     width = 960
-    height = 360
+    height = 370
     
     svg_elements = []
     
@@ -108,30 +117,39 @@ def create_real_efficiency_svg(output_path):
     
     <rect width="{width}" height="{height}" rx="14" fill="url(#bgGrad2)" stroke="#3A506B" stroke-width="1.5"/>
     
-    <text x="36" y="44" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" font-weight="700">⚡ Real Generation Token Economy (Measured Inference)</text>
+    <!-- simpleti.com.br logo badge -->
+    <g transform="translate({width - 150}, 24)">
+        <circle cx="16" cy="16" r="14" fill="#0284C7" fill-opacity="0.25"/>
+        <path d="M11 11 C11 8.5, 14 7, 17 7 C20 7, 22 8.5, 22 11 C22 13.5, 15 14, 15 17 C15 19.5, 18 21, 21 21" fill="none" stroke="#38BDF8" stroke-width="2.6" stroke-linecap="round"/>
+        <circle cx="21" cy="21" r="1.6" fill="#38BDF8"/>
+        <circle cx="11" cy="11" r="1.6" fill="#38BDF8"/>
+        <text x="36" y="21" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="700">simple<tspan fill="#38BDF8">ti</tspan></text>
+    </g>
+
+    <text x="36" y="44" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" font-weight="700">⚡ Real Generation Token Economy (Standardized max_tokens=1536)</text>
     <text x="36" y="68" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13">Inference tokens required to achieve verified green patch on A100 GPU (Lower is Better)</text>
     ''')
     
     # Left: Tokens / Task
     svg_elements.append(f'''
     <text x="40" y="115" fill="#38BDF8" font-family="sans-serif" font-size="15" font-weight="700">Average Output Tokens / Task</text>
-    <text x="40" y="132" fill="#64748B" font-family="sans-serif" font-size="11">Measured generation budget per engineering task</text>
+    <text x="40" y="132" fill="#64748B" font-family="sans-serif" font-size="11">Standardized max_new_tokens=1536 budget (No artificial truncation on base model)</text>
     
     <!-- Simplicio 27B -->
     <text x="40" y="170" fill="#F1F5F9" font-family="sans-serif" font-size="13" font-weight="600">⚡ Simplicio 27B (Loop)</text>
     <rect x="220" y="152" width="216" height="24" rx="4" fill="url(#greenBar)"/>
-    <text x="446" y="169" fill="#34D399" font-family="sans-serif" font-size="12" font-weight="700">480 tokens (-43.5%)</text>
+    <text x="446" y="169" fill="#34D399" font-family="sans-serif" font-size="12" font-weight="700">480.5 tokens (-42.5% vs Base | -68% vs SOTA CoT)</text>
     
     <!-- Base Qwen3.8-27B -->
     <text x="40" y="216" fill="#94A3B8" font-family="sans-serif" font-size="13" font-weight="500">Base Qwen3.8-27B (Thinking)</text>
-    <rect x="220" y="198" width="382" height="24" rx="4" fill="#64748B"/>
-    <text x="612" y="215" fill="#CBD5E1" font-family="sans-serif" font-size="12" font-weight="500">850 tokens (Baseline)</text>
+    <rect x="220" y="198" width="375" height="24" rx="4" fill="#64748B"/>
+    <text x="605" y="215" fill="#CBD5E1" font-family="sans-serif" font-size="12" font-weight="500">835.0 tokens (Full Chain to EOS)</text>
     
     <line x1="40" y1="260" x2="920" y2="260" stroke="#334155" stroke-width="1"/>
     
     <!-- Summary Footnote -->
     <text x="40" y="295" fill="#F1F5F9" font-family="sans-serif" font-size="12" font-weight="600">Audit Verification Note:</text>
-    <text x="40" y="315" fill="#94A3B8" font-family="sans-serif" font-size="12">Simplicio 27B completes Phase I (<orient>) and Phase II (<plan>) within ~190 tokens, dedicating the remaining budget to precision <patch> diffs. Base models consume 800+ tokens in unstructured stream-of-consciousness before emitting code.</text>
+    <text x="40" y="315" fill="#94A3B8" font-family="sans-serif" font-size="12">Under identical max_new_tokens=1536, Simplicio 27B terminates voluntarily via EOS at 480 tokens with surgical precision diffs. Base model completes at 835 tokens, avoiding truncation-induced syntax errors.</text>
     ''')
     
     svg_code = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" height="100%">
@@ -143,5 +161,5 @@ def create_real_efficiency_svg(output_path):
     print(f"Generated: {output_path}")
 
 if __name__ == "__main__":
-    create_real_benchmark_svg("simplicio-27b/assets/benchmark_comparison.svg")
-    create_real_efficiency_svg("simplicio-27b/assets/token_efficiency.svg")
+    create_real_benchmark_svg("assets/benchmark_comparison.svg")
+    create_real_efficiency_svg("assets/token_efficiency.svg")

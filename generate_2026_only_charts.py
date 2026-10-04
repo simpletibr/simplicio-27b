@@ -325,6 +325,6 @@ def create_token_cost_2026_only_svg(output_path):
     print(f"Generated: {output_path}")
 
 if __name__ == "__main__":
-    create_top15_2026_only_svg("simplicio-27b/assets/leaderboard_top15.svg")
-    create_tier_list_2026_only_svg("simplicio-27b/assets/tier_list_coding.svg")
-    create_token_cost_2026_only_svg("simplicio-27b/assets/token_economy_cost.svg")
+    create_top15_2026_only_svg("assets/leaderboard_top15.svg")
+    create_tier_list_2026_only_svg("assets/tier_list_coding.svg")
+    create_token_cost_2026_only_svg("assets/token_economy_cost.svg")
