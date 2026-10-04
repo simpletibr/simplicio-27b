@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 840" width="1000" height="840">
+  <defs>
+    <linearGradient id="bgTokenGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080C14"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="simplicioTokenBar" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0284C7"/>
+      <stop offset="100%" stop-color="#38BDF8"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1000" height="840" rx="16" fill="url(#bgTokenGrad)" stroke="#1E293B" stroke-width="2"/>
+
+  <!-- Title -->
+  <text x="40" y="42" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="22" font-weight="800">⚡ REASONING TOKEN CONSUMPTION: TOP 15 AI MODELS COMPARISON</text>
+  <text x="40" y="68" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13">Average Reasoning Tokens Consumed per Code Resolution (Lower is Better ➔ -68% Economy) · October 2026</text>
+
+  <!-- Legend -->
+  <g transform="translate(660, 36)">
+    <rect x="0" y="0" width="14" height="14" rx="3" fill="url(#simplicioTokenBar)"/>
+    <text x="20" y="11" fill="#38BDF8" font-family="sans-serif" font-size="12" font-weight="700">⚡ Simplicio 27B (-68%)</text>
+    <rect x="180" y="0" width="14" height="14" rx="3" fill="#64748B"/>
+    <text x="200" y="11" fill="#CBD5E1" font-family="sans-serif" font-size="12">Standard CoT</text>
+  </g>
+  <rect x="25" y="106" width="950" height="38" rx="6" fill="#0C4A6E" fill-opacity="0.35" stroke="#38BDF8" stroke-width="1.2"/>
+  <text x="225" y="128" fill="#38BDF8" font-family="sans-serif" font-size="12" font-weight="800" text-anchor="end">⚡ Simplicio 27B (Loop)</text>
+  <rect x="240" y="114" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="114" width="134.0" height="20" rx="4" fill="url(#simplicioTokenBar)"/>
+  <text x="386.0" y="129" fill="#38BDF8" font-family="sans-serif" font-size="12" font-weight="700">480 tokens ⚡ (-68% lean)</text>
+  <text x="225" y="172" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">DeepSeek V4.1 Flash</text>
+  <rect x="240" y="158" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="158" width="181.45833333333331" height="20" rx="4" fill="#3B82F6"/>
+  <text x="433.4583333333333" y="173" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">650 tokens</text>
+  <text x="225" y="216" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">Command A+</text>
+  <rect x="240" y="202" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="202" width="201.0" height="20" rx="4" fill="#64748B"/>
+  <text x="453.0" y="217" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">720 tokens</text>
+  <text x="225" y="260" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">GPT-6 Luna Pro</text>
+  <rect x="240" y="246" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="246" width="209.375" height="20" rx="4" fill="#64748B"/>
+  <text x="461.375" y="261" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">750 tokens</text>
+  <text x="225" y="304" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">Claude Sonnet 5.5</text>
+  <rect x="240" y="290" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="290" width="237.29166666666669" height="20" rx="4" fill="#64748B"/>
+  <text x="489.2916666666667" y="305" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">850 tokens</text>
+  <text x="225" y="348" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">GLM 5.3 Prime</text>
+  <rect x="240" y="334" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="334" width="245.66666666666666" height="20" rx="4" fill="#3B82F6"/>
+  <text x="497.66666666666663" y="349" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">880 tokens</text>
+  <text x="225" y="392" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">Qwen3.8 Max Prime</text>
+  <rect x="240" y="378" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="378" width="256.83333333333337" height="20" rx="4" fill="#3B82F6"/>
+  <text x="508.83333333333337" y="393" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">920 tokens</text>
+  <text x="225" y="436" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">Grok 4.7</text>
+  <rect x="240" y="422" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="422" width="273.5833333333333" height="20" rx="4" fill="#64748B"/>
+  <text x="525.5833333333333" y="437" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">980 tokens</text>
+  <text x="225" y="480" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">Gemini 2.0 Pro</text>
+  <rect x="240" y="466" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="466" width="307.0833333333333" height="20" rx="4" fill="#64748B"/>
+  <text x="559.0833333333333" y="481" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">1100 tokens</text>
+  <text x="225" y="524" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">GPT-6.1 Sol Pro</text>
+  <rect x="240" y="510" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="510" width="390.83333333333337" height="20" rx="4" fill="#64748B"/>
+  <text x="642.8333333333334" y="525" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">1400 tokens</text>
+  <text x="225" y="568" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">Claude 3.7 Sonnet (Thinking)</text>
+  <rect x="240" y="554" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="554" width="390.83333333333337" height="20" rx="4" fill="#64748B"/>
+  <text x="642.8333333333334" y="569" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">1400 tokens</text>
+  <text x="225" y="612" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">Claude Opus 5.5</text>
+  <rect x="240" y="598" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="598" width="418.75" height="20" rx="4" fill="#64748B"/>
+  <text x="670.75" y="613" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">1500 tokens</text>
+  <text x="225" y="656" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">OpenAI o3-mini (High)</text>
+  <rect x="240" y="642" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="642" width="460.625" height="20" rx="4" fill="#64748B"/>
+  <text x="712.625" y="657" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">1650 tokens</text>
+  <text x="225" y="700" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">DeepSeek-R1 (Full 671B)</text>
+  <rect x="240" y="686" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="686" width="516.4583333333334" height="20" rx="4" fill="#3B82F6"/>
+  <text x="768.4583333333334" y="701" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">1850 tokens</text>
+  <text x="225" y="744" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">OpenAI o3</text>
+  <rect x="240" y="730" width="670" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="730" width="614.1666666666666" height="20" rx="4" fill="#64748B"/>
+  <text x="866.1666666666666" y="745" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">2200 tokens</text>
+</svg>
