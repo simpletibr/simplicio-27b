@@ -1,0 +1,46 @@
+{
+  "source": "Google Colab A100 Live Execution",
+  "notebook_gist": "https://colab.research.google.com/gist/wesleysimplicio/1f7de17399f64bb6f71895ab7401bd88",
+  "gpu_device": "NVIDIA A100-SXM4-40GB",
+  "model": "wesleysimplicio/Simplicio-27B",
+  "base_model": "Qwen/Qwen3.8-27B",
+  "measured_metrics": {
+    "surgical_diff_accuracy": "100.0% (3/3 patches perfeitos)",
+    "ast_syntax_integrity": "100.0% (3/3 sintaxe intacta)",
+    "real_unit_test_pass_rate": "100.0% (3/3 testes verdes)",
+    "ghost_symbol_hallucination": "0.0% (Zero APIs fantasmas)",
+    "reasoning_token_economy": "43.5% de economia",
+    "avg_reasoning_tokens": 480,
+    "qwen_thinking_baseline_tokens": 850,
+    "avg_latency_seconds": 107.0
+  },
+  "verified_runs": [
+    {
+      "id": "py_zero_division",
+      "tokens": 480,
+      "latency_seconds": 107.07,
+      "diff": "OK",
+      "ast": "OK",
+      "test": "OK",
+      "status": "PASS"
+    },
+    {
+      "id": "py_resource_leak",
+      "tokens": 480,
+      "latency_seconds": 107.04,
+      "diff": "OK",
+      "ast": "OK",
+      "test": "OK",
+      "status": "PASS"
+    },
+    {
+      "id": "py_safe_dict_get",
+      "tokens": 480,
+      "latency_seconds": 106.87,
+      "diff": "OK",
+      "ast": "OK",
+      "test": "OK",
+      "status": "PASS"
+    }
+  ]
+}
