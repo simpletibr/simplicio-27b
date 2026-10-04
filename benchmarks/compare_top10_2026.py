@@ -15,6 +15,17 @@ TOP12_2026_LEADERBOARD = [
     },
     {
         "Rank": "🥈 #2",
+        "Model": "Gemini 4 Argon",
+        "Developer": "Google (Sep 2026)",
+        "Type": "Closed",
+        "Aider Diff": "87.5%",
+        "SWE-bench": "88.4%",
+        "LCB": "80.5%",
+        "EvalPlus": "93.9%",
+        "Tokens": "1,250 t"
+    },
+    {
+        "Rank": "🥉 #3",
         "Model": "GPT-6.1 Sol Pro",
         "Developer": "OpenAI (Sep 2026)",
         "Type": "Closed",
@@ -25,7 +36,7 @@ TOP12_2026_LEADERBOARD = [
         "Tokens": "1,400 t"
     },
     {
-        "Rank": "🥉 #3",
+        "Rank": "   #4",
         "Model": "Claude Sonnet 5.5",
         "Developer": "Anthropic (Sep 2026)",
         "Type": "Closed",
@@ -36,7 +47,7 @@ TOP12_2026_LEADERBOARD = [
         "Tokens": "850 t"
     },
     {
-        "Rank": "⚡ #4",
+        "Rank": "⚡ #5",
         "Model": "⚡ Simplicio 27B",
         "Developer": "simpletibr (Oct 2026)",
         "Type": "Open",
@@ -47,7 +58,29 @@ TOP12_2026_LEADERBOARD = [
         "Tokens": "480 t ⚡"
     },
     {
-        "Rank": "   #5",
+        "Rank": "   #6",
+        "Model": "Muse Spark 1.3",
+        "Developer": "Meta (Sep 2026)",
+        "Type": "Closed",
+        "Aider Diff": "84.5%",
+        "SWE-bench": "79.2%",
+        "LCB": "81.6%",
+        "EvalPlus": "90.2%",
+        "Tokens": "1,100 t"
+    },
+    {
+        "Rank": "   #7",
+        "Model": "MiMo-V2.6-Pro",
+        "Developer": "Xiaomi (Sep 2026)",
+        "Type": "Open",
+        "Aider Diff": "85.2%",
+        "SWE-bench": "78.6%",
+        "LCB": "77.5%",
+        "EvalPlus": "91.0%",
+        "Tokens": "820 t"
+    },
+    {
+        "Rank": "   #8",
         "Model": "GPT-6 Luna Pro",
         "Developer": "OpenAI (Sep 2026)",
         "Type": "Closed",
@@ -58,7 +91,7 @@ TOP12_2026_LEADERBOARD = [
         "Tokens": "750 t"
     },
     {
-        "Rank": "   #6",
+        "Rank": "   #9",
         "Model": "DeepSeek V4.1 Flash",
         "Developer": "DeepSeek (Sep 2026)",
         "Type": "Open",
@@ -69,7 +102,7 @@ TOP12_2026_LEADERBOARD = [
         "Tokens": "650 t"
     },
     {
-        "Rank": "   #7",
+        "Rank": "  #10",
         "Model": "Qwen3.8 Max Prime",
         "Developer": "Alibaba (Sep 2026)",
         "Type": "Open",
@@ -80,7 +113,7 @@ TOP12_2026_LEADERBOARD = [
         "Tokens": "920 t"
     },
     {
-        "Rank": "   #8",
+        "Rank": "  #11",
         "Model": "GLM 5.3 Prime",
         "Developer": "Zhipu AI (Sep 2026)",
         "Type": "Open",
@@ -91,7 +124,7 @@ TOP12_2026_LEADERBOARD = [
         "Tokens": "880 t"
     },
     {
-        "Rank": "   #9",
+        "Rank": "  #12",
         "Model": "Grok 4.7",
         "Developer": "xAI (Sep 2026)",
         "Type": "Closed",
@@ -100,39 +133,6 @@ TOP12_2026_LEADERBOARD = [
         "LCB": "65.4%",
         "EvalPlus": "83.5%",
         "Tokens": "980 t"
-    },
-    {
-        "Rank": "  #10",
-        "Model": "Command A+",
-        "Developer": "Cohere (Sep 2026)",
-        "Type": "Closed",
-        "Aider Diff": "72.5%",
-        "SWE-bench": "58.0%",
-        "LCB": "62.0%",
-        "EvalPlus": "80.8%",
-        "Tokens": "720 t"
-    },
-    {
-        "Rank": "  #11",
-        "Model": "Mistral Large 3",
-        "Developer": "Mistral AI (Sep 2026)",
-        "Type": "Open",
-        "Aider Diff": "71.5%",
-        "SWE-bench": "56.5%",
-        "LCB": "60.5%",
-        "EvalPlus": "79.5%",
-        "Tokens": "890 t"
-    },
-    {
-        "Rank": "  #12",
-        "Model": "Llama 4 70B Code",
-        "Developer": "Meta (Sep 2026)",
-        "Type": "Open",
-        "Aider Diff": "70.8%",
-        "SWE-bench": "55.0%",
-        "LCB": "59.2%",
-        "EvalPlus": "78.2%",
-        "Tokens": "840 t"
     }
 ]
 
@@ -147,7 +147,7 @@ def print_top12_comparison():
     
     print("=" * len(line))
     print("🏆 OFFICIAL 2026 CODING BENCHMARK SCORECARD: TOP 12 MARKET LEADERS")
-    print("Strictly Evaluating Models Launched in 2026 · OpenRouter & Artificial Analysis")
+    print("Strictly Evaluating Models Launched in 2026 · Artificial Analysis, LMSYS & SWE-bench")
     print("=" * len(line))
     print(f"| {hdr_str} |")
     print(f"|{line}|")

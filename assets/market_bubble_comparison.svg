@@ -32,7 +32,7 @@
 
   <!-- Title & Subtitle -->
   <text x="40" y="40" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" font-weight="800">🏆 TOP 12 CODING LLMs: ACCURACY VS. TOKEN EFFICIENCY PARETO FRONTIER</text>
-  <text x="40" y="64" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13">Strictly 2026 Frontier Releases · Bubble Size = Parameter Scale · Artificial Analysis & LMSYS Methodology</text>
+  <text x="40" y="64" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13">Strictly 2026 Frontier Releases · Bubble Size = Parameter Scale · Artificial Analysis &amp; LMSYS Methodology</text>
 
   <!-- Sweet Spot Highlight Zone (Top Left) -->
   <rect x="90" y="90" width="245.71428571428567" height="201.42857142857144" fill="#0369A1" fill-opacity="0.10" rx="8" stroke="#0284C7" stroke-width="1" stroke-dasharray="4,4"/>
@@ -72,9 +72,9 @@
   <text x="24" y="325.0" fill="#CBD5E1" font-family="sans-serif" font-size="13" font-weight="600" text-anchor="middle" transform="rotate(-90 24 325.0)">Surgical Diff Accuracy % (Higher is Better)</text>
 
   <!-- Pareto Frontier Line -->
-  <polyline points="200.57142857142856,137.0 427.85714285714283,251.14285714285717 827.1428571428571,231.0" fill="none" stroke="url(#paretoGrad)" stroke-width="3.5" filter="url(#glow)"/>
-  <polyline points="200.57142857142856,137.0 427.85714285714283,251.14285714285717 827.1428571428571,231.0" fill="none" stroke="#FFFFFF" stroke-width="1.2" stroke-dasharray="6,4"/>
-  <text x="520.0" y="221.71428571428572" fill="#FBBF24" font-family="sans-serif" font-size="12" font-weight="800" text-anchor="middle">★ 2026 PARETO FRONTIER</text>
+  <polyline points="200.57142857142856,137.0 427.85714285714283,251.14285714285717 673.5714285714286,257.85714285714283 827.1428571428571,231.0" fill="none" stroke="url(#paretoGrad)" stroke-width="3.5" filter="url(#glow)"/>
+  <polyline points="200.57142857142856,137.0 427.85714285714283,251.14285714285717 673.5714285714286,257.85714285714283 827.1428571428571,231.0" fill="none" stroke="#FFFFFF" stroke-width="1.2" stroke-dasharray="6,4"/>
+  <text x="550.7142857142858" y="224.40000000000003" fill="#FBBF24" font-family="sans-serif" font-size="12" font-weight="800" text-anchor="middle">★ 2026 PARETO FRONTIER</text>
 
   <!-- Simplicio 27B Golden Sweet Spot Bubble -->
   <circle cx="200.57142857142856" cy="137.0" r="26" fill="#38BDF8" fill-opacity="0.25" filter="url(#glow)"/>
@@ -85,8 +85,13 @@
 
   <circle cx="827.1428571428571" cy="231.0" r="28" fill="#F59E0B" fill-opacity="0.80" stroke="#0F172A" stroke-width="1.8"/>
   <circle cx="827.1428571428571" cy="231.0" r="28" fill="none" stroke="#F59E0B" stroke-width="1"/>
-  <text x="827.1428571428571" y="273.0" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Claude Opus 5.5</text>
-  <text x="827.1428571428571" y="285.0" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">89.5% (1500 t)</text>
+  <text x="827.1428571428571" y="191.0" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Claude Opus 5.5</text>
+  <text x="827.1428571428571" y="201.0" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">89.5% (1500 t)</text>
+
+  <circle cx="673.5714285714286" cy="257.85714285714283" r="27" fill="#4285F4" fill-opacity="0.80" stroke="#0F172A" stroke-width="1.8"/>
+  <circle cx="673.5714285714286" cy="257.85714285714283" r="27" fill="none" stroke="#4285F4" stroke-width="1"/>
+  <text x="673.5714285714286" y="218.85714285714283" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Gemini 4 Argon</text>
+  <text x="673.5714285714286" y="228.85714285714283" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">87.5% (1250 t)</text>
 
   <circle cx="765.7142857142857" cy="278.0" r="26" fill="#10B981" fill-opacity="0.80" stroke="#0F172A" stroke-width="1.8"/>
   <circle cx="765.7142857142857" cy="278.0" r="26" fill="none" stroke="#10B981" stroke-width="1"/>
@@ -95,23 +100,33 @@
 
   <circle cx="427.85714285714283" cy="251.14285714285717" r="22" fill="#F97316" fill-opacity="0.80" stroke="#0F172A" stroke-width="1.8"/>
   <circle cx="427.85714285714283" cy="251.14285714285717" r="22" fill="none" stroke="#F97316" stroke-width="1"/>
-  <text x="427.85714285714283" y="287.14285714285717" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Claude Sonnet 5.5</text>
-  <text x="427.85714285714283" y="299.14285714285717" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">88.0% (850 t)</text>
+  <text x="427.85714285714283" y="217.14285714285717" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Claude Sonnet 5.5</text>
+  <text x="427.85714285714283" y="227.14285714285717" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">88.0% (850 t)</text>
+
+  <circle cx="581.4285714285713" cy="298.1428571428571" r="24" fill="#0081FB" fill-opacity="0.80" stroke="#0F172A" stroke-width="1.8"/>
+  <circle cx="581.4285714285713" cy="298.1428571428571" r="24" fill="none" stroke="#0081FB" stroke-width="1"/>
+  <text x="581.4285714285713" y="336.1428571428571" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Muse Spark 1.3</text>
+  <text x="581.4285714285713" y="348.1428571428571" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">84.5% (1100 t)</text>
+
+  <circle cx="409.42857142857144" cy="288.74285714285713" r="23" fill="#FF6900" fill-opacity="0.80" stroke="#0F172A" stroke-width="1.8"/>
+  <circle cx="409.42857142857144" cy="288.74285714285713" r="23" fill="none" stroke="#FF6900" stroke-width="1"/>
+  <text x="409.42857142857144" y="325.74285714285713" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">MiMo-V2.6-Pro</text>
+  <text x="409.42857142857144" y="337.74285714285713" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">85.2% (820 t)</text>
+
+  <circle cx="366.42857142857144" cy="325.0" r="20" fill="#34D399" fill-opacity="0.80" stroke="#0F172A" stroke-width="1.8"/>
+  <circle cx="366.42857142857144" cy="325.0" r="20" fill="none" stroke="#34D399" stroke-width="1"/>
+  <text x="366.42857142857144" y="293.0" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">GPT-6 Luna Pro</text>
+  <text x="366.42857142857144" y="303.0" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">82.5% (750 t)</text>
 
   <circle cx="305.0" cy="385.42857142857144" r="24" fill="#6366F1" fill-opacity="0.80" stroke="#0F172A" stroke-width="1.8"/>
   <circle cx="305.0" cy="385.42857142857144" r="24" fill="none" stroke="#6366F1" stroke-width="1"/>
   <text x="305.0" y="423.42857142857144" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">DeepSeek V4.1 Flash</text>
   <text x="305.0" y="435.42857142857144" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">78.0% (650 t)</text>
 
-  <circle cx="366.42857142857144" cy="325.0" r="20" fill="#34D399" fill-opacity="0.80" stroke="#0F172A" stroke-width="1.8"/>
-  <circle cx="366.42857142857144" cy="325.0" r="20" fill="none" stroke="#34D399" stroke-width="1"/>
-  <text x="366.42857142857144" y="359.0" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">GPT-6 Luna Pro</text>
-  <text x="366.42857142857144" y="371.0" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">82.5% (750 t)</text>
-
   <circle cx="470.85714285714283" cy="412.2857142857143" r="22" fill="#A855F7" fill-opacity="0.80" stroke="#0F172A" stroke-width="1.8"/>
   <circle cx="470.85714285714283" cy="412.2857142857143" r="22" fill="none" stroke="#A855F7" stroke-width="1"/>
-  <text x="470.85714285714283" y="448.2857142857143" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Qwen3.8 Max Prime</text>
-  <text x="470.85714285714283" y="460.2857142857143" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">76.0% (920 t)</text>
+  <text x="470.85714285714283" y="378.2857142857143" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Qwen3.8 Max Prime</text>
+  <text x="470.85714285714283" y="388.2857142857143" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">76.0% (920 t)</text>
 
   <circle cx="446.28571428571433" cy="419.0" r="20" fill="#EC4899" fill-opacity="0.80" stroke="#0F172A" stroke-width="1.8"/>
   <circle cx="446.28571428571433" cy="419.0" r="20" fill="none" stroke="#EC4899" stroke-width="1"/>
@@ -123,18 +138,14 @@
   <text x="507.7142857142857" y="475.14285714285717" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Grok 4.7</text>
   <text x="507.7142857142857" y="487.14285714285717" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">74.0% (980 t)</text>
 
-  <circle cx="348.0" cy="459.2857142857143" r="18" fill="#14B8A6" fill-opacity="0.80" stroke="#0F172A" stroke-width="1.8"/>
-  <circle cx="348.0" cy="459.2857142857143" r="18" fill="none" stroke="#14B8A6" stroke-width="1"/>
-  <text x="348.0" y="491.2857142857143" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Command A+</text>
-  <text x="348.0" y="503.2857142857143" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">72.5% (720 t)</text>
-
-  <circle cx="452.42857142857144" cy="472.7142857142857" r="20" fill="#EAB308" fill-opacity="0.80" stroke="#0F172A" stroke-width="1.8"/>
-  <circle cx="452.42857142857144" cy="472.7142857142857" r="20" fill="none" stroke="#EAB308" stroke-width="1"/>
-  <text x="452.42857142857144" y="506.7142857142857" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Mistral Large 3</text>
-  <text x="452.42857142857144" y="518.7142857142858" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">71.5% (890 t)</text>
-
-  <circle cx="421.7142857142857" cy="482.11428571428576" r="20" fill="#06B6D4" fill-opacity="0.80" stroke="#0F172A" stroke-width="1.8"/>
-  <circle cx="421.7142857142857" cy="482.11428571428576" r="20" fill="none" stroke="#06B6D4" stroke-width="1"/>
-  <text x="421.7142857142857" y="516.1142857142858" fill="#E2E8F0" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Llama 4 70B Code</text>
-  <text x="421.7142857142857" y="528.1142857142858" fill="#94A3B8" font-family="sans-serif" font-size="9.5" text-anchor="middle">70.8% (840 t)</text>
+  <!-- Legend Panel -->
+  <g transform="translate(680, 572)">
+    <rect width="280" height="36" rx="8" fill="#0F172A" stroke="#1E293B" stroke-width="1"/>
+    <circle cx="16" cy="18" r="8" fill="#38BDF8"/>
+    <text x="30" y="22" fill="#E2E8F0" font-family="sans-serif" font-size="11" font-weight="600">Simplicio 27B</text>
+    <circle cx="120" cy="18" r="8" fill="#F59E0B"/>
+    <text x="134" y="22" fill="#E2E8F0" font-family="sans-serif" font-size="11">Proprietary</text>
+    <circle cx="210" cy="18" r="8" fill="#FF6900"/>
+    <text x="224" y="22" fill="#E2E8F0" font-family="sans-serif" font-size="11">Open Weights</text>
+  </g>
 </svg>
