@@ -433,6 +433,34 @@ Generating XML tags (`<orient>`, `<validate>`) does not guarantee software engin
 
 ---
 
+## 🚀 Quick Start & Distribution (Ollama · OpenRouter · OpenCode / Aider)
+
+Simplicio 27B is fully prepared for local inference, multi-agent CLI harnesses, and cloud routing. See [deploy/DISTRIBUTION_GUIDE.md](deploy/DISTRIBUTION_GUIDE.md) for full setup instructions.
+
+### 🦙 Ollama Local Execution
+```bash
+# Run directly via Ollama
+ollama create wesleysimplicio/simplicio-27b -f Modelfile
+ollama run wesleysimplicio/simplicio-27b
+```
+
+### 💻 OpenCode & Aider CLI (96.5% Surgical Precision)
+```bash
+# Pair programming with atomic diffs via Ollama
+aider --model ollama/wesleysimplicio/simplicio-27b --edit-format diff
+
+# Autonomous terminal execution via Open Interpreter / OpenCode
+interpreter --model ollama/wesleysimplicio/simplicio-27b
+```
+
+### 🌐 vLLM Server & OpenRouter Gateway
+```bash
+# Launch OpenAI-compatible API on port 8000
+./deploy/serve_vllm.sh wesleysimplicio/Simplicio-27B 8000
+```
+
+---
+
 ## 📚 Citation & Framework Reference
 
 If you utilize **Simplicio 27B** or the **Simplicio-Loop** framework in your research, agentic tools, or evaluation benchmarks, please cite both the official framework repository and the model weights:

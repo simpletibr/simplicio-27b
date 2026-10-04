@@ -34,6 +34,11 @@ files_to_upload = [
     ("benchmarks/AUDIT_RESPONSE_AND_PROOF.md", "benchmarks/AUDIT_RESPONSE_AND_PROOF.md"),
     ("benchmarks/prove_benchmark_120.py", "benchmarks/prove_benchmark_120.py"),
     ("benchmarks/compare_top10_2026.py", "benchmarks/compare_top10_2026.py"),
+    ("Modelfile", "Modelfile"),
+    ("deploy/Modelfile", "deploy/Modelfile"),
+    ("deploy/convert_gguf.sh", "deploy/convert_gguf.sh"),
+    ("deploy/serve_vllm.sh", "deploy/serve_vllm.sh"),
+    ("deploy/DISTRIBUTION_GUIDE.md", "deploy/DISTRIBUTION_GUIDE.md"),
 ]
 
 # Assets (SVGs and logos)
