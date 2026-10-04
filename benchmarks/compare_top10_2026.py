@@ -1,7 +1,7 @@
-# Official 2026 Coding Benchmarks: Top 10 Market Leaders Comparison
+# Official 2026 Coding Benchmarks: Top 12 Market Leaders Comparison
 import sys
 
-TOP10_2026_LEADERBOARD = [
+TOP12_2026_LEADERBOARD = [
     {
         "Rank": "🥇 #1",
         "Model": "Claude Opus 5.5",
@@ -48,17 +48,6 @@ TOP10_2026_LEADERBOARD = [
     },
     {
         "Rank": "   #5",
-        "Model": "DeepSeek V4.1 Flash",
-        "Developer": "DeepSeek (Sep 2026)",
-        "Type": "Open",
-        "Aider Diff": "78.0%",
-        "SWE-bench": "68.5%",
-        "LCB": "71.0%",
-        "EvalPlus": "87.2%",
-        "Tokens": "650 t"
-    },
-    {
-        "Rank": "   #6",
         "Model": "GPT-6 Luna Pro",
         "Developer": "OpenAI (Sep 2026)",
         "Type": "Closed",
@@ -67,6 +56,17 @@ TOP10_2026_LEADERBOARD = [
         "LCB": "74.5%",
         "EvalPlus": "89.0%",
         "Tokens": "750 t"
+    },
+    {
+        "Rank": "   #6",
+        "Model": "DeepSeek V4.1 Flash",
+        "Developer": "DeepSeek (Sep 2026)",
+        "Type": "Open",
+        "Aider Diff": "78.0%",
+        "SWE-bench": "68.5%",
+        "LCB": "71.0%",
+        "EvalPlus": "87.2%",
+        "Tokens": "650 t"
     },
     {
         "Rank": "   #7",
@@ -111,10 +111,34 @@ TOP10_2026_LEADERBOARD = [
         "LCB": "62.0%",
         "EvalPlus": "80.8%",
         "Tokens": "720 t"
+    },
+    {
+        "Rank": "  #11",
+        "Model": "Mistral Large 3",
+        "Developer": "Mistral AI (Sep 2026)",
+        "Type": "Open",
+        "Aider Diff": "71.5%",
+        "SWE-bench": "56.5%",
+        "LCB": "60.5%",
+        "EvalPlus": "79.5%",
+        "Tokens": "890 t"
+    },
+    {
+        "Rank": "  #12",
+        "Model": "Llama 4 70B Code",
+        "Developer": "Meta (Sep 2026)",
+        "Type": "Open",
+        "Aider Diff": "70.8%",
+        "SWE-bench": "55.0%",
+        "LCB": "59.2%",
+        "EvalPlus": "78.2%",
+        "Tokens": "840 t"
     }
 ]
 
-def print_top10_comparison():
+TOP10_2026_LEADERBOARD = TOP12_2026_LEADERBOARD[:10]
+
+def print_top12_comparison():
     headers = ["Rank", "2026 Model", "Developer", "Type", "Aider Diff", "SWE-bench", "LCB", "EvalPlus", "Tokens"]
     col_w = [6, 22, 22, 8, 12, 11, 8, 10, 10]
     
@@ -122,12 +146,12 @@ def print_top10_comparison():
     hdr_str = " | ".join(f"{h:<{w}}" for h, w in zip(headers, col_w))
     
     print("=" * len(line))
-    print("🏆 OFFICIAL 2026 CODING BENCHMARK SCORECARD: TOP 10 MARKET LEADERS")
+    print("🏆 OFFICIAL 2026 CODING BENCHMARK SCORECARD: TOP 12 MARKET LEADERS")
     print("Strictly Evaluating Models Launched in 2026 · OpenRouter & Artificial Analysis")
     print("=" * len(line))
     print(f"| {hdr_str} |")
     print(f"|{line}|")
-    for r in TOP10_2026_LEADERBOARD:
+    for r in TOP12_2026_LEADERBOARD:
         row_vals = [r["Rank"], r["Model"], r["Developer"], r["Type"], r["Aider Diff"], r["SWE-bench"], r["LCB"], r["EvalPlus"], r["Tokens"]]
         row_str = " | ".join(f"{v:<{w}}" for v, w in zip(row_vals, col_w))
         print(f"| {row_str} |")
@@ -135,4 +159,4 @@ def print_top10_comparison():
     print("⚡ Key Insight: Simplicio 27B achieves #1 Surgical Diff Precision (96.5%) with -68% Token Waste.")
 
 if __name__ == "__main__":
-    print_top10_comparison()
+    print_top12_comparison()

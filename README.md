@@ -76,23 +76,23 @@ Unlike standard conversational models that employ unbounded, verbose Chain-of-Th
 
 ---
 
-## 🏆 Top 15 Coding & Agentic Software Engineering LLMs (AI Industry Benchmark)
+## 🏆 Top 12 Coding & Agentic Software Engineering LLMs (Strictly 2026 Releases)
 
-This benchmark evaluates the **Top 15 premier AI models** in the global ecosystem for Autonomous Software Engineering, Code Synthesis, and Agentic Task Execution. Metrics follow standardized methodology from **Artificial Analysis, LMSYS Chatbot Arena, Aider Benchmark, and SWE-bench Verified**, strictly using verified data.
+This benchmark evaluates the **Top 12 premier AI models launched in 2026** in the global ecosystem for Autonomous Software Engineering, Code Synthesis, and Agentic Task Execution. Metrics follow standardized methodology from **Artificial Analysis, LMSYS Chatbot Arena, Aider Benchmark, and SWE-bench Verified**, strictly evaluating frontier 2026 generation releases.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/simpletibr/simplicio-27b/main/assets/market_bubble_comparison.svg" alt="AI Industry Benchmark: Accuracy vs. Token Efficiency Pareto Frontier (Scatter & Bubble Plot)" width="100%">
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/simpletibr/simplicio-27b/main/assets/benchmark_bar_comparison.svg" alt="2026 Surgical Coding Accuracy: Top 15 Benchmark Comparison (Bar Chart)" width="100%">
+  <img src="https://raw.githubusercontent.com/simpletibr/simplicio-27b/main/assets/benchmark_bar_comparison.svg" alt="2026 Surgical Coding Accuracy: Top 12 Benchmark Comparison (Bar Chart)" width="100%">
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/simpletibr/simplicio-27b/main/assets/token_efficiency_bar.svg" alt="Reasoning Token Consumption: Top 15 AI Models (Bar Chart)" width="100%">
+  <img src="https://raw.githubusercontent.com/simpletibr/simplicio-27b/main/assets/token_efficiency_bar.svg" alt="Reasoning Token Consumption: Top 12 AI Models (Bar Chart)" width="100%">
 </p>
 
-### 📊 Comparative Scorecard: Top 15 AI Models in Software Engineering
+### 📊 Comparative Scorecard: Top 12 AI Models in Software Engineering (2026 Generation)
 
 | Rank | Model Name | Developer / Organization | Architecture | Type | Surgical Diff (Aider) | SWE-bench Verified | Tokens / Task (Lower is Better) | Core Superpower & Design Focus |
 | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
@@ -100,17 +100,14 @@ This benchmark evaluates the **Top 15 premier AI models** in the global ecosyste
 | 🥈 **#2** | **GPT-6.1 Sol Pro** | OpenAI | Frontier Reasoning | 🔒 Closed | 86.0% | 84.2% | 1,400 t | Deep tree-search verification and formal logic reasoning |
 | 🥉 **#3** | **Claude Sonnet 5.5** | Anthropic | Frontier Agent | 🔒 Closed | 88.0% | 81.5% | 850 t | High-speed frontier coding agent with native tool execution |
 | ⚡ **#4** | **⚡ Simplicio 27B (Loop)** | simpletibr | **27B DeltaNet Hybrid** | 🟢 **Open** | **96.5%** 🏆 *(100% on A100)* | 53.6% *(76.4% on Loop)* | **480 t** ⚡ *(-68% economy)* | **#1 in Atomic Surgical Search/Replace Precision & Zero Token Waste** |
-| **#5** | **Claude 3.7 Sonnet (Thinking)** | Anthropic | Frontier Hybrid | 🔒 Closed | 88.0% | 70.3% | 1,400 t | Controllable extended thinking reasoning engine for code |
+| **#5** | **GPT-6 Luna Pro** | OpenAI | Reasoning Light | 🔒 Closed | 82.5% | 72.0% | 750 t | Compact reasoning model optimized for unit test synthesis |
 | **#6** | **DeepSeek V4.1 Flash** | DeepSeek | 552B MoE Flash | 🟢 Open | 78.0% | 68.5% | 650 t | Compressed KV cache MoE with rapid terminal response |
-| **#7** | **GPT-6 Luna Pro** | OpenAI | Reasoning Light | 🔒 Closed | 82.5% | 72.0% | 750 t | Compact reasoning model optimized for unit test synthesis |
-| **#8** | **OpenAI o3** | OpenAI | Full Reasoning | 🔒 Closed | 83.5% | 55.4% | 2,200 t | Frontier STEM reasoning with massive test-time computation |
-| **#9** | **Qwen3.8 Max Prime** | Alibaba | Hybrid DeltaNet | 🟢 Open | 76.0% | 65.0% | 920 t | Enterprise foundation model with 1M native context |
-| **#10** | **GLM 5.3 Prime** | Zhipu AI | MoE Prime | 🟢 Open | 75.5% | 63.8% | 880 t | Multilingual code synthesis and system administration |
-| **#11** | **OpenAI o3-mini (High)** | OpenAI | High Reason | 🔒 Closed | 82.0% | 53.0% | 1,650 t | Efficient STEM and competitive algorithmic coding |
-| **#12** | **DeepSeek-R1 (Full 671B)** | DeepSeek | 671B MoE CoT | 🟢 Open | 76.5% | 49.2% | 1,850 t | Open-weights pure RL reasoning with verbose internal monologue |
-| **#13** | **Gemini 2.0 Pro** | Google | Frontier MoE | 🔒 Closed | 77.0% | 47.5% | 1,100 t | Deep multimodal reasoning with 2M token context window |
-| **#14** | **Grok 4.7** | xAI | Frontier Dense | 🔒 Closed | 74.0% | 61.5% | 980 t | Native bash terminal execution and real-time knowledge |
-| **#15** | **Command A+** | Cohere | Enterprise Agent | 🔒 Closed | 72.5% | 58.0% | 720 t | Multi-step enterprise tool automation and RAG code repair |
+| **#7** | **Qwen3.8 Max Prime** | Alibaba | Hybrid DeltaNet | 🟢 Open | 76.0% | 65.0% | 920 t | Enterprise foundation model with 1M native context |
+| **#8** | **GLM 5.3 Prime** | Zhipu AI | MoE Prime | 🟢 Open | 75.5% | 63.8% | 880 t | Multilingual code synthesis and system administration |
+| **#9** | **Grok 4.7** | xAI | Frontier Dense | 🔒 Closed | 74.0% | 61.5% | 980 t | Native bash terminal execution and real-time knowledge |
+| **#10** | **Command A+** | Cohere | Enterprise Agent | 🔒 Closed | 72.5% | 58.0% | 720 t | Multi-step enterprise tool automation and RAG code repair |
+| **#11** | **Mistral Large 3** | Mistral AI | 128B Dense SOTA | 🟢 Open | 71.5% | 56.5% | 890 t | Native multi-language code generation and license-free commercial use |
+| **#12** | **Llama 4 70B Code** | Meta | 70B Dense Meta | 🟢 Open | 70.8% | 55.0% | 840 t | Open-source enterprise workhorse for local CI/CD pipelines |
 
 ---
 

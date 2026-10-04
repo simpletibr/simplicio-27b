@@ -33,6 +33,7 @@ files_to_upload = [
     ("benchmarks/statistical_proof_n120.json", "benchmarks/statistical_proof_n120.json"),
     ("benchmarks/AUDIT_RESPONSE_AND_PROOF.md", "benchmarks/AUDIT_RESPONSE_AND_PROOF.md"),
     ("benchmarks/prove_benchmark_120.py", "benchmarks/prove_benchmark_120.py"),
+    ("benchmarks/compare_top10_2026.py", "benchmarks/compare_top10_2026.py"),
 ]
 
 # Assets (SVGs and logos)
