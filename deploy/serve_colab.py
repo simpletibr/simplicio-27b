@@ -49,7 +49,7 @@ if public_url:
     try:
         import urllib.request, json
         sync_req = urllib.request.Request(
-            'https://simpleti.com.br/api/set_upstream.php?key=simpleti_2026_simplicio_key',
+            'https://simpleti.com.br/api/set_upstream.php?key=' + os.environ['SIMPLETI_ADMIN_KEY'] + '',
             data=json.dumps({'upstream_url': public_url}).encode('utf-8'),
             headers={'Content-Type': 'application/json', 'User-Agent': 'SimpleTI-Worker/1.0'}
         )
