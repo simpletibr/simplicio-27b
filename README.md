@@ -21,6 +21,7 @@
 ## ⚡ Quick Start & Download / Instalação em 1 Clique
 
 > **📦 Download Direto dos Pesos (LoRA / Checkpoint)**: [🤗 Hugging Face: wesleysimplicio/Simplicio-27B](https://huggingface.co/wesleysimplicio/Simplicio-27B)  
+> O mesmo repositório concentra o adapter, o merge 16-bit (`model-00001-of-00018.safetensors` … `model-00018`) e o GGUF (`Qwen3.8-27B.Q4_K_M.gguf` + `Qwen3.8-27B.BF16-mmproj.gguf`).
 > **🦙 Ollama Library**: [ollama.com/wesleysimplicio/simplicio-27b](https://ollama.com/wesleysimplicio/simplicio-27b)  
 > **⚡ Página Oficial & API**: [simpleti.com.br/simplicio-27b](https://simpleti.com.br/simplicio-27b)
 
