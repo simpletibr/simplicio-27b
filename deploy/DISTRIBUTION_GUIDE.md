@@ -5,46 +5,28 @@ Este documento detalha como disponibilizar e consumir o **Simplicio 27B** nas pr
 
 ---
 
-## 1. 🦙 Distribuição no Ollama
+## 1. 🦙 Ollama
 
-O Ollama requer que o modelo esteja no formato **GGUF**. Como o modelo é de 27B de parâmetros, a quantização recomendada para rodar em hardware de consumo é **Q4_K_M** (~16.8 GB) ou **Q8_0** (~28.5 GB).
+A tag `wesleysimplicio/simplicio-27b:latest` já está na biblioteca do Ollama.
 
-### Passo 1: Converter os pesos para GGUF (via llama.cpp)
-Caso esteja com os pesos do modelo salvos (após merge do LoRA ou download do Hugging Face):
 ```bash
-# 1. Clone o llama.cpp se ainda não tiver
-git clone https://github.com/ggerganov/llama.cpp
-cd llama.cpp && cmake -B build && cmake --build build --config Release -j && cd ..
-
-# 2. Converta Hugging Face -> GGUF BF16
-python3 llama.cpp/convert_hf_to_gguf.py ./checkpoint-final --outfile simplicio-27b-bf16.gguf --outtype bf16
-
-# 3. Quantize para 4-bit (ideal para Macs com 32GB+ ou GPUs com 24GB VRAM)
-./llama.cpp/build/bin/llama-quantize simplicio-27b-bf16.gguf simplicio-27b-Q4_K_M.gguf Q4_K_M
+ollama run wesleysimplicio/simplicio-27b
 ```
 
-### Passo 2: Criar o modelo no Ollama local
-Com o arquivo `Modelfile` presente na raiz do repositório:
+Ela junta os dois arquivos publicados em `wesleysimplicio/Simplicio-27B`:
+
+| Arquivo | Papel | Tamanho |
+|---|---|---|
+| `Qwen3.8-27B.Q4_K_M.gguf` | pesos Q4_K_M | 16810715584 bytes |
+| `Qwen3.8-27B.BF16-mmproj.gguf` | projetor de visão | 931145952 bytes |
+
+O `Modelfile` na raiz usa esses nomes e os mesmos parâmetros da tag publicada: `temperature` 0.2, `top_p` 0.95, `top_k` 40, `repeat_penalty` 1.1, `num_ctx` 32768. A página do Ollama mostra a janela máxima da arquitetura, 256K. O contexto padrão gravado na tag é 32768.
+
+Para recriar a tag nesta pasta, baixe os dois arquivos e rode:
+
 ```bash
 ollama create wesleysimplicio/simplicio-27b -f Modelfile
 ```
-
-### Passo 3: Publicar na Biblioteca do Ollama (Ollama Registry)
-1. Crie sua conta em [ollama.com](https://ollama.com) e cadastre sua chave pública SSH (`~/.ollama/id_ed25519.pub`).
-2. Faça login no terminal:
-   ```bash
-   ollama login
-   ```
-3. Envie o modelo para a comunidade:
-   ```bash
-   ollama push wesleysimplicio/simplicio-27b
-   ```
-4. Qualquer desenvolvedor no mundo poderá rodar instantaneamente:
-   ```bash
-   ollama run wesleysimplicio/simplicio-27b
-   ```
-
----
 
 ## 2. ⚡ Distribuição no OpenRouter
 

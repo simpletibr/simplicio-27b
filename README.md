@@ -291,8 +291,7 @@ Simplicio 27B is fully prepared for local inference, multi-agent CLI harnesses, 
 
 ### 🦙 Ollama Local Execution
 ```bash
-# Run directly via Ollama
-ollama create wesleysimplicio/simplicio-27b -f Modelfile
+# Tag publicada: Q4_K_M + projetor de visao (texto e imagem)
 ollama run wesleysimplicio/simplicio-27b
 ```
 

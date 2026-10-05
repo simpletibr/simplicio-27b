@@ -1,9 +1,9 @@
 # Ollama Modelfile for Simplicio 27B
-# Architecture: 27B Dense/Hybrid Foundation Model
-# Optimized for: Atomic Search/Replace Diffs & Zero-Token-Waste Execution
-# Quantization recommended: Q4_K_M (~16.8 GB) or Q8_0 (~28.5 GB)
+# Published tag: ollama run wesleysimplicio/simplicio-27b
+# Local recreate expects these two files from huggingface.co/wesleysimplicio/Simplicio-27B
 
-FROM ./simplicio-27b-Q4_K_M.gguf
+FROM ./Qwen3.8-27B.Q4_K_M.gguf
+FROM ./Qwen3.8-27B.BF16-mmproj.gguf
 
 # Generation Parameters
 PARAMETER temperature 0.2

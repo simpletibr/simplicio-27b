@@ -25,7 +25,7 @@ echo "------------------------------------------------------------------"
 
 # 1. Verificar ou instalar Ollama
 if command -v ollama >/dev/null 2>&1; then
-    echo -e "✅ Ollama detectado: ollama version is 0.31.1"
+    echo -e "✅ Ollama detectado: $(ollama --version)"
 else
     echo -e "📦 Instalando Ollama no sistema..."
     curl -fsSL https://ollama.com/install.sh | sh
