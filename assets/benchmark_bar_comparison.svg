@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 720" width="1000" height="720">
+  <defs>
+    <linearGradient id="bgBarGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080C14"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="simplicioBarH" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0284C7"/>
+      <stop offset="100%" stop-color="#38BDF8"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1000" height="720" rx="16" fill="url(#bgBarGrad)" stroke="#1E293B" stroke-width="2"/>
+
+  <!-- simpleti Logo Badge -->
+  <g transform="translate(850, 24)">
+    <circle cx="16" cy="16" r="14" fill="#0284C7" fill-opacity="0.25"/>
+    <path d="M11 11 C11 8.5, 14 7, 17 7 C20 7, 22 8.5, 22 11 C22 13.5, 15 14, 15 17 C15 19.5, 18 21, 21 21" fill="none" stroke="#38BDF8" stroke-width="2.6" stroke-linecap="round"/>
+    <circle cx="21" cy="21" r="1.6" fill="#38BDF8"/>
+    <circle cx="11" cy="11" r="1.6" fill="#38BDF8"/>
+    <text x="36" y="21" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="700">simple<tspan fill="#38BDF8">ti</tspan></text>
+  </g>
+
+  <!-- Title -->
+  <text x="40" y="42" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" font-weight="800">📊 2026 SURGICAL CODING ACCURACY: TOP 12 BENCHMARK COMPARISON</text>
+  <text x="40" y="68" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13">Aider Search/Replace Surgical Diff Accuracy (%) · Strictly 2026 Releases (Artificial Analysis Methodology)</text>
+
+  <!-- Legend -->
+  <g transform="translate(640, 48)">
+    <rect x="0" y="0" width="14" height="14" rx="3" fill="url(#simplicioBarH)"/>
+    <text x="20" y="11" fill="#38BDF8" font-family="sans-serif" font-size="12" font-weight="700">⚡ Simplicio 27B</text>
+    <rect x="140" y="0" width="14" height="14" rx="3" fill="#64748B"/>
+    <text x="160" y="11" fill="#CBD5E1" font-family="sans-serif" font-size="12">Market Models</text>
+  </g>
+  <rect x="25" y="106" width="950" height="38" rx="6" fill="#0C4A6E" fill-opacity="0.35" stroke="#38BDF8" stroke-width="1.2"/>
+  <text x="225" y="128" fill="#38BDF8" font-family="sans-serif" font-size="12" font-weight="800" text-anchor="end">⚡ Simplicio 27B (Loop)</text>
+  <rect x="240" y="114" width="680" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="114" width="656.1999999999999" height="20" rx="4" fill="url(#simplicioBarH)"/>
+  <text x="908.1999999999999" y="129" fill="#38BDF8" font-family="sans-serif" font-size="12" font-weight="700">96.5% 🏆</text>
+  <text x="225" y="172" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">Claude Opus 5.5</text>
+  <rect x="240" y="158" width="680" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="158" width="608.6" height="20" rx="4" fill="#64748B"/>
+  <text x="860.6" y="173" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">89.5%</text>
+  <text x="225" y="216" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">Claude Sonnet 5.5</text>
+  <rect x="240" y="202" width="680" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="202" width="598.4" height="20" rx="4" fill="#64748B"/>
+  <text x="850.4" y="217" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">88.0%</text>
+  <text x="225" y="260" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">Gemini 4 Argon</text>
+  <rect x="240" y="246" width="680" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="246" width="595.0" height="20" rx="4" fill="#64748B"/>
+  <text x="847.0" y="261" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">87.5%</text>
+  <text x="225" y="304" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">GPT-6.1 Sol Pro</text>
+  <rect x="240" y="290" width="680" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="290" width="584.8" height="20" rx="4" fill="#64748B"/>
+  <text x="836.8" y="305" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">86.0%</text>
+  <text x="225" y="348" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">MiMo-V2.6-Pro</text>
+  <rect x="240" y="334" width="680" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="334" width="579.36" height="20" rx="4" fill="#3B82F6"/>
+  <text x="831.36" y="349" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">85.2%</text>
+  <text x="225" y="392" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">Muse Spark 1.3</text>
+  <rect x="240" y="378" width="680" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="378" width="574.6" height="20" rx="4" fill="#64748B"/>
+  <text x="826.6" y="393" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">84.5%</text>
+  <text x="225" y="436" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">GPT-6 Luna Pro</text>
+  <rect x="240" y="422" width="680" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="422" width="561.0" height="20" rx="4" fill="#64748B"/>
+  <text x="813.0" y="437" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">82.5%</text>
+  <text x="225" y="480" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">DeepSeek V4.1 Flash</text>
+  <rect x="240" y="466" width="680" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="466" width="530.4" height="20" rx="4" fill="#3B82F6"/>
+  <text x="782.4" y="481" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">78.0%</text>
+  <text x="225" y="524" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">Qwen3.8 Max Prime</text>
+  <rect x="240" y="510" width="680" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="510" width="516.8" height="20" rx="4" fill="#3B82F6"/>
+  <text x="768.8" y="525" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">76.0%</text>
+  <text x="225" y="568" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">GLM 5.3 Prime</text>
+  <rect x="240" y="554" width="680" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="554" width="513.4" height="20" rx="4" fill="#3B82F6"/>
+  <text x="765.4" y="569" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">75.5%</text>
+  <text x="225" y="612" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="end">Grok 4.7</text>
+  <rect x="240" y="598" width="680" height="20" rx="4" fill="#1E293B"/>
+  <rect x="240" y="598" width="503.2" height="20" rx="4" fill="#64748B"/>
+  <text x="755.2" y="613" fill="#E2E8F0" font-family="sans-serif" font-size="12" font-weight="700">74.0%</text>
+</svg>
