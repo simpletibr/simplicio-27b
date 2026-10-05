@@ -1,0 +1,55 @@
+{
+  "protocol": "live-colab-g4-bf16-t0",
+  "loader": "bf16-full",
+  "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "vram_gb": 95.0,
+  "dtype": "torch.bfloat16",
+  "params_b": 27.36,
+  "alloc_gb": 51.0,
+  "shard_gib": 51.75,
+  "n": 120,
+  "functional_pass": 56,
+  "functional_rate": 0.4667,
+  "diff_matched": 104,
+  "ast_valid": 104,
+  "zero_ghost_apis": 120,
+  "unit_test_passed": 56,
+  "mean_tokens": 69.9,
+  "max_tokens": 103,
+  "seconds": 438.4,
+  "categories": {
+    "1_surgical_diff_ast_precision": {
+      "n": 30,
+      "pass": 17,
+      "diff": 20,
+      "ast": 20,
+      "ghost": 30,
+      "test": 17
+    },
+    "2_functional_correctness_edge_cases": {
+      "n": 30,
+      "pass": 6,
+      "diff": 27,
+      "ast": 27,
+      "ghost": 30,
+      "test": 6
+    },
+    "3_ghost_api_and_deprecated_traps": {
+      "n": 30,
+      "pass": 27,
+      "diff": 30,
+      "ast": 30,
+      "ghost": 30,
+      "test": 27
+    },
+    "4_adversarial_and_out_of_distribution": {
+      "n": 30,
+      "pass": 6,
+      "diff": 27,
+      "ast": 27,
+      "ghost": 30,
+      "test": 6
+    }
+  },
+  "note": "Aggregate of /content/simplicio_live_bf16.json on the Colab G4 after the full BF16 run. The previous 116/120 file is benchmarks/statistical_proof_n120.json and did not call the model."
+}

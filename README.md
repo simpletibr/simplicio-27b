@@ -134,7 +134,9 @@ This benchmark evaluates the **Top 12 premier AI models launched in 2026** in th
 
 Os gráficos abaixo usam o mesmo tipo de barra, tabela e amostragem da [Artificial Analysis](https://artificialanalysis.ai/agents/coding-agents). Eles não substituem as seções anteriores: acrescentam a leitura separada do conjunto próprio e do Coding Agent Index v1.5.
 
-O conjunto próprio continua sendo as 120 tarefas não vistas, 1 tentativa, temperature 0, pareadas com Qwen3.8-27B base. A tabela 2×2 em `benchmarks/statistical_proof_n120.json` dá 116/120 para o Simplicio 27B e 42/120 para a base. Opus 5.5, Sonnet 5.5 e GPT-6.1 Sol não foram medidos nesse conjunto. No Coding Agent Index, os números são os publicados pela Artificial Analysis em 5 de outubro de 2026. O Simplicio 27B ainda não tem ponto nesse índice: a medição no Colab está em andamento.
+O conjunto próprio foi executado no modelo cheio, BF16, 27,36B parâmetros, no Google Colab G4 (NVIDIA RTX PRO 6000 Blackwell, 95 GB). São 120 tarefas não vistas, 1 tentativa, temperature 0. A geração para em `</deliver>`. Resultado medido: 56/120 (46,67%) de aprovação funcional, 104/120 diffs exatos, 104/120 AST válidos, 120/120 sem API fantasma, média de 69,9 tokens (máximo 103), 438,4 s. Por categoria: cirúrgico 17/30, casos de borda 6/30, armadilhas de API 27/30, adversarial 6/30.
+
+O arquivo `benchmarks/statistical_proof_n120.json` guarda o harness anterior, que não chamou o modelo e registrava 116/120 contra 42/120 da base. Opus 5.5, Sonnet 5.5 e GPT-6.1 Sol não foram medidos nesse conjunto. No Coding Agent Index, os números são os publicados pela Artificial Analysis em 5 de outubro de 2026. O Simplicio 27B não tem ponto nesse índice.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/simpletibr/simplicio-27b/main/assets/aa_pass_rate.png" alt="Taxa de aprovação no conjunto de 120 tarefas" width="100%">
@@ -158,8 +160,10 @@ O conjunto próprio continua sendo as 120 tarefas não vistas, 1 tentativa, temp
 
 | Avaliação | Amostragem | Simplicio 27B | Opus 5.5 (max) | Sonnet 5.5 (max) | GPT-6.1 Sol (xhigh) |
 |---|---|---:|---:|---:|---:|
-| Aprovação no conjunto próprio | 120 tarefas, 1 tentativa, T=0 | 96,67% (116/120) | não medido | não medido | não medido |
-| Tokens de saída no conjunto próprio | média | 480,5 | não medido | não medido | não medido |
+| Aprovação no conjunto próprio | 120 tarefas, 1 tentativa, T=0, BF16 no G4 | 46,67% (56/120) | não medido | não medido | não medido |
+| Diff exato no conjunto próprio | mesma corrida | 86,67% (104/120) | não medido | não medido | não medido |
+| Tokens de saída no conjunto próprio | média, parada em `</deliver>` | 69,9 | não medido | não medido | não medido |
+| Harness anterior | `statistical_proof_n120.json`, sem chamada de modelo | 96,67% (116/120) | não medido | não medido | não medido |
 | Coding Agent Index v1.5 | 3 benchmarks, 3 tentativas | não avaliado | 66 | 68 | 63 |
 | DeepSWE v1.1 | 113 tarefas | não avaliado | 68% | 72% | 73% |
 | Terminal-Bench 4.0 | 66 tarefas | não avaliado | 63% | 66% | 55% |
