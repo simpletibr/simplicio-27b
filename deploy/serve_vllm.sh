@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Servidor de Produção vLLM (OpenAI-Compatible API) para Simplicio 27B
-# Compatível com OpenRouter, OpenCode, Aider, Continue.dev e Cursor
+# Production vLLM server (OpenAI-compatible API) for Simplicio 27B
+# Works with OpenCode, Continue.dev, Cursor and other OpenAI-compatible clients
 # Closes: simpletibr/simplicio-27b#2 simpletibr/simplicio-27b#3
 # ==============================================================================
 set -euo pipefail
@@ -17,7 +17,7 @@ HOST="${HOST:-0.0.0.0}"
 PLUGIN="${ROOT}/deploy/simplicio_tool_parser.py"
 TEMPLATE="${ROOT}/deploy/chat_template_chatml.jinja"
 
-echo "=== Iniciando vLLM OpenAI-Compatible Server para $MODEL_ID na porta $PORT (max-model-len ${MAX_MODEL_LEN}) ==="
+echo "=== Starting vLLM OpenAI-compatible server for $MODEL_ID on port $PORT (max-model-len ${MAX_MODEL_LEN}) ==="
 
 exec vllm serve "$MODEL_ID" \
     --host "$HOST" \
