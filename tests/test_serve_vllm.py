@@ -1,4 +1,4 @@
-"""Guardrails for deploy/serve_vllm.sh, chat template, and README (#2 / #3)."""
+"""Guardrails for deploy/serve_vllm.sh, chat template, and README."""
 
 from __future__ import annotations
 
@@ -12,6 +12,14 @@ TEMPLATE = (ROOT / "deploy" / "chat_template_chatml.jinja").read_text(encoding="
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 COLAB = (ROOT / "Simplicio_27B_Serve_Colab.ipynb").read_text(encoding="utf-8")
 INSTRUCT = (ROOT / "deploy" / "hf_instruct.json").read_text(encoding="utf-8")
+CONTEXT = (ROOT / "deploy" / "context.env").read_text(encoding="utf-8")
+
+
+def max_model_len() -> str:
+    for line in CONTEXT.splitlines():
+        if line.startswith("MAX_MODEL_LEN="):
+            return line.split("=", 1)[1].strip()
+    raise AssertionError("MAX_MODEL_LEN missing")
 
 
 class ServeScriptTests(unittest.TestCase):
@@ -25,12 +33,13 @@ class ServeScriptTests(unittest.TestCase):
             "--tool-parser-plugin",
             "--reasoning-parser qwen3",
             "--chat-template",
-            "--max-model-len 32768",
+            "--max-model-len \"${MAX_MODEL_LEN}\"",
             "simplicio-27b",
             "simpleti/simplicio-27b",
             "<|im_end|>",
             "</deliver>",
             "</tool>",
+            "context.env",
         ):
             self.assertIn(token, SERVE, token)
 
@@ -50,12 +59,14 @@ class ChatTemplateTests(unittest.TestCase):
         self.assertIn('"instruct_type": "chatml"', INSTRUCT)
         self.assertIn("qwen3", INSTRUCT)
         self.assertIn("simplicio", INSTRUCT)
+        self.assertIn(max_model_len(), INSTRUCT)
 
 
 class ReadmeTests(unittest.TestCase):
     def test_readme_serve_is_the_script(self) -> None:
         self.assertIn("./deploy/serve_vllm.sh", README)
-        self.assertNotIn("--max-model-len 4096", README)
+        self.assertIsNone(__import__("re").search(r"--max-model-len 4096(?!\d)", README))
+        self.assertIn(f"--max-model-len {max_model_len()}", README)
 
     def test_readme_documents_tool_flags(self) -> None:
         self.assertIn("--enable-auto-tool-choice", README)
@@ -63,20 +74,13 @@ class ReadmeTests(unittest.TestCase):
         self.assertIn("simpleti/simplicio-27b", README)
 
 
+class ColabTests(unittest.TestCase):
+    def test_colab_runs_serve_colab(self) -> None:
+        self.assertIn("deploy/serve_colab.py", COLAB)
+        self.assertIn("context.env", COLAB)
+        self.assertIn("completion_gate.py", COLAB)
+        self.assertNotIn("16384", COLAB)
+
+
 if __name__ == "__main__":
     unittest.main()
-
-
-class ColabTests(unittest.TestCase):
-    def test_colab_serve_flags(self) -> None:
-        for token in (
-            "--enable-auto-tool-choice",
-            "--tool-call-parser",
-            "simplicio",
-            "--reasoning-parser",
-            "qwen3",
-            "simpleti/simplicio-27b",
-            "--max-model-len",
-            "32768",
-        ):
-            self.assertIn(token, COLAB, token)
