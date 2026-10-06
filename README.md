@@ -14,6 +14,8 @@ tags:
 - surgical-diff
 - agentic-coding
 pipeline_tag: text-generation
+pretty_name: Simplicio 27B
+homepage: https://simpleti.com.br/simplicio-27b/
 ---
 
 <p align="center">
