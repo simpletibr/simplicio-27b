@@ -1,0 +1,8 @@
+{
+  "instruct_type": "chatml",
+  "chat_template_file": "deploy/chat_template_chatml.jinja",
+  "reasoning_parser": "qwen3",
+  "tool_call_parser": "simplicio",
+  "stop": ["<|im_end|>", "<|endoftext|>", "</deliver>", "</tool>\n<tool>"],
+  "served_model_names": ["simplicio-27b", "simpleti/simplicio-27b"]
+}
