@@ -57,7 +57,7 @@ Se você hospedar o Simplicio 27B em uma instância com GPU (ex: RunPod, Lambda 
 
 O Simplicio 27B foi desenhado para agir como motor cirúrgico de código (SEARCH/REPLACE) e execuções agenticas. Veja como conectá-lo às ferramentas:
 
-### A. Aider (CLI Agent - 96.5% de Precisão Cirúrgica)
+### A. Aider (CLI Agent)
 O Aider é a principal ferramenta de pair programming via terminal.
 ```bash
 # Via Ollama local:
