@@ -19,34 +19,27 @@ echo "  ╚════██║ ██║██║╚██╔╝██║█�
 echo "  ███████║ ██║██║ ╚═╝ ██║██║     ███████╗██║╚██████╗██║╚██████╔╝    ███████╗   ██║  ██████╔╝"
 echo "  ╚══════╝ ╚═╝╚═╝     ╚═╝╚═╝     ╚══════╝╚═╝ ╚═════╝╚═╝ ╚═════╝     ╚══════╝   ╚═╝  ╚═════╝ "
 echo -e ""
-echo -e "⚡ Simplicio 27B · Instalador e Inicializador Rápido"
-echo "🌐 SimpleTI: https://simpleti.com.br/simplicio-27b"
+echo -e "⚡ Simplicio 27B · Installer and runner"
+echo "🌐 SimpleTI: https://simpleti.com.br/simplicio-27b/"
 echo "------------------------------------------------------------------"
 
-# 1. Verificar ou instalar Ollama
+# 1. Check for Ollama, install it if missing
 if command -v ollama >/dev/null 2>&1; then
-    echo -e "✅ Ollama detectado: $(ollama --version)"
+    echo -e "✅ Ollama found: $(ollama --version)"
 else
-    echo -e "📦 Instalando Ollama no sistema..."
+    echo -e "📦 Installing Ollama..."
     curl -fsSL https://ollama.com/install.sh | sh
 fi
 
-# 2. Verificar OpenCode
+# 2. Check for OpenCode
 if command -v opencode >/dev/null 2>&1; then
-    echo -e "✅ OpenCode CLI detectado!"
-    echo "   Dica: Para rodar no OpenCode execute:"
-    echo "   opencode -m openrouter/simpleti/simplicio-27b"
+    echo -e "✅ OpenCode CLI found."
+    echo "   OpenCode needs tool calls, which the vLLM server provides. Setup:"
+    echo "   https://github.com/simpletibr/simplicio-27b#opencode"
 fi
 
-# 3. Verificar Aider
-if command -v aider >/dev/null 2>&1; then
-    echo -e "✅ Aider CLI detectado!"
-    echo "   Dica: Para rodar no Aider execute:"
-    echo "   aider --model ollama_chat/wesleysimplicio/simplicio-27b:latest"
-fi
-
-# 4. Iniciar Simplicio 27B
+# 3. Start Simplicio 27B
 echo ""
-echo -e "🚀 Baixando e iniciando o Simplicio 27B no Ollama..."
+echo -e "🚀 Downloading and starting Simplicio 27B in Ollama..."
 echo "------------------------------------------------------------------"
 exec ollama run wesleysimplicio/simplicio-27b
