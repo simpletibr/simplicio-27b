@@ -41,7 +41,7 @@ O OpenRouter não hospeda GPUs próprias; ele funciona como um roteador e agrega
 
 ### Opção B: Cadastrar seu próprio Endpoint como Provedor (BYO Endpoint)
 Se você hospedar o Simplicio 27B em uma instância com GPU (ex: RunPod, Lambda Labs, Scaleway ou servidor próprio com vLLM):
-1. Inicie o servidor vLLM:
+1. Inicie o servidor vLLM (`--enable-auto-tool-choice`, `--tool-call-parser simplicio`, `--reasoning-parser qwen3`, nomes `simplicio-27b` e `simpleti/simplicio-27b`):
    ```bash
    ./deploy/serve_vllm.sh wesleysimplicio/Simplicio-27B 8000
    ```

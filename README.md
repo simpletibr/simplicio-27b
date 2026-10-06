@@ -198,7 +198,7 @@ To validate real-world production performance, Simplicio 27B was benchmarked acr
 
 ## Output Format
 
-Simplicio 27B formats code modifications using strict surgical diff blocks:
+On the OpenAI-compatible server, chain-of-thought is parsed out of `content` by `--reasoning-parser qwen3` (the generation prompt prefills `<think>`). A tool turn is a single `tool_calls` entry parsed from `<tool><name>…</name><params>…`. Code modifications use surgical diff blocks:
 
 ```xml
 <thought>
@@ -277,10 +277,13 @@ merged.save_pretrained('./simplicio-27b-merged')
 "
 ```
 
-Serve with vLLM:
+Serve with vLLM (tool calling, Qwen3 reasoning split, both OpenCode model ids):
+
 ```bash
-vllm serve ./simplicio-27b-merged     --tensor-parallel-size 1     --max-model-len 4096     --gpu-memory-utilization 0.90
+./deploy/serve_vllm.sh ./simplicio-27b-merged 8000
 ```
+
+The script enables `--enable-auto-tool-choice`, `--tool-call-parser simplicio`, `--reasoning-parser qwen3`, `--max-model-len 32768`, ChatML + `<think>` prefill, and serves both `simplicio-27b` and `simpleti/simplicio-27b`. Hugging Face `instruct_type` for this template is `chatml` (`deploy/hf_instruct.json`).
 
 ---
 
@@ -313,6 +316,7 @@ Generating diff tags does not guarantee software engineering correctness:
 
 ### 5. Special Tokens Registration & Attention Dynamics
 - **Dedicated Vocabulary Tokens**: Protocol tags are registered as dedicated `special_tokens` in the tokenizer rather than split into disparate BPE fragments.
+- **Instruct type**: `chatml`. Copy `deploy/chat_template_chatml.jinja` onto the merged checkpoint / Hugging Face card (`wesleysimplicio/Simplicio-27B`) as `chat_template`, with `instruct_type` `chatml` as in `deploy/hf_instruct.json`.
 - **Attention Salience**: Dedicated embeddings ensure that self-attention layers maintain high saliency on structural boundaries, preventing attention dispersion across long context windows.
 
 ---
