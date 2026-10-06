@@ -283,7 +283,7 @@ Serve with vLLM (tool calling, Qwen3 reasoning split, both OpenCode model ids):
 ./deploy/serve_vllm.sh ./simplicio-27b-merged 8000
 ```
 
-The script enables `--enable-auto-tool-choice`, `--tool-call-parser simplicio`, `--reasoning-parser qwen3`, `--max-model-len 32768`, ChatML + `<think>` prefill, and serves both `simplicio-27b` and `simpleti/simplicio-27b`. Hugging Face `instruct_type` for this template is `chatml` (`deploy/hf_instruct.json`).
+Context length is the single value in `deploy/context.env` (`MAX_MODEL_LEN=40960`: measured OpenCode prompt 31692 plus a 4096 output budget). The script enables `--enable-auto-tool-choice`, `--tool-call-parser simplicio`, `--reasoning-parser qwen3`, `--max-model-len 40960`, ChatML + `<think>` prefill, and serves both `simplicio-27b` and `simpleti/simplicio-27b`. Hugging Face `instruct_type` for this template is `chatml` (`deploy/hf_instruct.json`).
 
 ---
 

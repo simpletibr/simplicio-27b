@@ -4,5 +4,6 @@
   "reasoning_parser": "qwen3",
   "tool_call_parser": "simplicio",
   "stop": ["<|im_end|>", "<|endoftext|>", "</deliver>", "</tool>\n<tool>"],
-  "served_model_names": ["simplicio-27b", "simpleti/simplicio-27b"]
+  "served_model_names": ["simplicio-27b", "simpleti/simplicio-27b"],
+  "max_model_len": 40960
 }

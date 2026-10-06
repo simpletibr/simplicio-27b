@@ -20,7 +20,7 @@ Ela junta os dois arquivos publicados em `wesleysimplicio/Simplicio-27B`:
 | `Qwen3.8-27B.Q4_K_M.gguf` | pesos Q4_K_M | 16810715584 bytes |
 | `Qwen3.8-27B.BF16-mmproj.gguf` | projetor de visão | 931145952 bytes |
 
-O `Modelfile` na raiz usa esses nomes e os mesmos parâmetros da tag publicada: `temperature` 0.2, `top_p` 0.95, `top_k` 40, `repeat_penalty` 1.1, `num_ctx` 32768. A página do Ollama mostra a janela máxima da arquitetura, 256K. O contexto padrão gravado na tag é 32768.
+O `Modelfile` na raiz usa esses nomes e os mesmos parâmetros da tag publicada: `temperature` 0.2, `top_p` 0.95, `top_k` 40, `repeat_penalty` 1.1, `num_ctx` 40960. A página do Ollama mostra a janela máxima da arquitetura, 256K. O contexto padrão gravado na tag é 40960 (`deploy/context.env`).
 
 Para recriar a tag nesta pasta, baixe os dois arquivos e rode:
 
