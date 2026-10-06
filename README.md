@@ -11,9 +11,12 @@
 <p align="center">
   <a href="https://huggingface.co/wesleysimplicio/Simplicio-27B"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Simplicio--27B-yellow.svg" alt="Hugging Face"></a>
   <a href="https://github.com/simpletibr/simplicio-27b"><img src="https://img.shields.io/badge/GitHub-Repository-blue?logo=github" alt="GitHub"></a>
-  <a href="https://simpleti.com.br/simplicio-27b"><img src="https://img.shields.io/badge/SimpleTI-Official%20Page-0081FB" alt="SimpleTI"></a>
+  <a href="https://simpleti.com.br/simplicio-27b/"><img src="https://img.shields.io/badge/SimpleTI-Official%20Page-0081FB" alt="SimpleTI"></a>
   <a href="https://github.com/simpletibr/simplicio-27b/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-green.svg" alt="License"></a>
   <a href="https://unsloth.ai"><img src="https://img.shields.io/badge/Fine--tuned%20with-Unsloth-darkgreen" alt="Unsloth"></a>
+</p>
+<p align="center">
+  <strong>Website:</strong> <a href="https://simpleti.com.br/simplicio-27b/">https://simpleti.com.br/simplicio-27b/</a>
 </p>
 
 ---
@@ -23,7 +26,7 @@
 > **📦 Download Direto dos Pesos (LoRA / Checkpoint)**: [🤗 Hugging Face: wesleysimplicio/Simplicio-27B](https://huggingface.co/wesleysimplicio/Simplicio-27B)  
 > O mesmo repositório concentra o adapter, o merge 16-bit (`model-00001-of-00018.safetensors` … `model-00018`) e o GGUF (`Qwen3.8-27B.Q4_K_M.gguf` + `Qwen3.8-27B.BF16-mmproj.gguf`).
 > **🦙 Ollama Library**: [ollama.com/wesleysimplicio/simplicio-27b](https://ollama.com/wesleysimplicio/simplicio-27b)  
-> **⚡ Página Oficial & API**: [simpleti.com.br/simplicio-27b](https://simpleti.com.br/simplicio-27b)
+> **⚡ Página Oficial & API**: [simpleti.com.br/simplicio-27b](https://simpleti.com.br/simplicio-27b/)
 
 ### 1. 🚀 Script de Instalação e Execução Automática (macOS / Linux)
 Instala automaticamente dependências necessárias e inicia o modelo com 1 comando:
@@ -55,7 +58,7 @@ aider --model ollama_chat/wesleysimplicio/simplicio-27b:latest --edit-format dif
 
 ## Simplicio 27B Highlights
 
-**Simplicio 27B** is a specialized, open-weights software engineering foundation model derived from **Qwen3.8-27B** and fine-tuned via **Unsloth (QLoRA 4-bit)** using proprietary atomic diff synthesis trajectories developed by Wesley Simplicio at **SimpleTI** ([simpleti.com.br](https://simpleti.com.br/simplicio-27b)).
+**Simplicio 27B** is a specialized, open-weights software engineering foundation model derived from **Qwen3.8-27B** and fine-tuned via **Unsloth (QLoRA 4-bit)** using proprietary atomic diff synthesis trajectories developed by Wesley Simplicio at **SimpleTI** ([simpleti.com.br](https://simpleti.com.br/simplicio-27b/)).
 
 - 🎯 **96.5% Surgical Code Accuracy**: #1 in high-precision atomic SEARCH/REPLACE code patch execution without whole-file hallucinations.
 - ⚡ **480 Tokens/Task**: Consumes up to **-68% fewer tokens** per coding resolution compared to frontier 2026 reasoning models.
@@ -374,7 +377,7 @@ If you utilize **Simplicio 27B** in your research, agentic tools, or evaluation 
 ```
 
 ### 🔗 Official Repositories & Resources
-- **Official Product Page**: [https://simpleti.com.br/simplicio-27b](https://simpleti.com.br/simplicio-27b)
+- **Official Product Page**: [https://simpleti.com.br/simplicio-27b/](https://simpleti.com.br/simplicio-27b/)
 - **Hugging Face Model & LoRA Weights**: [https://huggingface.co/wesleysimplicio/Simplicio-27B](https://huggingface.co/wesleysimplicio/Simplicio-27B)
 - **Author**: Wesley Simplicio ([SimpleTI](https://simpleti.com.br))
 - **Base Architecture**: Qwen Team ([Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B))
