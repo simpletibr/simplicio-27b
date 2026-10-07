@@ -245,6 +245,17 @@ An earlier script, [`train_simplicio_27b.py`](https://github.com/simpletibr/simp
 | `benchmarks/live_colab_g4_bf16_n120.json` | The results above |
 | `tests/` | Tests for the serving code: `python3 -m unittest discover -s tests` |
 
+## Development
+
+Requirements: `python3`, `ruff`, `shellcheck`, `php` and `make`.
+
+```bash
+make check                           # unittest, ruff F/E9, shellcheck, php -l, vLLM args
+git config core.hooksPath .githooks  # once per clone: run make check before every push
+```
+
+`make check` parses the exact `vllm serve` argv from `deploy/serve_vllm.sh` with vLLM's own CLI parser when `vllm==0.31.0` is importable; otherwise that step prints `SKIP`. There is no CI: all checks run locally. Commit subjects are one plain sentence, without a `type:` prefix.
+
 ## Citation
 
 ```bibtex
