@@ -39,8 +39,9 @@ Simplicio 27B is not listed on OpenRouter yet. OpenRouter does not host models; 
 
 ### Option B: your own endpoint
 If you host the model on your own GPU (RunPod, Lambda Labs, Scaleway or your own server):
-1. Start the vLLM server (`--enable-auto-tool-choice`, `--tool-call-parser simplicio`, `--reasoning-parser qwen3`, model names `simplicio-27b` and `simpleti/simplicio-27b`):
+1. Install `vllm==0.31.0` and start the server. The script serves the merged BF16 weights with `--enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser qwen3`, thinking off by default and model names `simplicio-27b` and `simpleti/simplicio-27b`:
    ```bash
+   pip install vllm==0.31.0
    ./deploy/serve_vllm.sh wesleysimplicio/Simplicio-27B 8000
    ```
 2. Expose the endpoint over HTTPS (Cloudflare Tunnel, Caddy or Nginx).

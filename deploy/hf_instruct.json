@@ -1,9 +1,9 @@
 {
-  "instruct_type": "chatml",
-  "chat_template_file": "deploy/chat_template_chatml.jinja",
+  "instruct_type": "qwen3",
+  "chat_template": "model",
+  "default_chat_template_kwargs": {"enable_thinking": false},
   "reasoning_parser": "qwen3",
-  "tool_call_parser": "simplicio",
-  "stop": ["<|im_end|>", "<|endoftext|>", "</deliver>", "</tool>\n<tool>"],
+  "tool_call_parser": "qwen3_coder",
   "served_model_names": ["simplicio-27b", "simpleti/simplicio-27b"],
   "max_model_len": 40960
 }

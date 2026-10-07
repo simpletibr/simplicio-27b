@@ -1,37 +1,33 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# Production vLLM server (OpenAI-compatible API) for Simplicio 27B
-# Works with OpenCode, Continue.dev, Cursor and other OpenAI-compatible clients
-# Closes: simpletibr/simplicio-27b#2 simpletibr/simplicio-27b#3
-# ==============================================================================
+# Simplicio 27B: the only vLLM serve command (README, Colab, self-hosting).
+# Serves the merged BF16 checkpoint with the model's own chat template and
+# vLLM's built-in Qwen parsers. Requires vllm==0.31.0.
+# Usage: ./deploy/serve_vllm.sh [MODEL_ID] [PORT]
+# Env:   HOST (default 0.0.0.0), GPU_MEM (default 0.92), VLLM_BIN (default vllm)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck disable=SC1091
 set -a
+# shellcheck disable=SC1091
 . "${ROOT}/deploy/context.env"
 set +a
-MODEL_ID=${1:-"wesleysimplicio/Simplicio-27B"}
-PORT=${2:-8000}
+
+MODEL_ID="${1:-wesleysimplicio/Simplicio-27B}"
+PORT="${2:-8000}"
 HOST="${HOST:-0.0.0.0}"
-PLUGIN="${ROOT}/deploy/simplicio_tool_parser.py"
-TEMPLATE="${ROOT}/deploy/chat_template_chatml.jinja"
+GPU_MEM="${GPU_MEM:-0.92}"
+VLLM_BIN="${VLLM_BIN:-vllm}"
 
-echo "=== Starting vLLM OpenAI-compatible server for $MODEL_ID on port $PORT (max-model-len ${MAX_MODEL_LEN}) ==="
+echo "=== vLLM ${MODEL_ID} on ${HOST}:${PORT} (max-model-len ${MAX_MODEL_LEN}) ==="
 
-exec vllm serve "$MODEL_ID" \
-    --host "$HOST" \
-    --port "$PORT" \
-    --tensor-parallel-size 1 \
+exec "${VLLM_BIN}" serve "${MODEL_ID}" \
+    --host "${HOST}" \
+    --port "${PORT}" \
     --max-model-len "${MAX_MODEL_LEN}" \
-    --gpu-memory-utilization 0.95 \
-    --chat-template "$TEMPLATE" \
-    --enable-auto-tool-choice \
-    --tool-parser-plugin "$PLUGIN" \
-    --tool-call-parser simplicio \
-    --reasoning-parser qwen3 \
+    --gpu-memory-utilization "${GPU_MEM}" \
     --served-model-name simplicio-27b simpleti/simplicio-27b \
-    --stop '<|im_end|>' \
-    --stop '<|endoftext|>' \
-    --stop '</deliver>' \
-    --stop $'</tool>\n<tool>'
+    --enable-auto-tool-choice \
+    --tool-call-parser qwen3_coder \
+    --reasoning-parser qwen3 \
+    --default-chat-template-kwargs '{"enable_thinking": false}' \
+    --enable-force-include-usage
