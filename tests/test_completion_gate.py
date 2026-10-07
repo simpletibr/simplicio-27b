@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy"))
 
-from completion_gate import enforce  # noqa: E402
+from completion_gate import StreamCheck, enforce, sse_error_event  # noqa: E402
 
 
 def _ok_json(**overrides):
@@ -62,30 +62,57 @@ class JsonGateTests(unittest.TestCase):
         self.assertEqual(body, raw)
 
 
-class SseGateTests(unittest.TestCase):
+class StreamCheckTests(unittest.TestCase):
+    def _check(self, *lines: bytes) -> StreamCheck:
+        check = StreamCheck()
+        for line in lines:
+            check.feed(line)
+        return check
+
     def test_valid_stream(self) -> None:
-        raw = (
-            b'data: {"choices":[{"delta":{"content":"pong"},"finish_reason":null}]}\n\n'
-            b'data: {"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}\n\n'
-            b'data: {"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}\n\n'
-            b"data: [DONE]\n"
+        check = self._check(
+            b'data: {"choices":[{"delta":{"content":"pong"},"finish_reason":null}]}\n', b"\n",
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n', b"\n",
+            b'data: {"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}\n', b"\n",
+            b"data: [DONE]\n", b"\n",
         )
-        status, body, _ = enforce(200, raw, "text/event-stream")
-        self.assertEqual(status, 200)
-        self.assertEqual(body, raw)
+        self.assertIsNone(check.problem())
+        self.assertEqual(check.finish_reason, "stop")
+        self.assertEqual(check.usage["total_tokens"], 9)
+        self.assertTrue(check.done)
 
-    def test_stream_without_finish_is_502(self) -> None:
-        raw = (
-            b'data: {"choices":[{"delta":{"content":"pong"},"finish_reason":null}]}\n\n'
-            b"data: [DONE]\n"
+    def test_valid_stream_without_usage_has_no_problem(self) -> None:
+        check = self._check(b'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n', b"\n")
+        self.assertIsNone(check.problem())
+        self.assertIsNone(check.usage)
+
+    def test_stream_without_finish_is_a_problem(self) -> None:
+        check = self._check(b'data: {"choices":[{"delta":{"content":"pong"},"finish_reason":null}]}\n')
+        self.assertIn("finish_reason", check.problem())
+
+    def test_unknown_finish_is_a_problem(self) -> None:
+        check = self._check(b'data: {"choices":[{"delta":{},"finish_reason":"unknown"}]}\n')
+        self.assertIn("finish_reason", check.problem())
+
+    def test_empty_stream_is_a_problem(self) -> None:
+        self.assertEqual(self._check().problem(), "empty stream")
+
+    def test_keep_alive_comment_is_ignored(self) -> None:
+        check = self._check(b": keep-alive\n", b"\n")
+        self.assertEqual(check.events, 0)
+
+    def test_upstream_error_event_needs_no_second_error(self) -> None:
+        check = self._check(
+            b'data: {"error":{"message":"CUDA out of memory","type":"InternalServerError","code":500}}\n'
         )
-        status, body, _ = enforce(200, raw, "text/event-stream")
-        self.assertEqual(status, 502)
-        self.assertIn(b"BadCompletionError", body)
+        self.assertEqual(check.upstream_error, "CUDA out of memory")
+        self.assertIsNone(check.problem())
 
-    def test_empty_stream_is_502(self) -> None:
-        status, _, _ = enforce(200, b"", "text/event-stream")
-        self.assertEqual(status, 502)
+    def test_error_event_shape(self) -> None:
+        event = sse_error_event("x")
+        self.assertTrue(event.startswith(b"data: "))
+        self.assertTrue(event.endswith(b"\n\n"))
+        self.assertEqual(json.loads(event[6:])["error"]["type"], "BadCompletionError")
 
 
 class PhpContractTests(unittest.TestCase):
