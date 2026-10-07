@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    return list(set(items))
+====
+    return list(dict.fromkeys(items))
+>>>> REPLACE
+</patch>

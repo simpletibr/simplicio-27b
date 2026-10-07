@@ -1,0 +1,10 @@
+<patch>
+<<<< SEARCH
+    return int(value)
+====
+    port = int(value.strip())
+    if not 1 <= port <= 65535:
+        raise ValueError(f"port out of range: {port}")
+    return port
+>>>> REPLACE
+</patch>
