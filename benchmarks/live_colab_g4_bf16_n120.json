@@ -51,5 +51,5 @@
       "test": 6
     }
   },
-  "note": "Aggregate of /content/simplicio_live_bf16.json on the Colab G4 after the full BF16 run. The previous 116/120 file is benchmarks/statistical_proof_n120.json and did not call the model."
+  "note": "Aggregate of /content/simplicio_live_bf16.json on the Colab G4 after the full BF16 run. The previous 116/120 file, https://github.com/simpletibr/simplicio-27b/blob/b8567df/benchmarks/statistical_proof_n120.json, did not call the model."
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -100,7 +101,7 @@ class ClearUpstreamTests(unittest.TestCase):
     def test_clear_tries_null_url(self) -> None:
         seen: list[dict] = []
 
-        def fake_http(url, body=None, timeout=30):
+        def fake_http(url, body=None, timeout=30, headers=None):
             seen.append(body)
             if body == {"clear": True}:
                 return 200, {"ok": True, "upstream": None}
@@ -109,6 +110,31 @@ class ClearUpstreamTests(unittest.TestCase):
         with patch.object(serve_colab, "_http_json", side_effect=fake_http):
             serve_colab.clear_upstream("k")
         self.assertEqual(seen[0], {"clear": True})
+
+
+class AdminKeyTests(unittest.TestCase):
+    def test_key_goes_in_bearer_header_not_url(self) -> None:
+        calls: list[tuple] = []
+
+        def fake_http(url, body=None, timeout=30, headers=None):
+            calls.append((url, headers))
+            return 200, {"ok": True}
+
+        with patch.object(serve_colab, "_http_json", side_effect=fake_http):
+            serve_colab.set_upstream("https://a-b.trycloudflare.com", "k3y")
+            serve_colab.clear_upstream("k3y")
+        for url, headers in calls:
+            self.assertEqual(url, serve_colab.GATEWAY_SET)
+            self.assertNotIn("k3y", url)
+            self.assertEqual(headers, {"Authorization": "Bearer k3y"})
+
+    def test_read_admin_key_uses_getpass_not_input(self) -> None:
+        with patch.dict(os.environ), patch(
+            "getpass.getpass", return_value=" k3y \n"
+        ) as fake_getpass, patch("builtins.input", side_effect=AssertionError("input() usado")):
+            os.environ.pop("SIMPLETI_ADMIN_KEY", None)
+            self.assertEqual(serve_colab.read_admin_key(), "k3y")
+        fake_getpass.assert_called_once()
 
 
 if __name__ == "__main__":

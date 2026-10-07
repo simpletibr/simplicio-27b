@@ -12,6 +12,7 @@ are rewritten to HTTP 502.
 
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import re
@@ -69,7 +70,12 @@ def serve_cmd() -> list[str]:
     return ["bash", str(DEPLOY / "serve_vllm.sh"), MODEL_ID, str(VLLM_PORT)]
 
 
-def _http_json(url: str, body: dict[str, Any] | None = None, timeout: int = 30) -> tuple[int, Any]:
+def _http_json(
+    url: str,
+    body: dict[str, Any] | None = None,
+    timeout: int = 30,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, Any]:
     data = None if body is None else json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -77,6 +83,7 @@ def _http_json(url: str, body: dict[str, Any] | None = None, timeout: int = 30) 
         headers={
             "Content-Type": "application/json",
             "User-Agent": "SimpleTI-Worker/1.0",
+            **(headers or {}),
         },
         method="GET" if body is None else "POST",
     )
@@ -157,8 +164,20 @@ def probe_all(base: str) -> None:
         print(f"probe ok: {model} via {base}")
 
 
+def admin_headers(key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {key}"}
+
+
+def read_admin_key() -> str:
+    key = os.environ.get("SIMPLETI_ADMIN_KEY") or getpass.getpass("Chave admin do gateway: ")
+    key = key.strip()
+    if not key:
+        raise SystemExit("SIMPLETI_ADMIN_KEY ausente")
+    return key
+
+
 def set_upstream(url: str, key: str) -> Any:
-    status, payload = _http_json(f"{GATEWAY_SET}?key={key}", {"upstream_url": url})
+    status, payload = _http_json(GATEWAY_SET, {"upstream_url": url}, headers=admin_headers(key))
     if status >= 400:
         raise RuntimeError(f"set_upstream HTTP {status}: {payload!r}")
     return payload
@@ -168,7 +187,7 @@ def clear_upstream(key: str) -> None:
     errors: list[str] = []
     for body in ({"clear": True}, {"upstream_url": None}, {"upstream_url": ""}):
         try:
-            status, payload = _http_json(f"{GATEWAY_SET}?key={key}", body)
+            status, payload = _http_json(GATEWAY_SET, body, headers=admin_headers(key))
             if status < 400:
                 print("upstream cleared:", payload)
                 return
@@ -255,9 +274,7 @@ def start_cloudflared(port: int) -> tuple[subprocess.Popen[str], str]:
 
 def main() -> None:
     load_context()
-    key = os.environ.get("SIMPLETI_ADMIN_KEY") or input("Chave admin do gateway: ").strip()
-    if not key:
-        raise SystemExit("SIMPLETI_ADMIN_KEY ausente")
+    key = read_admin_key()
 
     vllm_log = VLLM_LOG.open("w", encoding="utf-8")
     vllm = subprocess.Popen(serve_cmd(), stdout=vllm_log, stderr=subprocess.STDOUT)
