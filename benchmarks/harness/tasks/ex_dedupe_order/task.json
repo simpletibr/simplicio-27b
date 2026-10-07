@@ -1,0 +1,3 @@
+{"id": "ex_dedupe_order", "edit_file": "listutil.py",
+ "instruction": "dedupe remove duplicados mas embaralha a ordem dos itens. Deve manter a ordem da primeira ocorrencia de cada item.",
+ "context": "Modulo Python 3 sem dependencias externas. listutil.py e usado para montar menus cuja ordem importa."}

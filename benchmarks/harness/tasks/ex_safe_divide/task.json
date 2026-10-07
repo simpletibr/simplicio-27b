@@ -1,0 +1,3 @@
+{"id": "ex_safe_divide", "edit_file": "calc.py",
+ "instruction": "safe_divide levanta ZeroDivisionError quando o divisor e zero. Nesse caso deve retornar 0.0; nos outros casos o resultado nao muda.",
+ "context": "Modulo Python 3 sem dependencias externas. calc.py e usado por relatorios que nao podem quebrar com divisor zero."}
