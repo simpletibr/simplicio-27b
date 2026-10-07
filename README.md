@@ -70,9 +70,9 @@ The base model has not been run under this protocol yet, so the gain from fine-t
 
 Earlier versions of this card reported 96.5% accuracy, 116 of 120 tasks passed, 480 tokens per task, a "Top 12" leaderboard and per-token prices. None of these came from running the model on those tasks:
 
-- 116/120 and its McNemar test come from [`benchmarks/prove_benchmark_120.py`](https://github.com/simpletibr/simplicio-27b/blob/main/benchmarks/prove_benchmark_120.py), which simulates model outputs.
-- 480 tokens per task comes from a 3-task smoke test on an A100 ([`benchmarks/empirical_a100_results.json`](https://github.com/simpletibr/simplicio-27b/blob/main/benchmarks/empirical_a100_results.json)).
-- 96.5% and the leaderboard rows are hard-coded in [`benchmarks/compare_top10_2026.py`](https://github.com/simpletibr/simplicio-27b/blob/main/benchmarks/compare_top10_2026.py).
+- 116/120 and its McNemar test come from [`benchmarks/prove_benchmark_120.py`](https://github.com/simpletibr/simplicio-27b/blob/b8567df/benchmarks/prove_benchmark_120.py), which simulates model outputs.
+- 480 tokens per task comes from a 3-task smoke test on an A100 ([`benchmarks/empirical_a100_results.json`](https://github.com/simpletibr/simplicio-27b/blob/b8567df/benchmarks/empirical_a100_results.json)).
+- 96.5% and the leaderboard rows are hard-coded in [`benchmarks/compare_top10_2026.py`](https://github.com/simpletibr/simplicio-27b/blob/b8567df/benchmarks/compare_top10_2026.py).
 - The model is not listed on OpenRouter and has no public per-token price.
 
 The held-out run above replaces them.
@@ -98,11 +98,7 @@ ollama run wesleysimplicio/simplicio-27b
 
 The `latest` tag holds the Q4_K_M GGUF and the vision projector. It uses temperature 0.2 and a 32,768-token context, and it stops at `<|im_end|>` and `</deliver>`.
 
-The installer installs Ollama if it is missing, then runs the model:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/simpletibr/simplicio-27b/main/install.sh | bash
-```
+If Ollama is not installed, get it from [ollama.com/download](https://ollama.com/download).
 
 ### vLLM (OpenAI-compatible server with tool calls)
 
@@ -222,7 +218,7 @@ The published adapter was produced by [`Simplicio_27B_Training_Colab.ipynb`](htt
 | Data | 101 examples in Portuguese: 1 written by hand and 100 generated from a short list of stack and task templates |
 | Hardware | Google Colab A100 (40 GB) |
 
-[`train_simplicio_27b.py`](https://github.com/simpletibr/simplicio-27b/blob/main/train_simplicio_27b.py) is a script version with extra options: freezing the bottom layers, attention-only LoRA, and registering the phase tags as special tokens. The published adapter used none of them, and its tokenizer has no added tokens. [`generate_dataset.py`](https://github.com/simpletibr/simplicio-27b/blob/main/generate_dataset.py) writes `data/simplicio_loop_50pts_train.jsonl` (80 examples) and `data/simplicio_loop_50pts_val.jsonl` (15 examples).
+An earlier script, [`train_simplicio_27b.py`](https://github.com/simpletibr/simplicio-27b/blob/b8567df/train_simplicio_27b.py), was removed because its defaults do not reproduce the published adapter: 150 steps, the bottom 48 layers frozen, and the 10 phase tags added as special tokens. The published adapter used none of these, and its tokenizer has no added tokens. [`generate_dataset.py`](https://github.com/simpletibr/simplicio-27b/blob/main/generate_dataset.py) writes `data/simplicio_loop_50pts_train.jsonl` (80 examples) and `data/simplicio_loop_50pts_val.jsonl` (15 examples).
 
 ## Limitations
 
@@ -242,7 +238,7 @@ The published adapter was produced by [`Simplicio_27B_Training_Colab.ipynb`](htt
 | `Simplicio_27B_Serve_Colab.ipynb`, `deploy/` | vLLM serving, chat template, tool parser, context length, Ollama `Modelfile` |
 | `data/unseen_eval_120.json` | The 120 held-out tasks |
 | `benchmarks/live_colab_g4_bf16_n120.json` | The results above |
-| `tests/` | Tests for the serving code: `python -m pytest tests` |
+| `tests/` | Tests for the serving code: `python3 -m unittest discover -s tests` |
 
 ## Citation
 
