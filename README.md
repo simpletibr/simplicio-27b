@@ -24,7 +24,7 @@ homepage: https://simpleti.com.br/simplicio-27b/
 
 <h1 align="center">Simplicio 27B</h1>
 
-<p align="center">A Qwen3.8-27B fine-tune that answers code-change requests with SEARCH/REPLACE patches instead of whole files.</p>
+<p align="center">A Qwen3.8-27B fine-tune trained to answer code-change requests with SEARCH/REPLACE patches instead of whole files.</p>
 
 <p align="center">
   <a href="https://huggingface.co/wesleysimplicio/Simplicio-27B"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Simplicio--27B-yellow.svg" alt="Hugging Face"></a>
@@ -36,42 +36,47 @@ homepage: https://simpleti.com.br/simplicio-27b/
 
 ## Overview
 
-Simplicio 27B is a LoRA fine-tune of [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) by Wesley Simplicio at [SimpleTI](https://simpleti.com.br/simplicio-27b/). It answers a code-change request in five tagged phases (`<orient>`, `<plan>`, `<patch>`, `<validate>`, `<deliver>`). The `<patch>` phase holds SEARCH/REPLACE blocks that touch only the lines that change.
+Simplicio 27B is a LoRA fine-tune of [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) by Wesley Simplicio at [SimpleTI](https://simpleti.com.br/simplicio-27b/). It was trained to answer a code-change request in five tagged phases (`<orient>`, `<plan>`, `<patch>`, `<validate>`, `<deliver>`). The `<patch>` phase holds SEARCH/REPLACE blocks that touch only the lines that change.
 
 - **Base model:** Qwen3.8-27B, 27.36B parameters, 64 layers that alternate linear attention (DeltaNet) and full attention in a 3:1 pattern.
-- **Files on Hugging Face:** the LoRA adapter (0.64 GB), the merged BF16 checkpoint (18 shards, 55.6 GB), and a GGUF Q4_K_M (16.8 GB) with the base model's vision projector (0.93 GB).
-- **Status:** research release. It passes 46.7% of the project's own 120 held-out tasks. It has not been scored on public benchmarks.
+- **Files on Hugging Face:** the LoRA adapter (0.64 GB), the merged BF16 checkpoint (18 shards, 55.6 GB), and a GGUF Q4_K_M (16.8 GB) with the base model's vision projector (0.93 GB). Image input is inherited from the base model and has not been evaluated.
+- **Status:** research release. On the project's own held-out set (40 short Python tasks, each run 3 times), 56 of 120 runs passed a text-matching check. It has not been scored on public benchmarks.
 
 ## Results
 
-### Held-out set (120 tasks)
+### Held-out set (40 tasks, each run 3 times)
 
-The full BF16 model ran on Google Colab G4 (NVIDIA RTX PRO 6000 Blackwell, 95 GB) against 120 tasks that were not used in training ([`data/unseen_eval_120.json`](https://github.com/simpletibr/simplicio-27b/blob/main/data/unseen_eval_120.json)). Each task got one attempt at temperature 0, and generation stopped at `</deliver>`. A task passes when its unit test passes after the patch is applied. Aggregate results: [`benchmarks/live_colab_g4_bf16_n120.json`](https://github.com/simpletibr/simplicio-27b/blob/main/benchmarks/live_colab_g4_bf16_n120.json).
+The full BF16 checkpoint ran on Google Colab G4 (NVIDIA RTX PRO 6000 Blackwell, 95 GB) against [`data/unseen_eval_120.json`](https://github.com/simpletibr/simplicio-27b/blob/b8567df/data/unseen_eval_120.json), whose tasks were not used in training. The file has 120 rows, but they are 40 unique Python tasks, each listed 3 times with only `id` and `difficulty` changed; the original code averages 2.8 lines (at most 6). Each row got one attempt at temperature 0, and generation stopped at `</deliver>`. Aggregate results: [`benchmarks/live_colab_g4_bf16_n120.json`](https://github.com/simpletibr/simplicio-27b/blob/main/benchmarks/live_colab_g4_bf16_n120.json). Per-row outputs were not saved in the repository.
+
+The harness that produced these numbers is not in the repository either. Its output fields (`diff_matched`, `ast_valid`, `zero_ghost_apis`, `unit_test_passed`) match `apply_and_verify_patch` in [`benchmarks/prove_benchmark_120.py`](https://github.com/simpletibr/simplicio-27b/blob/b8567df/benchmarks/prove_benchmark_120.py#L113-L172), which runs each task's assertion with only the patched text in scope and never executes the patched code. 25 of the 40 assertions only check whether given text appears (or does not appear) in the patched file. The other 15 call a function or read a variable that only the patched code would define, so they cannot pass under that scorer: the edge-case category's 6 passes equal its 2 text-only tasks × 3 runs. Read the pass counts as text matching, not as unit tests.
 
 | Metric | Result |
 |---|---:|
-| Unit test passes | **56/120 (46.7%)** |
+| Assertion passes (text matching) | **56/120 runs (46.7%)** |
 | SEARCH block found, patch applied | 104/120 (86.7%) |
 | Patched file parses (AST) | 104/120 (86.7%) |
-| No call to a nonexistent API | 120/120 |
-| Output tokens per task, mean / max | 69.9 / 103 |
-| Wall time for all 120 tasks | 438 s |
+| Output tokens per run, mean / max | 69.9 / 103 |
+| Wall time for all 120 runs | 438 s |
 
-| Category | Tasks | Unit test passes | Patch applied |
+| Category | Runs (unique tasks) | Assertion passes | Patch applied |
 |---|---:|---:|---:|
-| Surgical diff and AST precision | 30 | 17 | 20 |
-| Edge-case correctness | 30 | 6 | 27 |
-| Nonexistent and deprecated API traps | 30 | 27 | 30 |
-| Adversarial and out-of-distribution | 30 | 6 | 27 |
+| Surgical diff and AST precision | 30 (10) | 17 | 20 |
+| Edge-case correctness | 30 (10) | 6 | 27 |
+| Nonexistent and deprecated API traps | 30 (10) | 27 | 30 |
+| Adversarial and out-of-distribution | 30 (10) | 6 | 27 |
 
-The base model has not been run under this protocol yet, so the gain from fine-tuning is not measured.
+The Wilson 95% interval for 56/120 is 38.0%–55.6%, but the 120 runs are 40 tasks repeated, so they are not independent. Counted over 40 tasks, the same 46.7% has a 95% interval of 32.2%–61.7%. Only the 25 text-only tasks can pass, and the category totals put the number of unique tasks that passed at least once between 19 and 25. In the first category, 17 passes and 20 applied patches are not multiples of 3, so copies of the same task got different results at temperature 0.
+
+An earlier version of this table also reported that no run called a nonexistent API. In that scorer the check only runs on the 30 trap runs (the only rows with `forbidden_symbols`) and counts a run as clean even when its patch was not applied, so the row was removed.
+
+Not evaluated: whether outputs follow the five-phase format, the base model under this protocol (so the gain from fine-tuning is not measured), the Q4_K_M GGUF used by Ollama, the 4-bit base + LoRA path, and image input.
 
 ### Withdrawn numbers
 
 Earlier versions of this card reported 96.5% accuracy, 116 of 120 tasks passed, 480 tokens per task, a "Top 12" leaderboard and per-token prices. None of these came from running the model on those tasks:
 
 - 116/120 and its McNemar test come from [`benchmarks/prove_benchmark_120.py`](https://github.com/simpletibr/simplicio-27b/blob/b8567df/benchmarks/prove_benchmark_120.py), which simulates model outputs.
-- 480 tokens per task comes from a 3-task smoke test on an A100 ([`benchmarks/empirical_a100_results.json`](https://github.com/simpletibr/simplicio-27b/blob/b8567df/benchmarks/empirical_a100_results.json)).
+- 480 tokens per task comes from a 3-task smoke test on an A100 ([`benchmarks/empirical_a100_results.json`](https://github.com/simpletibr/simplicio-27b/blob/b8567df/benchmarks/empirical_a100_results.json)). All three runs are recorded with exactly 480 output tokens, the `max_new_tokens=480` cap of every `model.generate` call in [`Simplicio_27B_2026_Benchmarks_Colab.ipynb`](https://github.com/simpletibr/simplicio-27b/blob/b8567df/Simplicio_27B_2026_Benchmarks_Colab.ipynb). No saved output backs these runs: that notebook and the one linked in the file's `notebook_gist` field have no cell outputs, and neither contains the run `py_safe_dict_get`.
 - 96.5% and the leaderboard rows are hard-coded in [`benchmarks/compare_top10_2026.py`](https://github.com/simpletibr/simplicio-27b/blob/b8567df/benchmarks/compare_top10_2026.py).
 - The model is not listed on OpenRouter and has no public per-token price.
 
@@ -96,7 +101,7 @@ Simplicio 27B has not been evaluated on SWE-bench, the Aider benchmark, Terminal
 ollama run wesleysimplicio/simplicio-27b
 ```
 
-The `latest` tag holds the Q4_K_M GGUF and the vision projector. It uses temperature 0.2 and a 32,768-token context, and it stops at `<|im_end|>` and `</deliver>`.
+The `latest` tag holds the Q4_K_M GGUF and the base model's vision projector. This build has not been evaluated: every result on this card comes from the BF16 checkpoint, and image input has not been evaluated.
 
 If Ollama is not installed, get it from [ollama.com/download](https://ollama.com/download).
 
@@ -215,7 +220,7 @@ The published adapter was produced by [`Simplicio_27B_Training_Colab.ipynb`](htt
 | Setting | Value |
 |---|---|
 | Method | QLoRA with Unsloth; base loaded in 4-bit |
-| LoRA | r 32, alpha 32, dropout 0, on the q, k, v, o, gate, up and down projections of every layer |
+| LoRA | r 32, alpha 32, dropout 0. q, k, v, o projections on the 16 full-attention layers (3, 7, …, 63); gate, up, down projections on all 64 layers. The `linear_attn` projections of the 48 DeltaNet layers and the vision tower were not adapted (512 LoRA tensors in the published adapter) |
 | Steps | 120 steps, batch size 1, gradient accumulation 8 |
 | Optimizer | AdamW 8-bit, learning rate 2e-4, cosine schedule, 10 warmup steps, weight decay 0.01 |
 | Sequence length | 4,096 |
@@ -227,12 +232,14 @@ An earlier script, [`train_simplicio_27b.py`](https://github.com/simpletibr/simp
 
 ## Limitations
 
-- It passes 46.7% of the held-out tasks, and only 6 of 30 in both the edge-case and the adversarial categories.
-- The training set is small (101 examples), templated and in Portuguese. The model follows the format more reliably than it solves the task.
+- On the held-out set, 56 of 120 runs (40 unique tasks) passed a text-matching check. Functional correctness of the patches was not measured.
+- The training set is small (101 examples), templated and in Portuguese. Whether outputs follow the five-phase format was not measured.
 - In the training examples, `<validate>` and `<deliver>` contain written-out results such as "2 passed" or "COMMIT_READY". The model writes these without running anything. Treat them as claims and run your own tests.
 - It has not been compared with the base model under the same protocol, and it has not been run on public benchmarks.
+- Only the BF16 checkpoint was evaluated. The Q4_K_M GGUF, the Ollama template and parameters, and the 4-bit base + LoRA path were not.
+- Decoding: the evaluation used temperature 0 (greedy). The sampling defaults in the Hugging Face `generation_config.json` and in the Ollama tag are not greedy and were not evaluated.
 - Aider: the patch markers differ from Aider's edit format, and Aider has not been tested.
-- Vision: the GGUF ships the base model's vision projector. Training was text-only, and image input has not been evaluated.
+- Vision: the GGUF ships the base model's vision projector, so image input is inherited from Qwen3.8-27B. Training was text-only, and image input has not been evaluated.
 
 ## Repository
 
