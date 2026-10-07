@@ -1,0 +1,3 @@
+{"id": "ex_parse_port", "edit_file": "config.py",
+ "instruction": "parse_port aceita portas invalidas como 0 ou 70000. Deve levantar ValueError para qualquer valor fora de 1 a 65535 e continuar aceitando espacos em volta do numero.",
+ "context": "Modulo Python 3 sem dependencias externas. config.py le a porta de uma variavel de ambiente em texto."}
