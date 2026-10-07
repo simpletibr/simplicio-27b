@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy"))
 
-from serve_colab import load_context, vllm_cmd  # noqa: E402
+from serve_colab import load_context  # noqa: E402
 
 SKIP_PARTS = {".git", "__pycache__", ".simplicio", "node_modules", "tests"}
 LEN_RE = re.compile(r"(?:max-model-len|num_ctx)\s*[\"'= ]*(\d+)(?!\d)")
@@ -44,13 +44,11 @@ class ContextLenTests(unittest.TestCase):
                 self.assertEqual(match.group(1), expected, f"{path} {match.group(0)}")
         self.assertTrue(any(":40960" in row or f":{expected}" in row for row in found), found)
 
-    def test_vllm_cmd_uses_constant(self) -> None:
-        ctx = load_context()
-        cmd = vllm_cmd(ctx)
-        idx = cmd.index("--max-model-len")
-        self.assertEqual(cmd[idx + 1], str(ctx["MAX_MODEL_LEN"]))
-        self.assertNotIn("16384", cmd)
-        self.assertIn("simpleti/simplicio-27b", cmd)
+    def test_serve_script_uses_constant(self) -> None:
+        text = (ROOT / "deploy" / "serve_vllm.sh").read_text(encoding="utf-8")
+        self.assertIn('--max-model-len "${MAX_MODEL_LEN}"', text)
+        self.assertIn("deploy/context.env", text)
+        self.assertNotIn("16384", text)
 
     def test_modelfiles_agree(self) -> None:
         ctx = load_context()

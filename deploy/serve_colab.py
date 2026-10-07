@@ -31,7 +31,7 @@ ROOT = DEPLOY.parent
 if str(DEPLOY) not in sys.path:
     sys.path.insert(0, str(DEPLOY))
 
-from completion_gate import VALID_FINISH, enforce  # noqa: E402
+from completion_gate import enforce, json_completion_ok  # noqa: E402
 
 GATEWAY_SET = os.environ.get(
     "SIMPLETI_SET_UPSTREAM_URL",
@@ -40,6 +40,9 @@ GATEWAY_SET = os.environ.get(
 VLLM_PORT = int(os.environ.get("VLLM_PORT", "8000"))
 GATE_PORT = int(os.environ.get("GATE_PORT", "8001"))
 HOST = os.environ.get("HOST", "0.0.0.0")
+MODEL_ID = os.environ.get("MODEL_ID", "wesleysimplicio/Simplicio-27B")
+SERVED_IDS = ("simplicio-27b", "simpleti/simplicio-27b")
+VLLM_LOG = Path("vllm.log")
 
 
 def load_context(path: Path | None = None) -> dict[str, int]:
@@ -61,57 +64,9 @@ def load_context(path: Path | None = None) -> dict[str, int]:
     return values
 
 
-def vllm_cmd(context: dict[str, int]) -> list[str]:
-    plugin = str((DEPLOY / "simplicio_tool_parser.py").resolve())
-    template = str((DEPLOY / "chat_template_chatml.jinja").resolve())
-    model = os.environ.get("MODEL_ID", "unsloth/Qwen3.8-27B-unsloth-bnb-4bit")
-    cmd = [
-        os.environ.get("VLLM_BIN", "vllm"),
-        "serve",
-        model,
-        "--host",
-        HOST,
-        "--port",
-        str(VLLM_PORT),
-        "--max-model-len",
-        str(context["MAX_MODEL_LEN"]),
-        "--gpu-memory-utilization",
-        os.environ.get("GPU_MEM", "0.92"),
-        "--chat-template",
-        template,
-        "--enable-auto-tool-choice",
-        "--tool-parser-plugin",
-        plugin,
-        "--tool-call-parser",
-        "simplicio",
-        "--reasoning-parser",
-        "qwen3",
-        "--served-model-name",
-        "simplicio-27b",
-        "simpleti/simplicio-27b",
-        "--stop",
-        "<|im_end|>",
-        "--stop",
-        "<|endoftext|>",
-        "--stop",
-        "</deliver>",
-    ]
-    if os.environ.get("VLLM_QUANTIZATION", "bitsandbytes"):
-        quant = os.environ.get("VLLM_QUANTIZATION", "bitsandbytes")
-        if quant:
-            cmd.extend(["--quantization", quant, "--load-format", quant])
-    lora = os.environ.get("LORA_MODULE", "simplicio-27b=wesleysimplicio/Simplicio-27B")
-    if lora:
-        cmd.extend(
-            [
-                "--enable-lora",
-                "--lora-modules",
-                lora,
-                "--max-lora-rank",
-                os.environ.get("MAX_LORA_RANK", "64"),
-            ]
-        )
-    return cmd
+def serve_cmd() -> list[str]:
+    """The only vLLM launch: deploy/serve_vllm.sh holds every flag."""
+    return ["bash", str(DEPLOY / "serve_vllm.sh"), MODEL_ID, str(VLLM_PORT)]
 
 
 def _http_json(url: str, body: dict[str, Any] | None = None, timeout: int = 30) -> tuple[int, Any]:
@@ -142,11 +97,25 @@ def _http_json(url: str, body: dict[str, Any] | None = None, timeout: int = 30) 
         return exc.code, parsed
 
 
-def wait_vllm(timeout_s: int = 1200) -> None:
+def tail_log(path: Path, lines: int = 40) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"(sem {path}: {exc})"
+    return "\n".join(text.splitlines()[-lines:])
+
+
+def wait_vllm(proc: subprocess.Popen[Any], log_path: Path, timeout_s: int = 1200) -> None:
     deadline = time.time() + timeout_s
     url = f"http://127.0.0.1:{VLLM_PORT}/v1/models"
     last = ""
     while time.time() < deadline:
+        code = proc.poll()
+        if code is not None:
+            raise SystemExit(
+                f"vLLM saiu com código {code} antes de ficar pronto. "
+                f"Últimas 40 linhas de {log_path}:\n{tail_log(log_path)}"
+            )
         try:
             status, payload = _http_json(url, timeout=5)
             if status == 200:
@@ -156,29 +125,36 @@ def wait_vllm(timeout_s: int = 1200) -> None:
         except Exception as exc:
             last = str(exc)
         time.sleep(5)
-    raise SystemExit(f"vLLM não subiu: {last}")
+    raise SystemExit(f"vLLM não subiu em {timeout_s}s: {last}\n{tail_log(log_path)}")
 
 
-def probe_completion(base: str, model: str = "simplicio-27b") -> dict[str, Any]:
+def probe_completion(base: str, model: str) -> dict[str, Any]:
     """POST a tiny chat completion. Raises if finish_reason/usage are missing."""
     status, payload = _http_json(
         f"{base.rstrip('/')}/v1/chat/completions",
         {
             "model": model,
-            "max_tokens": 16,
+            "max_tokens": 64,
             "temperature": 0,
             "messages": [{"role": "user", "content": "Reply with exactly pong."}],
         },
         timeout=180,
     )
     if status != 200 or not isinstance(payload, dict):
-        raise RuntimeError(f"probe HTTP {status}: {payload!r}")
-    from completion_gate import json_completion_ok
-
+        raise RuntimeError(f"probe {model} HTTP {status}: {payload!r}")
     err = json_completion_ok(payload)
     if err:
-        raise RuntimeError(f"probe rejected: {err}")
+        raise RuntimeError(f"probe {model} rejected: {err}")
+    message = payload["choices"][0].get("message") or {}
+    if not (message.get("content") or "").strip():
+        raise RuntimeError(f"probe {model} rejected: empty content")
     return payload
+
+
+def probe_all(base: str) -> None:
+    for model in SERVED_IDS:
+        probe_completion(base, model)
+        print(f"probe ok: {model} via {base}")
 
 
 def set_upstream(url: str, key: str) -> Any:
@@ -278,13 +254,13 @@ def start_cloudflared(port: int) -> tuple[subprocess.Popen[str], str]:
 
 
 def main() -> None:
-    context = load_context()
+    load_context()
     key = os.environ.get("SIMPLETI_ADMIN_KEY") or input("Chave admin do gateway: ").strip()
     if not key:
         raise SystemExit("SIMPLETI_ADMIN_KEY ausente")
 
-    vllm_log = open("vllm.log", "w", encoding="utf-8")
-    vllm = subprocess.Popen(vllm_cmd(context), stdout=vllm_log, stderr=subprocess.STDOUT)
+    vllm_log = VLLM_LOG.open("w", encoding="utf-8")
+    vllm = subprocess.Popen(serve_cmd(), stdout=vllm_log, stderr=subprocess.STDOUT)
     gate = None
     tunnel = None
     registered = False
@@ -309,13 +285,11 @@ def main() -> None:
     signal.signal(signal.SIGINT, lambda *_: (shutdown(), sys.exit(0)))
 
     try:
-        wait_vllm()
+        wait_vllm(vllm, VLLM_LOG)
         gate = start_gate()
-        probe_completion(f"http://127.0.0.1:{GATE_PORT}")
-        print("probe ok: finish_reason + usage")
+        probe_all(f"http://127.0.0.1:{GATE_PORT}")
         tunnel, public_url = start_cloudflared(GATE_PORT)
-        probe_completion(public_url)
-        print("probe túnel ok")
+        probe_all(public_url)
         print("set_upstream:", set_upstream(public_url, key))
         registered = True
         print("gateway aponta para", public_url)

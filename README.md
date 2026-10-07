@@ -107,19 +107,24 @@ curl -fsSL https://raw.githubusercontent.com/simpletibr/simplicio-27b/main/insta
 ### vLLM (OpenAI-compatible server with tool calls)
 
 ```bash
+pip install vllm==0.31.0
 git clone https://github.com/simpletibr/simplicio-27b
 cd simplicio-27b
 ./deploy/serve_vllm.sh wesleysimplicio/Simplicio-27B 8000
 ```
 
-This serves the merged BF16 checkpoint. The weights alone take 55.6 GB; the evaluation above ran on a 95 GB GPU. The script sets:
+This serves the merged BF16 checkpoint, the same weights that scored 56/120 above. The weights alone take 55.6 GB; the evaluation above ran on a 95 GB GPU. [`deploy/serve_vllm.sh`](https://github.com/simpletibr/simplicio-27b/blob/main/deploy/serve_vllm.sh) is the only serve command, and the Colab notebook runs it too. It sets:
 
 - `--max-model-len 40960`, defined once in [`deploy/context.env`](https://github.com/simpletibr/simplicio-27b/blob/main/deploy/context.env): a measured 31,692-token OpenCode prompt plus 4,096 output tokens.
-- `--chat-template` with [`deploy/chat_template_chatml.jinja`](https://github.com/simpletibr/simplicio-27b/blob/main/deploy/chat_template_chatml.jinja). It prefills `<think>` so that `--reasoning-parser qwen3` moves reasoning out of `content`.
-- `--enable-auto-tool-choice --tool-call-parser simplicio`, using [`deploy/simplicio_tool_parser.py`](https://github.com/simpletibr/simplicio-27b/blob/main/deploy/simplicio_tool_parser.py). It turns `<tool><name>…</name><params>…</params></tool>` into a single `tool_calls` entry.
-- `--served-model-name simplicio-27b simpleti/simplicio-27b`.
+- No `--chat-template`: vLLM uses the model's own `chat_template.jinja`.
+- `--default-chat-template-kwargs '{"enable_thinking": false}'`: thinking is off by default because the training data has no `<think>` blocks. A request can turn it on with `"chat_template_kwargs": {"enable_thinking": true}`.
+- `--enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser qwen3`: vLLM's built-in parsers for Qwen's native `<tool_call><function=…>` format.
+- `--enable-force-include-usage`: every response carries `usage`.
+- `--served-model-name simplicio-27b simpleti/simplicio-27b`: both ids reach the same fine-tuned weights.
 
-On a smaller GPU, [`Simplicio_27B_Serve_Colab.ipynb`](https://github.com/simpletibr/simplicio-27b/blob/main/Simplicio_27B_Serve_Colab.ipynb) serves the 4-bit base with the LoRA adapter on Colab.
+`vllm serve` has no stop flag. `<|im_end|>` already ends generation through `generation_config.json`; to end at `</deliver>`, send `"stop": ["</deliver>"]` in the request.
+
+[`Simplicio_27B_Serve_Colab.ipynb`](https://github.com/simpletibr/simplicio-27b/blob/main/Simplicio_27B_Serve_Colab.ipynb) runs the same script on a Colab G4 (RTX PRO 6000, 96 GB) behind the completion gate and a Cloudflare tunnel.
 
 ### OpenCode
 
@@ -239,7 +244,7 @@ The published adapter was produced by [`Simplicio_27B_Training_Colab.ipynb`](htt
 |---|---|
 | `Simplicio_27B_Training_Colab.ipynb` | Training run that produced the adapter |
 | `Simplicio_27B_Merge_Colab.ipynb` | Merges the adapter into 16-bit weights and exports the GGUF Q4_K_M |
-| `Simplicio_27B_Serve_Colab.ipynb`, `deploy/` | vLLM serving, chat template, tool parser, context length, Ollama `Modelfile` |
+| `Simplicio_27B_Serve_Colab.ipynb`, `deploy/` | vLLM serve script, Colab launcher, completion gate, context length, Ollama `Modelfile` |
 | `data/unseen_eval_120.json` | The 120 held-out tasks |
 | `benchmarks/live_colab_g4_bf16_n120.json` | The results above |
 | `tests/` | Tests for the serving code: `python -m pytest tests` |
