@@ -252,6 +252,17 @@ An earlier script, [`train_simplicio_27b.py`](https://github.com/simpletibr/simp
 | `benchmarks/live_colab_g4_bf16_n120.json` | The results above |
 | `tests/` | Tests for the serving code: `python3 -m unittest discover -s tests` |
 
+## Development
+
+`make check` needs `python3`, `ruff`, `shellcheck`, `php` and `make` on the `PATH`.
+
+```bash
+make check                           # unittest, ruff F/E9, shellcheck, php -l, vLLM args
+git config core.hooksPath .githooks  # once per clone: run make check before every push
+```
+
+The last step parses the exact `vllm serve` argv from `deploy/serve_vllm.sh` with vLLM's own CLI parser, so it needs `vllm==0.31.0` importable. Without vLLM installed it fails with exit code 1 on purpose: a flag that vLLM does not accept must not pass the gate unnoticed. On a machine without vLLM, export `SIMPLICIO_SKIP_VLLM_ARGS=1` to skip only that check (it prints `SKIP: vllm not importable; argv extracted, not validated`); the other four steps still run. There is no CI: all checks run locally. Commit subjects are one plain sentence, without a `type:` prefix.
+
 ## Citation
 
 ```bibtex
