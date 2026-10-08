@@ -3,7 +3,9 @@ language:
 - en
 - pt
 license: apache-2.0
+library_name: transformers
 base_model: Qwen/Qwen3.8-27B
+base_model_relation: finetune
 tags:
 - qwen
 - unsloth
@@ -39,7 +41,7 @@ homepage: https://simpleti.com.br/simplicio-27b/
 Simplicio 27B is a LoRA fine-tune of [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) by Wesley Simplicio at [SimpleTI](https://simpleti.com.br/simplicio-27b/). It was trained to answer a code-change request in five tagged phases (`<orient>`, `<plan>`, `<patch>`, `<validate>`, `<deliver>`). The `<patch>` phase holds SEARCH/REPLACE blocks that touch only the lines that change.
 
 - **Base model:** Qwen3.8-27B, 27.36B parameters, 64 layers that alternate linear attention (DeltaNet) and full attention in a 3:1 pattern.
-- **Files on Hugging Face:** the LoRA adapter (0.64 GB), the merged BF16 checkpoint (18 shards, 55.6 GB), and a GGUF Q4_K_M (16.8 GB) with the base model's vision projector (0.93 GB). Image input is inherited from the base model and has not been evaluated.
+- **Files on Hugging Face:** the LoRA adapter in `lora/` (0.64 GB), the merged BF16 checkpoint (18 shards, 55.6 GB), and a GGUF Q4_K_M (16.8 GB) with the base model's vision projector (0.93 GB). Image input is inherited from the base model and has not been evaluated.
 - **Status:** research release. On the project's own held-out set (40 short Python tasks, each run 3 times), 56 of 120 runs passed a text-matching check. It has not been scored on public benchmarks.
 
 ## Results
@@ -175,24 +177,35 @@ opencode -m simplicio/simplicio-27b
 
 OpenCode works through tool calls, so point it at the vLLM server. OpenCode has not been tested against the Ollama tag.
 
-### Python (Unsloth)
+### Python (Transformers)
 
-This loads the adapter on its 4-bit base, the same way [`notebooks/Simplicio_27B_Merge_Colab.ipynb`](https://github.com/simpletibr/simplicio-27b/blob/main/notebooks/Simplicio_27B_Merge_Colab.ipynb) does:
+The repository root is a plain Transformers checkpoint: the merged BF16 weights (55.6 GB) that produced the results above. `do_sample=False` is the greedy decoding the evaluation used; without it, `generate` uses the sampling defaults in `generation_config.json`, the same values as the Ollama `Modelfile`.
 
 ```python
-from unsloth import FastLanguageModel
+import torch
+from transformers import AutoModelForImageTextToText, AutoTokenizer
 
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name="wesleysimplicio/Simplicio-27B",  # adapter; the base comes from adapter_config.json
-    max_seq_length=16384,
-    load_in_4bit=True,
-)
-FastLanguageModel.for_inference(model)
+repo = "wesleysimplicio/Simplicio-27B"
+tokenizer = AutoTokenizer.from_pretrained(repo)
+model = AutoModelForImageTextToText.from_pretrained(repo, dtype=torch.bfloat16, device_map="auto")
 
 messages = [{"role": "user", "content": "In api/schemas/user.py, accept tax_id with punctuation such as 123.456.789-00."}]
-inputs = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt").to("cuda")
-output = model.generate(inputs, max_new_tokens=1024, do_sample=False)
-print(tokenizer.decode(output[0][inputs.shape[1]:], skip_special_tokens=True))
+inputs = tokenizer.apply_chat_template(
+    messages, add_generation_prompt=True, enable_thinking=False, return_tensors="pt"
+).to(model.device)
+output = model.generate(**inputs, max_new_tokens=1024, do_sample=False)
+print(tokenizer.decode(output[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True))
+```
+
+The LoRA adapter is in [`lora/`](https://huggingface.co/wesleysimplicio/Simplicio-27B/tree/main/lora). To apply it to your own copy of the base model, load the base with `AutoModelForImageTextToText`, the class whose module names (`model.language_model.layers.*`) match the adapter:
+
+```python
+import torch
+from peft import PeftModel
+from transformers import AutoModelForImageTextToText
+
+base = AutoModelForImageTextToText.from_pretrained("Qwen/Qwen3.8-27B", dtype=torch.bfloat16, device_map="auto")
+model = PeftModel.from_pretrained(base, "wesleysimplicio/Simplicio-27B", subfolder="lora")
 ```
 
 ## Output format
@@ -239,7 +252,7 @@ The SEARCH/REPLACE markers are four characters long (`<<<<`, `====`, `>>>>`), no
 
 ## Training
 
-The published adapter was produced by [`notebooks/Simplicio_27B_Training_Colab.ipynb`](https://github.com/simpletibr/simplicio-27b/blob/main/notebooks/Simplicio_27B_Training_Colab.ipynb). The settings below come from that notebook and the published `adapter_config.json`.
+The published adapter was produced by [`notebooks/Simplicio_27B_Training_Colab.ipynb`](https://github.com/simpletibr/simplicio-27b/blob/main/notebooks/Simplicio_27B_Training_Colab.ipynb). The settings below come from that notebook and the published `lora/adapter_config.json`.
 
 | Setting | Value |
 |---|---|
@@ -269,6 +282,8 @@ An earlier script, [`train_simplicio_27b.py`](https://github.com/simpletibr/simp
 
 | Path | Contents |
 |---|---|
+| `scripts/hf_publish.py` | Syncs the Hugging Face repo with this one: file allowlist, adapter in `lora/`, one commit that only adds and updates files, never deletes on the Hub; dry-run by default, `--publish` needs `HF_TOKEN` |
+| `lora/` | Where the LoRA adapter goes (`adapter_config.json`, `adapter_model.safetensors`); the weights are not in git |
 | `notebooks/Simplicio_27B_Training_Colab.ipynb` | Training run that produced the adapter |
 | `notebooks/Simplicio_27B_Merge_Colab.ipynb` | Merges the adapter into 16-bit weights and exports the GGUF Q4_K_M |
 | `notebooks/Simplicio_27B_Serve_Colab.ipynb`, `deploy/` | vLLM serve script, Colab launcher, completion gate, context length |
