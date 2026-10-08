@@ -1,0 +1,13 @@
+{
+  "id": "cat1_ast_diff_10_diff_generator_expression",
+  "instruction": "cart_total builds a temporary list only to sum it. Remove that intermediate list without changing the result.",
+  "context": "",
+  "edit_file": "aggregator.py",
+  "category": "1_surgical_diff_ast_precision",
+  "source_ids": [
+    "cat1_ast_diff_10_diff_generator_expression",
+    "cat1_ast_diff_20_diff_generator_expression",
+    "cat1_ast_diff_30_diff_generator_expression"
+  ],
+  "forbidden_symbols": []
+}

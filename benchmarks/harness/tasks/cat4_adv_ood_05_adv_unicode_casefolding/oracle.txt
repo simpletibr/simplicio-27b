@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    return a.lower() == b.lower()
+====
+    return a.casefold() == b.casefold()
+>>>> REPLACE
+</patch>

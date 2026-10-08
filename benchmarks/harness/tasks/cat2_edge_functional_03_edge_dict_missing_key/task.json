@@ -1,0 +1,13 @@
+{
+  "id": "cat2_edge_functional_03_edge_dict_missing_key",
+  "instruction": "Safely extract the role, returning the string anonymous when the 'user' key or the 'role' key is missing.",
+  "context": "",
+  "edit_file": "jwt_decoder.py",
+  "category": "2_functional_correctness_edge_cases",
+  "source_ids": [
+    "cat2_edge_functional_03_edge_dict_missing_key",
+    "cat2_edge_functional_13_edge_dict_missing_key",
+    "cat2_edge_functional_23_edge_dict_missing_key"
+  ],
+  "forbidden_symbols": []
+}

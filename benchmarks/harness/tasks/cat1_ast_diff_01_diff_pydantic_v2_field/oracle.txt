@@ -1,0 +1,15 @@
+<patch>
+<<<< SEARCH
+from pydantic import BaseModel
+
+
+class UserDTO(BaseModel):
+    tax_id: str
+====
+from pydantic import BaseModel, Field
+
+
+class UserDTO(BaseModel):
+    tax_id: str = Field(min_length=11, max_length=14)
+>>>> REPLACE
+</patch>

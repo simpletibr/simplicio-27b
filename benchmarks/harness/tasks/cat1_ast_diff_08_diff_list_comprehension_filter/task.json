@@ -1,0 +1,13 @@
+{
+  "id": "cat1_ast_diff_08_diff_list_comprehension_filter",
+  "instruction": "Rewrite the body of evens_of as a single list comprehension with the same result.",
+  "context": "",
+  "edit_file": "filter.py",
+  "category": "1_surgical_diff_ast_precision",
+  "source_ids": [
+    "cat1_ast_diff_08_diff_list_comprehension_filter",
+    "cat1_ast_diff_18_diff_list_comprehension_filter",
+    "cat1_ast_diff_28_diff_list_comprehension_filter"
+  ],
+  "forbidden_symbols": []
+}

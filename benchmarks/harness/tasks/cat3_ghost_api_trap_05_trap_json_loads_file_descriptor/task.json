@@ -1,0 +1,15 @@
+{
+  "id": "cat3_ghost_api_trap_05_trap_json_loads_file_descriptor",
+  "instruction": "Implement parse_file so it returns the parsed JSON content of the file.",
+  "context": "",
+  "edit_file": "parser.py",
+  "category": "3_ghost_api_and_deprecated_traps",
+  "source_ids": [
+    "cat3_ghost_api_trap_05_trap_json_loads_file_descriptor",
+    "cat3_ghost_api_trap_15_trap_json_loads_file_descriptor",
+    "cat3_ghost_api_trap_25_trap_json_loads_file_descriptor"
+  ],
+  "forbidden_symbols": [
+    "json.loads(f)"
+  ]
+}

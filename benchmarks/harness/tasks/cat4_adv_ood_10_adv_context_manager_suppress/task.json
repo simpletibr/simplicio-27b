@@ -1,0 +1,13 @@
+{
+  "id": "cat4_adv_ood_10_adv_context_manager_suppress",
+  "instruction": "Replace the try/except/pass in try_remove with the standard-library context manager that ignores an exception; behavior must not change.",
+  "context": "",
+  "edit_file": "clean_remove.py",
+  "category": "4_adversarial_and_out_of_distribution",
+  "source_ids": [
+    "cat4_adv_ood_10_adv_context_manager_suppress",
+    "cat4_adv_ood_20_adv_context_manager_suppress",
+    "cat4_adv_ood_30_adv_context_manager_suppress"
+  ],
+  "forbidden_symbols": []
+}

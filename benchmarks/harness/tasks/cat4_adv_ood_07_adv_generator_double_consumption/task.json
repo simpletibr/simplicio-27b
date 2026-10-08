@@ -1,0 +1,13 @@
+{
+  "id": "cat4_adv_ood_07_adv_generator_double_consumption",
+  "instruction": "analyze_stream returns a wrong total when given a generator. It must return (count, total) for any iterable, including generators.",
+  "context": "",
+  "edit_file": "stream.py",
+  "category": "4_adversarial_and_out_of_distribution",
+  "source_ids": [
+    "cat4_adv_ood_07_adv_generator_double_consumption",
+    "cat4_adv_ood_17_adv_generator_double_consumption",
+    "cat4_adv_ood_27_adv_generator_double_consumption"
+  ],
+  "forbidden_symbols": []
+}

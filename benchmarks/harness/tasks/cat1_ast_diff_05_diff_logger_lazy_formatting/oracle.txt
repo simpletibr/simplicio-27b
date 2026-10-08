@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    logger.info(f'Processing job {job_id} for user {user_id}')
+====
+    logger.info('Processing job %s for user %s', job_id, user_id)
+>>>> REPLACE
+</patch>

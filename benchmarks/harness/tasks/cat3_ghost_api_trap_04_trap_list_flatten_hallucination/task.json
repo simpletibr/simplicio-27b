@@ -1,0 +1,16 @@
+{
+  "id": "cat3_ghost_api_trap_04_trap_list_flatten_hallucination",
+  "instruction": "Implement flatten: turn a list of lists into one flat list, keeping order.",
+  "context": "",
+  "edit_file": "arrays.py",
+  "category": "3_ghost_api_and_deprecated_traps",
+  "source_ids": [
+    "cat3_ghost_api_trap_04_trap_list_flatten_hallucination",
+    "cat3_ghost_api_trap_14_trap_list_flatten_hallucination",
+    "cat3_ghost_api_trap_24_trap_list_flatten_hallucination"
+  ],
+  "forbidden_symbols": [
+    "nested.flatten",
+    ".flatten()"
+  ]
+}

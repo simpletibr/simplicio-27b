@@ -49,11 +49,21 @@ To run an untrusted model, put the whole harness in a container or VM without ne
 
 For each run, `results/<run>.jsonl` has one line per task (`task`, `task_sha256`, `error`, `latency_s`, `raw_output`, `reasoning`, `finish_reason`, `prompt_tokens`, `completion_tokens`, `applied`, `apply_error`, `blocks`, `passed`, `returncode`, `timed_out`, `stdout_tail`, `report`). A task whose request fails, or whose answer is not a chat completion (`OSError`, `HTTPException`, `KeyError`, `IndexError`, `ValueError`, `AttributeError`, `TypeError`), is written as a failed row with `error` set and counts in `errors`. A tasks directory with no task is an error (exit code 2) and writes nothing. `results/<run>.summary.json` has the run configuration, counts, `pass_rate`, the 95% Wilson interval (`wilson_95`), `prompt_sha256`, `git_commit` and timestamps. `results/` is git-ignored.
 
+## Tasks
+
+The 40 eval tasks (`tasks/cat1_*` to `tasks/cat4_*`, 10 per category) come from the 40 unique tasks of [`data/unseen_eval_120.json`](https://github.com/simpletibr/simplicio-27b/blob/b8567df/data/unseen_eval_120.json), which lists each of them 3 times. `source_ids` keeps the 3 original ids, which is how the old prompt stays recoverable from the data file; `task.json` carries no copy of it, because many old prompts quoted the answer, and no string of `task.json` may share 12 characters with the oracle that the model does not already see in the code. `instruction` is the new statement: it describes the behavior and never the answer. `context` is empty. Each task has real code in `files/`, hidden pytest tests in `tests/` that run the patched module (a few use the AST or a spy where the behavior cannot be observed from the outside) and an `oracle.txt` that passes them. The 3 `ex_*` format examples live in `tests/fixtures/harness_tasks/`, so that `tasks/` holds only the 40 eval tasks.
+
+The tests need `pydantic`, `fastapi`, `pandas` and `SQLAlchemy`, all pinned in `requirements.txt`, and the harness runs them with the same Python that runs `harness.py`. `tasks/ruff.toml` excludes `files/` from ruff, because the stubs there keep unused imports on purpose.
+
+Verification: `harness.py --oracle` (every task must print `OK`) and `decontam_tasks.py`, which writes `tasks/decontamination.json` and exits with 1 if instruction, code and oracle of a task share a 13-gram with `data/*.jsonl`.
+
 ## Commands
 
 ```bash
 python3 -m pip install -r benchmarks/harness/requirements.txt
-python3 benchmarks/harness/harness.py --oracle
+python3 benchmarks/harness/harness.py --oracle   # the 40 eval tasks
+python3 benchmarks/harness/harness.py --tasks tests/fixtures/harness_tasks --oracle   # the 3 format examples
+python3 benchmarks/harness/decontam_tasks.py
 python3 benchmarks/harness/harness.py --base-url http://127.0.0.1:8000/v1 --model simplicio-27b --chat-template-kwargs '{"enable_thinking": false}'
 python3 benchmarks/harness/harness.py --base-url http://127.0.0.1:11434/v1 --model wesleysimplicio/simplicio-27b --extra-body '{"reasoning_effort": "none"}'
 ```

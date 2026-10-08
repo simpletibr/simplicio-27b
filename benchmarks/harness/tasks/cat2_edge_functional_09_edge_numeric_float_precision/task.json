@@ -1,0 +1,13 @@
+{
+  "id": "cat2_edge_functional_09_edge_numeric_float_precision",
+  "instruction": "add_cents(0.1, 0.2) must return exactly 0.3: add the amounts without binary floating-point error and keep returning a float.",
+  "context": "",
+  "edit_file": "currency.py",
+  "category": "2_functional_correctness_edge_cases",
+  "source_ids": [
+    "cat2_edge_functional_09_edge_numeric_float_precision",
+    "cat2_edge_functional_19_edge_numeric_float_precision",
+    "cat2_edge_functional_29_edge_numeric_float_precision"
+  ],
+  "forbidden_symbols": []
+}

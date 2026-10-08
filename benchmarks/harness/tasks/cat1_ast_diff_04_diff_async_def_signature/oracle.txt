@@ -1,0 +1,9 @@
+<patch>
+<<<< SEARCH
+def fetch_page(url: str) -> str:
+    return http_get(url)
+====
+async def fetch_page(url: str) -> str:
+    return await http_get(url)
+>>>> REPLACE
+</patch>

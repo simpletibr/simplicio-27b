@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+singleton_param = ('only_item')
+====
+singleton_param = ('only_item',)
+>>>> REPLACE
+</patch>

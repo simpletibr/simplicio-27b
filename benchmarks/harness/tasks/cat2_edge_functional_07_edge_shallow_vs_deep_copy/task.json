@@ -1,0 +1,13 @@
+{
+  "id": "cat2_edge_functional_07_edge_shallow_vs_deep_copy",
+  "instruction": "Mutating nested lists or dicts in the value returned by copy_state must not change the original state.",
+  "context": "",
+  "edit_file": "state_cloner.py",
+  "category": "2_functional_correctness_edge_cases",
+  "source_ids": [
+    "cat2_edge_functional_07_edge_shallow_vs_deep_copy",
+    "cat2_edge_functional_17_edge_shallow_vs_deep_copy",
+    "cat2_edge_functional_27_edge_shallow_vs_deep_copy"
+  ],
+  "forbidden_symbols": []
+}

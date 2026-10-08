@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    pass
+====
+    return asyncio.run(coro)
+>>>> REPLACE
+</patch>

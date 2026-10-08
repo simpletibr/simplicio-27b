@@ -1,0 +1,16 @@
+{
+  "id": "cat3_ghost_api_trap_09_trap_str_is_numeric_vs_isnumeric",
+  "instruction": "Implement is_all_digits so it returns True only for a non-empty string made only of digits.",
+  "context": "",
+  "edit_file": "cleaner.py",
+  "category": "3_ghost_api_and_deprecated_traps",
+  "source_ids": [
+    "cat3_ghost_api_trap_09_trap_str_is_numeric_vs_isnumeric",
+    "cat3_ghost_api_trap_19_trap_str_is_numeric_vs_isnumeric",
+    "cat3_ghost_api_trap_29_trap_str_is_numeric_vs_isnumeric"
+  ],
+  "forbidden_symbols": [
+    ".is_numeric(",
+    ".is_digit("
+  ]
+}

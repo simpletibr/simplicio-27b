@@ -1,0 +1,9 @@
+<patch>
+<<<< SEARCH
+def collect_data(item: int, container: list = []):
+====
+def collect_data(item: int, container: list | None = None):
+    if container is None:
+        container = []
+>>>> REPLACE
+</patch>

@@ -1,0 +1,12 @@
+<patch>
+<<<< SEARCH
+def add_cents(a: float, b: float) -> float:
+    return a + b
+====
+from decimal import Decimal
+
+
+def add_cents(a: float, b: float) -> float:
+    return float(Decimal(str(a)) + Decimal(str(b)))
+>>>> REPLACE
+</patch>

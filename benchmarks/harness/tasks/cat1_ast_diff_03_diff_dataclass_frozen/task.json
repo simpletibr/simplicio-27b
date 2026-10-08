@@ -1,0 +1,13 @@
+{
+  "id": "cat1_ast_diff_03_diff_dataclass_frozen",
+  "instruction": "Make AppConfig instances immutable: assigning to a field after construction must raise an error.",
+  "context": "",
+  "edit_file": "config.py",
+  "category": "1_surgical_diff_ast_precision",
+  "source_ids": [
+    "cat1_ast_diff_03_diff_dataclass_frozen",
+    "cat1_ast_diff_13_diff_dataclass_frozen",
+    "cat1_ast_diff_23_diff_dataclass_frozen"
+  ],
+  "forbidden_symbols": []
+}

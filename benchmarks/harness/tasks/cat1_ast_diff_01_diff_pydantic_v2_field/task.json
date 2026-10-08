@@ -1,0 +1,13 @@
+{
+  "id": "cat1_ast_diff_01_diff_pydantic_v2_field",
+  "instruction": "Reject tax_id values shorter than 11 or longer than 14 characters with a validation error.",
+  "context": "",
+  "edit_file": "user_dto.py",
+  "category": "1_surgical_diff_ast_precision",
+  "source_ids": [
+    "cat1_ast_diff_01_diff_pydantic_v2_field",
+    "cat1_ast_diff_11_diff_pydantic_v2_field",
+    "cat1_ast_diff_21_diff_pydantic_v2_field"
+  ],
+  "forbidden_symbols": []
+}

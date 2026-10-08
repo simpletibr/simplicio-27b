@@ -1,0 +1,13 @@
+{
+  "id": "cat4_adv_ood_06_adv_env_variable_cast_trap",
+  "instruction": "Fix os.getenv() always returning a string: DEBUG must become boolean True for the values true, 1 and yes, and False for anything else, including when the variable is unset.",
+  "context": "",
+  "edit_file": "settings.py",
+  "category": "4_adversarial_and_out_of_distribution",
+  "source_ids": [
+    "cat4_adv_ood_06_adv_env_variable_cast_trap",
+    "cat4_adv_ood_16_adv_env_variable_cast_trap",
+    "cat4_adv_ood_26_adv_env_variable_cast_trap"
+  ],
+  "forbidden_symbols": []
+}

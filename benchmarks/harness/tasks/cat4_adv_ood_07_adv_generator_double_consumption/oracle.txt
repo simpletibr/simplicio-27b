@@ -1,0 +1,10 @@
+<patch>
+<<<< SEARCH
+    c = len(list(gen))
+    s = sum(list(gen))
+====
+    items = list(gen)
+    c = len(items)
+    s = sum(items)
+>>>> REPLACE
+</patch>

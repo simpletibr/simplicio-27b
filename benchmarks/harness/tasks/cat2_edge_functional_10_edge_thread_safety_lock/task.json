@@ -1,0 +1,13 @@
+{
+  "id": "cat2_edge_functional_10_edge_thread_safety_lock",
+  "instruction": "Make Counter.inc() thread-safe with a lock from the threading module stored in an instance attribute.",
+  "context": "",
+  "edit_file": "counter.py",
+  "category": "2_functional_correctness_edge_cases",
+  "source_ids": [
+    "cat2_edge_functional_10_edge_thread_safety_lock",
+    "cat2_edge_functional_20_edge_thread_safety_lock",
+    "cat2_edge_functional_30_edge_thread_safety_lock"
+  ],
+  "forbidden_symbols": []
+}

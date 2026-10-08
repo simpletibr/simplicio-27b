@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+        pass
+====
+        return json.load(f)
+>>>> REPLACE
+</patch>

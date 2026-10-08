@@ -1,0 +1,10 @@
+<patch>
+<<<< SEARCH
+from typing import Optional
+
+
+def find_by_id(item_id: int) -> Optional[str]:
+====
+def find_by_id(item_id: int) -> str | None:
+>>>> REPLACE
+</patch>

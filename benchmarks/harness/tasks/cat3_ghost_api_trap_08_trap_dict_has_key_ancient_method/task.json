@@ -1,0 +1,15 @@
+{
+  "id": "cat3_ghost_api_trap_08_trap_dict_has_key_ancient_method",
+  "instruction": "Implement check_key so it returns True when k is a key of d, and False otherwise.",
+  "context": "",
+  "edit_file": "legacy.py",
+  "category": "3_ghost_api_and_deprecated_traps",
+  "source_ids": [
+    "cat3_ghost_api_trap_08_trap_dict_has_key_ancient_method",
+    "cat3_ghost_api_trap_18_trap_dict_has_key_ancient_method",
+    "cat3_ghost_api_trap_28_trap_dict_has_key_ancient_method"
+  ],
+  "forbidden_symbols": [
+    ".has_key("
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "cat4_adv_ood_09_adv_walrus_operator_leak",
+  "instruction": "Refactor find_match to bind the regex match inside the if condition with an assignment expression; behavior must not change.",
+  "context": "",
+  "edit_file": "finder.py",
+  "category": "4_adversarial_and_out_of_distribution",
+  "source_ids": [
+    "cat4_adv_ood_09_adv_walrus_operator_leak",
+    "cat4_adv_ood_19_adv_walrus_operator_leak",
+    "cat4_adv_ood_29_adv_walrus_operator_leak"
+  ],
+  "forbidden_symbols": []
+}

@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    pass
+====
+    return [x for sub in nested for x in sub]
+>>>> REPLACE
+</patch>

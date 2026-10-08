@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    return 0.0
+====
+    return subtotal * 1.1
+>>>> REPLACE
+</patch>

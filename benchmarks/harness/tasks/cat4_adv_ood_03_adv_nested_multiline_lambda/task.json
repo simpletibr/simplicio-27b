@@ -1,0 +1,13 @@
+{
+  "id": "cat4_adv_ood_03_adv_nested_multiline_lambda",
+  "instruction": "sort_by_id raises TypeError for a list of dicts. Sort the list in place by each dict's 'id', ascending, and return it.",
+  "context": "",
+  "edit_file": "sort.py",
+  "category": "4_adversarial_and_out_of_distribution",
+  "source_ids": [
+    "cat4_adv_ood_03_adv_nested_multiline_lambda",
+    "cat4_adv_ood_13_adv_nested_multiline_lambda",
+    "cat4_adv_ood_23_adv_nested_multiline_lambda"
+  ],
+  "forbidden_symbols": []
+}

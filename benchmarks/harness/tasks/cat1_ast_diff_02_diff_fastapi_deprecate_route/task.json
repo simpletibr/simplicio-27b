@@ -1,0 +1,13 @@
+{
+  "id": "cat1_ast_diff_02_diff_fastapi_deprecate_route",
+  "instruction": "Mark the GET /v1/users endpoint as deprecated in the OpenAPI schema without changing its response.",
+  "context": "",
+  "edit_file": "router.py",
+  "category": "1_surgical_diff_ast_precision",
+  "source_ids": [
+    "cat1_ast_diff_02_diff_fastapi_deprecate_route",
+    "cat1_ast_diff_12_diff_fastapi_deprecate_route",
+    "cat1_ast_diff_22_diff_fastapi_deprecate_route"
+  ],
+  "forbidden_symbols": []
+}

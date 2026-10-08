@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    return items[0]
+====
+    return items[0] if items else None
+>>>> REPLACE
+</patch>

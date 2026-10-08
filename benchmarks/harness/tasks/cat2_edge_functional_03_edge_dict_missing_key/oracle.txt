@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    return claims['user']['role']
+====
+    return claims.get('user', {}).get('role', 'anonymous')
+>>>> REPLACE
+</patch>

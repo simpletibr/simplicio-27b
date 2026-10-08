@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    total = sum([item.price for item in cart])
+====
+    total = sum(item.price for item in cart)
+>>>> REPLACE
+</patch>
