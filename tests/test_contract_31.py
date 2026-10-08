@@ -44,12 +44,13 @@ OWNER_PENDING = {
         "instruction for readers in the README; issue #31 leaves it (README belongs to #12)",
     ("notebooks/Simplicio_27B_Training_Colab.ipynb", 'model_name = "Qwen/Qwen3.8-27B"'):
         "base model read from the HF branch main, no revision=; weights review is #23/#29",
-    ("notebooks/Simplicio_27B_Merge_Colab.ipynb", 'model_name="wesleysimplicio/Simplicio-27B"'):
-        "adapter read from the HF branch main, no revision=; weights review is #23/#29",
+    ("notebooks/Simplicio_27B_Merge_Colab.ipynb",
+     'snapshot_download("wesleysimplicio/Simplicio-27B", allow_patterns=["lora/*"])'):
+        "adapter (lora/) read from the HF branch main, no revision=; the owner pins it after publishing #23",
     ("deploy/serve_vllm.sh", 'MODEL_ID="${1:-wesleysimplicio/Simplicio-27B}"'):
         "merged weights read from the HF branch main, no --revision; weights review is #23/#29",
-    ("README.md", 'model_name="wesleysimplicio/Simplicio-27B"'):
-        "adapter read from the HF branch main in the README snippet; weights review is #23/#29",
+    ("README.md", 'repo = "wesleysimplicio/Simplicio-27B"'):
+        "merged weights read from the HF branch main in the README snippet; weights review is #23/#29",
     ("deploy/serve_colab.py", 'MODEL_ID = os.environ.get("MODEL_ID", "wesleysimplicio/Simplicio-27B")'):
         "merged weights read from the HF branch main, no revision; weights review is #23/#29",
     ("README.md", "ollama run wesleysimplicio/simplicio-27b"):
