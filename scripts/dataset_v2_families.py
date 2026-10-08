@@ -191,47 +191,120 @@ def render_test(test: Test) -> str:
     return "\n".join(lines)
 
 
-def _short(text: str, limit: int = 110) -> str:
-    return text if len(text) <= limit else text[: limit - 3] + "..."
+def _run_steps(ns: dict, test: Test, stop: int | None = None):
+    """Executa os passos de `test` em um ambiente novo (copia de `ns`), na ordem. Devolve
+    (indice, passo, ambiente, falha) do primeiro passo que falha, onde falha = (expr, tail) com o texto
+    EXATO (sem corte e sem reformatar espacos), ou None se todos passam. Com `stop`, devolve antes de
+    executar o passo de indice `stop`, com o ambiente de antes dele (falha = None)."""
+    env = dict(ns)
+    for i, step in enumerate(test.steps):
+        if i == stop:
+            return i, step, env, None
+        fail = None
+        try:
+            if step.kind == "let":
+                env[step.a] = eval(step.b, env)
+            elif step.kind == "do":
+                exec(step.a, env)
+            elif step.kind == "eq":
+                got = eval(step.a, env)
+                if not got == step.b:
+                    fail = (step.a, f"devolve {got!r}; esperado {step.b!r}")
+            elif step.kind == "raises":
+                try:
+                    eval(step.a, env)
+                except BaseException as exc:  # noqa: BLE001 - qualquer excecao e dado
+                    if type(exc).__name__ != step.b:
+                        fail = (step.a, f"levanta {type(exc).__name__} em vez de {step.b}")
+                else:
+                    fail = (step.a, f"nao levanta {step.b}")
+            elif step.kind == "ok":
+                if not eval(step.a, env):
+                    fail = (step.a, "e falso")
+        except Exception as exc:  # noqa: BLE001
+            fail = (step.b if step.kind == "let" else step.a, f"levanta {type(exc).__name__}")
+        if fail is not None:
+            return i, step, env, fail
+    return None
+
+
+def _module_ns(source: str) -> dict:
+    ns: dict = {"__name__": "observed_module"}
+    exec(compile(source, "<observed>", "exec"), ns)
+    return ns
 
 
 def observe(source: str, tests: list[Test]) -> dict[str, str | None]:
     """Roda os passos dos testes em processo contra `source`, na ordem, no mesmo modulo (como o
     pytest). Devolve {nome: None se passou, senao a mensagem da primeira falha}. O codigo e gerado
     por este script e nao tem laco infinito nem E/S."""
-    ns: dict = {"__name__": "observed_module"}
-    exec(compile(source, "<observed>", "exec"), ns)
+    ns = _module_ns(source)
     out: dict[str, str | None] = {}
     for test in tests:
-        env = dict(ns)
-        msg: str | None = None
-        for step in test.steps:
-            try:
-                if step.kind == "let":
-                    env[step.a] = eval(step.b, env)
-                elif step.kind == "do":
-                    exec(step.a, env)
-                elif step.kind == "eq":
-                    got = eval(step.a, env)
-                    if not got == step.b:
-                        msg = _short(f"{step.a} devolveu {got!r}; esperado {step.b!r}")
-                elif step.kind == "raises":
-                    try:
-                        eval(step.a, env)
-                    except BaseException as exc:  # noqa: BLE001 - qualquer excecao e dado
-                        if type(exc).__name__ != step.b:
-                            msg = _short(f"{step.a} levantou {type(exc).__name__} em vez de {step.b}")
-                    else:
-                        msg = _short(f"{step.a} nao levantou {step.b}")
-                elif step.kind == "ok":
-                    if not eval(step.a, env):
-                        msg = _short(f"{step.a} e falso")
-            except Exception as exc:  # noqa: BLE001
-                msg = _short(f"{step.a if step.kind != 'let' else step.b} levantou {type(exc).__name__}: {exc}")
-            if msg is not None:
-                break
-        out[f"test_{test.name}"] = msg
+        hit = _run_steps(ns, test)
+        out[f"test_{test.name}"] = None if hit is None else f"{hit[3][0]} {hit[3][1]}"
     return out
+
+
+def reading(source: str, tests: list[Test], name: str) -> str | None:
+    """A leitura do codigo para o primeiro passo que falha no teste `name`: "<expr> <tail>" exata, sem
+    corte, sem "..." e sem reformatar espacos (um literal com dois espacos continua com dois)."""
+    ns = _module_ns(source)
+    for test in tests:
+        if f"test_{test.name}" == name:
+            hit = _run_steps(ns, test)
+            return None if hit is None else f"{hit[3][0]} {hit[3][1]}"
+    raise KeyError(name)
+
+
+def check_reading(source: str, tests: list[Test], name: str, text: str) -> str | None:
+    """Reexecuta a leitura `text` (a frase como foi escrita na trajetoria) contra `source`: refaz os passos
+    do teste `name` ate o primeiro que falha e reavalia ali a EXPRESSAO TAL COMO ESTA NA FRASE, num
+    ambiente novo. Devolve None se o que a frase afirma e o que o codigo faz, ou a razao do desencontro
+    (reading_elided, reading_unparsable, reading_mismatch)."""
+    if "..." in text or "\n" in text or "\r" in text:
+        return "reading_elided"
+    test = next(t for t in tests if f"test_{t.name}" == name)
+    hit = _run_steps(_module_ns(source), test)
+    if hit is None:
+        return "reading_unparsable"
+    i, step, _env, _fail = hit
+    env = _run_steps(_module_ns(source), test, stop=i)[2]  # estado de antes do passo, sem o efeito dele
+    tail = "; esperado " + repr(step.b)
+    pos = text.find(" devolve ")
+    if step.kind == "eq" and pos >= 0:
+        if not text.endswith(tail):
+            return "reading_unparsable"
+        expr, claimed = text[:pos], text[pos + len(" devolve "): len(text) - len(tail)]
+        try:
+            return None if repr(eval(expr, env)) == claimed else "reading_mismatch"
+        except Exception:  # noqa: BLE001
+            return "reading_mismatch"
+    if text.endswith(" e falso"):
+        expr, expect = text[: -len(" e falso")], "falso"
+    elif text.endswith(" nao levanta " + str(step.b)):
+        expr, expect = text[: -len(" nao levanta " + str(step.b))], "nao_levanta"
+    elif " levanta " in text:
+        expr, _, claimed = text.rpartition(" levanta ")
+        claimed, _, instead = claimed.partition(" em vez de ")
+        expect = "levanta"
+        if instead and instead != str(step.b):
+            return "reading_unparsable"
+    else:
+        return "reading_unparsable"
+    try:
+        if step.kind == "do":
+            exec(expr, env)
+            value, raised = None, None
+        else:
+            value, raised = eval(expr, env), None
+    except BaseException as exc:  # noqa: BLE001
+        value, raised = None, type(exc).__name__
+    if expect == "falso":
+        return None if raised is None and not value else "reading_mismatch"
+    if expect == "nao_levanta":
+        return None if raised is None else "reading_mismatch"
+    return None if raised == claimed else "reading_mismatch"
 
 
 # --------------------------------------------------------------------------------------------
@@ -1986,7 +2059,7 @@ def _exc_missing_raise(d, r, k):
              Test("below_limit", [Eq(call(fn, 3, limit), 3)])]
     return mk(FAM, "missing_raise", d, f"{d.item}_validation", chunk, bug, fix, tests, fn,
               behavior=f"levantar {exc} quando o {d.num} passa do limite",
-              cause=f"{exc}(...) so cria a excecao e a descarta; sem raise nada e levantado",
+              cause=f"a linha {exc}(msg) so cria a excecao e a descarta; sem raise nada e levantado",
               fix_desc="acrescentar raise antes da excecao", api=f"{exc} nativa e a palavra raise",
               lesson="Criar a excecao nao a levanta: falta o raise.",
               edge="valor acima do limite, exatamente no limite e abaixo do limite", perf="O(1), sem mudanca.")

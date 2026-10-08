@@ -17,11 +17,13 @@ import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -320,6 +322,143 @@ class DeterminismTests(unittest.TestCase):
                      for line in (Path(tmp) / name).read_text(encoding="utf-8").splitlines() if line]
         self.assertEqual(len(fresh), 14)
         self.assertEqual([line for line in fresh if line not in committed], [])
+
+
+class ReadingTests(unittest.TestCase):
+    """O que a trajetoria diz que o codigo original devolve ("por leitura do codigo") e o que ele devolve."""
+
+    POINTS = bd.READING_POINTS
+
+    @staticmethod
+    def _first_failure(original: str, test_source: str, test_name: str):
+        """Reexecuta o teste COMMITADO (test_source) contra o original e devolve (texto da expressao,
+        ambiente de antes do passo, no do passo) do primeiro passo que falha, ou None."""
+        ns: dict = {"__name__": "observed_module"}
+        exec(compile(original, "<original>", "exec"), ns)
+        tree = ast.parse(test_source)
+        func = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == test_name)
+        env = dict(ns)
+        for node in func.body:
+            before = dict(env)
+            try:
+                if isinstance(node, (ast.Assign, ast.Expr)):
+                    exec(ast.get_source_segment(test_source, node), env)
+                elif isinstance(node, ast.With):  # with pytest.raises(X): expr
+                    want = ast.get_source_segment(test_source, node.items[0].context_expr.args[0])
+                    inner = ast.get_source_segment(test_source, node.body[0])
+                    try:
+                        eval(inner, dict(env))
+                    except BaseException as exc:  # noqa: BLE001
+                        if type(exc).__name__ != want:
+                            return inner, before, node
+                    else:
+                        return inner, before, node
+                else:  # assert
+                    test = node.test
+                    if isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq):
+                        left = ast.get_source_segment(test_source, test.left)
+                        if not eval(left, env) == eval(ast.get_source_segment(test_source, test.comparators[0]), env):
+                            return left, before, node
+                    elif not eval(ast.get_source_segment(test_source, test), env):
+                        return ast.get_source_segment(test_source, test), before, node
+            except Exception:  # noqa: BLE001
+                if isinstance(node, ast.Assert):
+                    test = node.test
+                    if isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq):
+                        test = test.left
+                    return ast.get_source_segment(test_source, test), before, node
+                return ast.get_source_segment(test_source, node.value if isinstance(node, ast.Assign) else node), before, node
+        return None
+
+    def problems(self, row: dict) -> list[str]:
+        trajectory = row["simplicio_trajectory"]
+        original = row["context"].split("Codigo Atual:\n", 1)[1]
+        test_name = re.search(r"O teste (test_\w+) fixa", trajectory).group(1)
+        sentences = [m for pattern in self.POINTS for m in pattern.findall(trajectory)]
+        out = []
+        if len(sentences) != 2 or sentences[0] != sentences[1]:
+            return [f"{row['id']}: pontos 9 e 33 nao trazem a mesma leitura"]
+        text = sentences[0]
+        if "..." in text:
+            out.append(f"{row['id']}: leitura com reticencias: {text}")
+        hit = self._first_failure(original, row["test_source"], test_name)
+        if hit is None:
+            return out + [f"{row['id']}: o teste nao falha no original"]
+        expr_text, env, node = hit
+        if " devolve " in text:
+            expr, rest = text.split(" devolve ", 1)
+            claimed = rest.rsplit("; esperado ", 1)[0]
+            if expr != expr_text:
+                out.append(f"{row['id']}: a leitura reescreveu a expressao: {expr!r} != {expr_text!r}")
+            got = eval(expr, dict(env))
+            if repr(got) != claimed:
+                out.append(f"{row['id']}: a leitura diz {claimed} mas o original devolve {got!r}")
+        elif " levanta " in text or text.endswith(" e falso"):
+            if text.endswith(" e falso"):
+                expr, kind = text[: -len(" e falso")], "falso"
+            elif " nao levanta " in text:
+                expr, kind = text.partition(" nao levanta ")[0], "nao_levanta"
+            else:
+                expr, _, tail = text.rpartition(" levanta ")
+                kind = tail.split(" em vez de ")[0]
+            if expr != expr_text:
+                out.append(f"{row['id']}: a leitura reescreveu a expressao: {expr!r} != {expr_text!r}")
+            try:
+                value, raised = eval(expr, dict(env)), None
+            except BaseException as exc:  # noqa: BLE001
+                value, raised = None, type(exc).__name__
+            ok = {"falso": raised is None and not value, "nao_levanta": raised is None}.get(kind, raised == kind)
+            if not ok:
+                out.append(f"{row['id']}: a leitura {text!r} nao confere com o original (levantou {raised})")
+        else:
+            out.append(f"{row['id']}: leitura sem forma conhecida: {text}")
+        return out
+
+    @unittest.skipUnless((V2 / "train.jsonl").is_file(), "data/v2 nao existe")
+    def test_every_stated_value_is_what_the_original_returns_and_nothing_is_elided(self) -> None:
+        rows = load("train.jsonl") + load("val.jsonl")
+        sample = rows[::7] + [r for r in rows if (r["family"], r["shape"]) in
+                              {("missing_strip", "normalize_text"), ("off_by_one", "page_slice")}]
+        self.assertGreaterEqual(len(sample), 300)
+        bad = [p for row in sample for p in self.problems(row)]
+        self.assertEqual(bad, [])
+        for row in rows:
+            for point in (9, 33):
+                line = next(x for x in row["simplicio_trajectory"].split("\n") if x.startswith(f"[Ponto {point}:"))
+                self.assertNotIn("...", line, row["id"])
+            self.assertNotIn("devolveu", row["simplicio_trajectory"], row["id"])
+
+    def test_the_guard_catches_the_collapsed_space_that_made_the_old_reading_wrong(self) -> None:
+        # slug_x('  Fjord delta ') devolve '--fjord-delta-'; com os dois espacos colapsados em um dentro do
+        # literal, a expressao vira slug_x(' Fjord delta ') e o valor certo seria '-fjord-delta-'.
+        found = None
+        for di in range(50):
+            for k in range(fam.VARIANTS):
+                case = bd.assemble("missing_strip", "normalize_text", di, k)
+                name = next(n for n, m in fam.observe(case.original, case.tests).items() if m)
+                text = fam.reading(case.original, case.tests, name)
+                if " devolve '--" in text and text.startswith("slug_"):
+                    found = (case, name, text)
+                    break
+            if found:
+                break
+        self.assertIsNotNone(found)
+        case, name, text = found
+        self.assertIn("('  ", text)  # os dois espacos do literal ficam como no teste
+        self.assertIsNone(fam.check_reading(case.original, case.tests, name, text))
+        collapsed = " ".join(text.split())
+        self.assertNotEqual(collapsed, text)
+        self.assertEqual(fam.check_reading(case.original, case.tests, name, collapsed), "reading_mismatch")
+        self.assertEqual(fam.check_reading(case.original, case.tests, name, text[:60] + "..."), "reading_elided")
+        wrong = text.replace(" devolve ", " devolve 'x' + ", 1)
+        self.assertEqual(fam.check_reading(case.original, case.tests, name, wrong), "reading_mismatch")
+
+    def test_a_candidate_whose_reading_does_not_match_the_original_is_rejected(self) -> None:
+        real = fam.reading
+        with mock.patch.object(bd.fam, "reading", side_effect=lambda *a: real(*a).replace(" devolve ", " devolve 0 or ", 1)):
+            self.assertEqual(bd.process(("off_by_one", "page_slice", 3, 0)), "reading_mismatch")
+        with mock.patch.object(bd.fam, "reading", side_effect=lambda *a: real(*a)[:40] + "..."):
+            self.assertEqual(bd.process(("off_by_one", "page_slice", 3, 0)), "reading_elided")
 
 
 @needs_pytest

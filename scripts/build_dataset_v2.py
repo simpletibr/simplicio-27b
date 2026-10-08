@@ -281,10 +281,10 @@ def build_trajectory(case: Case, observed_before: dict, patched: str) -> str:
     failed = [n for n, msg in observed_before.items() if msg is not None]
     n_failed, n_passed = len(failed), total - len(failed)
     first = failed[0]
-    # A mensagem observada so entra na trajetoria como leitura do codigo (sem verbo de execucao
-    # e sem texto de excecao): a trajetoria nao pode apresentar saida de comando como vista.
-    first_msg = " ".join(str(observed_before[first]).split())
-    first_msg = re.sub(r" levantou (\w+):.*$", r" levanta \1", first_msg).replace(" devolveu ", " devolve ")
+    # A leitura do codigo e a frase EXATA de fam.reading (sem corte, sem "...", sem reformatar espacos
+    # dentro dos literais, sem verbo de execucao e sem texto de excecao): a trajetoria nao pode
+    # apresentar saida de comando como vista. O process() reexecuta a frase escrita (guarda de leitura).
+    first_msg = fam.reading(case.original, case.tests, first)
     src_lines = case.original.split("\n")
     n_lines = len(src_lines) - (1 if src_lines[-1] == "" else 0)
     ln = case.original[: case.original.index(case.search)].count("\n") + 1
@@ -397,6 +397,27 @@ def build_trajectory(case: Case, observed_before: dict, patched: str) -> str:
     return "\n".join(out)
 
 
+READING_POINTS = (
+    re.compile(r"^\[Ponto 9: Ambiguidade\] .*? por leitura do codigo, (.*)\.$", re.M),
+    re.compile(r"^\[Ponto 33: Leitura Cirurgica\] Falha esperada pela leitura do codigo: (.*); a causa esta na linha \d+: ", re.M),
+)
+
+
+def check_trajectory_readings(case: Case, trajectory: str, test_name: str) -> str | None:
+    """Guarda de leitura: toda frase "por leitura do codigo" ESCRITA na trajetoria (pontos 9 e 33) e
+    reexecutada contra a funcao ORIGINAL; se o valor afirmado nao e o que ela devolve, ou se a frase tem
+    "..." ou nao da para ler, o candidato e rejeitado (reading_mismatch, reading_elided,
+    reading_unparsable)."""
+    for pattern in READING_POINTS:
+        found = pattern.findall(trajectory)
+        if len(found) != 1:
+            return "reading_unparsable"
+        problem = fam.check_reading(case.original, case.tests, test_name, found[0])
+        if problem:
+            return problem
+    return None
+
+
 # --------------------------------------------------------------------------------------------
 # Processamento de um candidato
 # --------------------------------------------------------------------------------------------
@@ -461,6 +482,9 @@ def process(cand: tuple[str, str, int, int]) -> dict | str:
             return "non_ascii"
         if loop_check.check(trajectory, complete=True):
             return "loop_check_failed"
+        bad_reading = check_trajectory_readings(case, trajectory, next(n for n, m in observed_before.items() if m is not None))
+        if bad_reading:
+            return bad_reading
         if harness.parse_blocks(trajectory) != harness.parse_blocks(patch_block(case.search, case.replace)):
             return "envelope_patch_differs"
         if harness.apply_blocks(case.original, harness.parse_blocks(trajectory)) != patched:
