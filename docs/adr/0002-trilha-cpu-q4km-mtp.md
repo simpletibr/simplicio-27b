@@ -32,3 +32,40 @@ A única trilha executável nesse hardware é o GGUF Q4_K_M com llama.cpp. Ela n
 
 - Nenhum número de tok/s entra no README sem o hardware, a carga e o estado do cache registrados junto.
 - Os resultados da trilha CPU e da trilha BF16 aparecem em tabelas separadas, cada uma com sua coluna de origem.
+
+## Benchmarks desta trilha
+
+### Referência reportada pela Qwen (nível 2, não medida por nós)
+
+A Qwen publica, para o Qwen3.8-27B, os resultados abaixo, junto com Qwen3.6-27B, Qwen3.7-Plus, Muse Glimmer-30B e Opus 4.6 Max. Os números são da Qwen. Não os reproduzimos e não os tratamos como resultado do Simplicio.
+
+| Benchmark | Qwen3.8-27B (reportado) |
+|---|---:|
+| Terminal Bench 2.1 (Terminus) | 73.0 |
+| SWE-bench Pro | 61.7 |
+| NL2Repo-Bench | 42.3 |
+| DeepSWE 1.1 | 42.2 |
+| QwenSWEBench | 79.0 |
+| CoWorkBench | 70.7 |
+| JobBench | 33.4 |
+| Agents' Last Exam, Score | 42.9 |
+| IFBench | 79.5 |
+| GPQA Diamond | 89.2 |
+| HLE | 30.8 |
+| LiveCodeBench v6 | 90.3 |
+
+**O protocolo da Qwen não é o nosso.** O model card diz que os modelos Qwen3.8 operam em modo thinking por padrão, com `temperature=1.0`, `top_p=0.95`, `top_k=20`, e `reasoning_effort` padrão `xhigh`. O QwenSWEBench é avaliado com o harness do Claude Code, com `avg@3`, timeout de 8 horas e `max_tokens=32768`. O Simplicio foi treinado sem blocos `<think>` e nossos runs são greedy, com thinking desligado. Por isso, os números da Qwen não são comparáveis aos nossos, e nenhuma tabela pode colocá-los lado a lado sem essa ressalva na mesma linha.
+
+### O que roda nesta trilha
+
+| Benchmark | Dataset (Hugging Face) | Acesso | Viabilidade na VPS | Protocolo |
+|---|---|---|---|---|
+| LiveCodeBench v6 (lite) | `livecodebench/code_generation_lite` | aberto | subconjunto, com correção por execução de testes | thinking desligado, greedy |
+| IFBench | `allenai/IFBench_test` | aberto | subconjunto, com correção por verificadores de restrição | thinking desligado, greedy |
+| GPQA Diamond | `Idavidrein/gpqa` | gated (auto) | depende de aceitar os termos no Hugging Face pela conta do dono | múltipla escolha, sem juiz |
+| HLE | `cais/hle` | gated (auto) | depende de aceitar os termos; parte das perguntas exige juiz | a definir |
+| Terminal Bench 2.1, SWE-bench Pro, NL2Repo, DeepSWE 1.1, QwenSWEBench, CoWorkBench, JobBench, Agents' Last Exam | — | — | fora de escopo: exigem harness agêntico, containers e horas de execução por tarefa | — |
+
+**Tempo estimado na VPS, a 0,3 a 0,9 tok/s:** com thinking desligado, um subconjunto de cerca de 20 problemas de LiveCodeBench e cerca de 30 instruções do IFBench levam da ordem de um dia por configuração. Thinking ligado não é viável: a Qwen usa até 32.768 tokens por tarefa.
+
+Cada linha dessa tabela entra no relatório só com o tamanho da amostra, o protocolo e o intervalo de confiança.
