@@ -5,7 +5,7 @@ Fixa, sem rede e sem produção:
     null) e `deploy_sha` (40 hex ou null), em cada estado possível; o código recusa não-GET com 405 e
     `Allow: GET`, responde `application/json; charset=utf-8` e `Cache-Control: no-store`;
   * status.php lê o mesmo arquivo de estado que set_upstream.php grava (mesma linha `$file = ` e os
-    campos `upstream_url` e `updated`) e nunca devolve `upstream_url`;
+    campos `upstream_url` e `updated_at`) e nunca devolve `upstream_url`;
   * o schema de GET /v1/models em gateway/models.json: campos, ids na ordem, valores de deploy/;
   * gateway/ não tem segredo, `Bearer` literal com token, `hf_`, `sk-`, nem host de túnel real, nem
     arquivo de dados (`.env`, simpleti-upstream.json); `.env.example`, se existir, não traz valores;
@@ -86,10 +86,10 @@ class StatusSchemaTests(unittest.TestCase):
     def test_schema_in_every_state(self) -> None:
         states = {
             "sem estado": {},
-            "registrado": {"state": {"upstream_url": "https://x-y.trycloudflare.com", "updated": 1790000000}},
-            "registrado, updated ausente": {"state": {"upstream_url": "https://x-y.trycloudflare.com"}},
-            "url vazia": {"state": {"upstream_url": "", "updated": 1}},
-            "url não string": {"state": {"upstream_url": 7, "updated": 1}},
+            "registrado": {"state": {"upstream_url": "https://x-y.trycloudflare.com", "updated_at": 1790000000}},
+            "registrado, updated_at ausente": {"state": {"upstream_url": "https://x-y.trycloudflare.com"}},
+            "url vazia": {"state": {"upstream_url": "", "updated_at": 1}},
+            "url não string": {"state": {"upstream_url": 7, "updated_at": 1}},
             "estado corrompido": {"state": "{not json"},
             "sha válido": {"sha": SHA},
             "sha inválido": {"sha": "XYZ"},
@@ -101,22 +101,22 @@ class StatusSchemaTests(unittest.TestCase):
 
     def test_semantics(self) -> None:
         self.assertEqual(
-            run_status({"upstream_url": "https://x-y.trycloudflare.com", "updated": 1790000000}, SHA),
+            run_status({"upstream_url": "https://x-y.trycloudflare.com", "updated_at": 1790000000}, SHA),
             {"upstream_registered": True, "updated_at": "2026-09-21T14:13:20Z", "deploy_sha": SHA},
         )
-        # sem `updated` inteiro, registrado mas sem carimbo; URL vazia ou não string não conta como registro
+        # sem `updated_at` inteiro, registrado mas sem carimbo; URL vazia ou não string não conta como registro
         self.assertEqual(
             run_status({"upstream_url": "https://x-y.trycloudflare.com"}),
             {"upstream_registered": True, "updated_at": None, "deploy_sha": None},
         )
         for bad in ("", 7):
             with self.subTest(upstream_url=bad):
-                self.assertIs(run_status({"upstream_url": bad, "updated": 1})["upstream_registered"], False)
+                self.assertIs(run_status({"upstream_url": bad, "updated_at": 1})["upstream_registered"], False)
         self.assertIsNone(run_status(sha=SHA.upper())["deploy_sha"])
 
     def test_never_returns_the_tunnel(self) -> None:
         url = "https://very-secret-name.trycloudflare.com"
-        text = json.dumps(run_status({"upstream_url": url, "updated": 1}))
+        text = json.dumps(run_status({"upstream_url": url, "updated_at": 1}))
         for leak in ("very-secret-name", "trycloudflare", "upstream_url"):
             self.assertNotIn(leak, text)
 
@@ -144,7 +144,7 @@ class StatusSourceContractTests(unittest.TestCase):
 
         self.assertEqual(file_line(self.status), file_line(self.set_upstream))
         self.assertIn("SIMPLETI_UPSTREAM_FILE", file_line(self.status))
-        for field in ("upstream_url", "updated"):
+        for field in ("upstream_url", "updated_at"):
             self.assertIn(f"'{field}'", self.status)
             self.assertIn(f"'{field}'", self.set_upstream)
 

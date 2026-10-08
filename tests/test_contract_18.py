@@ -239,9 +239,8 @@ class BindContractTests(unittest.TestCase):
             planted = {"SIMPLETI_ADMIN_KEY": admin, "SIMPLETI_SET_UPSTREAM_URL": "https://x.invalid/",
                        "CLOUDFLARED_BIN": str(fake), "CONTRACT_OUT": str(out)}
             with patch.dict(os.environ, planted), contextlib.redirect_stdout(io.StringIO()):
-                proc, url = serve_colab.start_cloudflared(8001)
+                proc, url = serve_colab.start_cloudflared(8001, Path(tmp) / "cf.log")
             proc.wait(timeout=10)
-            proc.stderr.close()
             names = json.loads(out.read_text(encoding="utf-8"))
         self.assertEqual(url, "https://abc-def.trycloudflare.com")
         self.assertEqual([n for n in names if n.startswith("SIMPLETI_")], [])
@@ -260,7 +259,7 @@ class BindContractTests(unittest.TestCase):
 
     def test_gate_binds_loopback_only(self) -> None:
         with patch.object(serve_colab, "GATE_PORT", 0), contextlib.redirect_stdout(io.StringIO()):
-            httpd = serve_colab.start_gate()
+            httpd, _thread = serve_colab.start_gate()
         try:
             self.assertEqual(httpd.server_address[0], "127.0.0.1")
         finally:

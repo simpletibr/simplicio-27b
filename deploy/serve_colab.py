@@ -3,7 +3,8 @@
 
 Starts vLLM, puts a completion gate in front of it, opens a Cloudflare
 tunnel to the gate, probes a real chat completion, then registers the
-tunnel on simpleti.com.br. On exit the upstream is cleared.
+tunnel on simpleti.com.br and re-registers it every 30 s (heartbeat): the gateway's
+lease expires 90 s after the last beat, so a dead Colab ends in HTTP 503. On exit the upstream is cleared.
 
 A non-stream 200 from the gate always has finish_reason in {stop, length,
 tool_calls} and a usage object; otherwise it becomes HTTP 502. Streams are
@@ -27,6 +28,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -50,6 +52,7 @@ GATEWAY_SET = os.environ.get(
 )
 VLLM_PORT = int(os.environ.get("VLLM_PORT", "8000"))
 GATE_PORT = int(os.environ.get("GATE_PORT", "8001"))
+HEARTBEAT_S = 30
 LOCAL = "127.0.0.1"
 UPSTREAM_HEADER = "X-Simpleti-Upstream-Token"
 GATE_ROUTES = {("GET", "/v1/models"), ("POST", "/v1/chat/completions")}
@@ -371,35 +374,91 @@ class _GateHandler(BaseHTTPRequestHandler):
             self._passthrough("POST")
 
 
-def start_gate() -> ThreadingHTTPServer:
+def start_gate() -> tuple[ThreadingHTTPServer, threading.Thread]:
     httpd = ThreadingHTTPServer((LOCAL, GATE_PORT), _GateHandler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     print(f"completion gate on :{GATE_PORT} → vLLM :{VLLM_PORT}")
-    return httpd
+    return httpd, thread
 
 
-def start_cloudflared(port: int) -> tuple[subprocess.Popen[str], str]:
+def start_cloudflared(
+    port: int, log_path: Path = Path("cloudflared.log"), timeout_s: float = 60
+) -> tuple[subprocess.Popen[bytes], str]:
+    """Open a Quick Tunnel. cloudflared logs go to a file, so no pipe can fill up and stall it."""
     bin_name = os.environ.get("CLOUDFLARED_BIN", "cloudflared")
-    proc = subprocess.Popen(
-        [bin_name, "tunnel", "--url", f"http://127.0.0.1:{port}"],
-        env=tunnel_env(),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    assert proc.stderr is not None
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        line = proc.stderr.readline()
-        if not line and proc.poll() is not None:
-            break
-        match = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
+    with log_path.open("wb") as log:
+        proc = subprocess.Popen(
+            [bin_name, "tunnel", "--url", f"http://127.0.0.1:{port}"],
+            env=tunnel_env(),
+            stdout=subprocess.DEVNULL,
+            stderr=log,
+        )
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        exited = proc.poll() is not None  # polled before the read, so the last lines of a dead child are seen
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        match = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", text)
         if match:
-            url = match.group(0)
-            print("Túnel:", url)
-            return proc, url
-    raise SystemExit("cloudflared não publicou URL")
+            print("Túnel:", match.group(0))
+            return proc, match.group(0)
+        if exited:
+            break
+        time.sleep(0.5)
+    if proc.poll() is None:
+        proc.terminate()
+        proc.wait(timeout=10)
+    tail = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-20:])
+    raise SystemExit(f"cloudflared não publicou URL:\n{tail}")
+
+
+def probe_public(probe: Callable[[str], Any], url: str, attempts: int = 6, wait_s: float = 10) -> None:
+    """A new trycloudflare hostname takes a few seconds to resolve: retry the probe."""
+    for attempt in range(1, attempts + 1):
+        try:
+            probe(url)
+            return
+        except Exception as exc:
+            if attempt == attempts:
+                raise
+            print(f"probe do túnel falhou ({attempt}/{attempts}): {exc}")
+            time.sleep(wait_s)
+
+
+def dead_child(children: dict[str, Callable[[], bool]]) -> str | None:
+    for name, alive in children.items():
+        if not alive():
+            return name
+    return None
+
+
+def vllm_healthy() -> bool:
+    try:
+        status, _ = _http_json(f"http://127.0.0.1:{VLLM_PORT}/health", timeout=10)
+    except Exception:
+        return False
+    return status == 200
+
+
+def heartbeat_loop(
+    register: Callable[[], Any],
+    children: dict[str, Callable[[], bool]],
+    stop: threading.Event,
+    interval: float = HEARTBEAT_S,
+) -> None:
+    """register() every `interval` s until `stop` is set or a child dies; skip the beat if vLLM /health is not 200."""
+    while not stop.wait(interval):
+        dead = dead_child(children)
+        if dead is not None:
+            print(f"heartbeat parado: {dead} morreu", file=sys.stderr)
+            return
+        if not vllm_healthy():
+            print("heartbeat: /health do vLLM falhou; lease não renovado", file=sys.stderr)
+            continue
+        try:
+            register()
+        except Exception as exc:
+            print(f"heartbeat: set_upstream falhou: {exc}", file=sys.stderr)
 
 
 def main() -> None:
@@ -413,9 +472,14 @@ def main() -> None:
     gate = None
     tunnel = None
     registered = False
+    stop_beat = threading.Event()
+    beat: threading.Thread | None = None
 
     def shutdown(*_args: Any) -> None:
         nonlocal registered
+        stop_beat.set()
+        if beat is not None and beat.is_alive():
+            beat.join(timeout=35)
         if registered:
             clear_upstream(key)
             registered = False
@@ -432,21 +496,33 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, lambda *_: (shutdown(), sys.exit(0)))
     signal.signal(signal.SIGINT, lambda *_: (shutdown(), sys.exit(0)))
+    signal.signal(signal.SIGHUP, lambda *_: (shutdown(), sys.exit(0)))
 
     try:
         wait_vllm(vllm, VLLM_LOG)
-        gate = start_gate()
+        gate, gate_thread = start_gate()
         probe_all(f"http://127.0.0.1:{GATE_PORT}")
         tunnel, public_url = start_cloudflared(GATE_PORT)
-        probe_all(public_url)
+        probe_public(probe_all, public_url)
         print("set_upstream:", set_upstream(public_url, key))
         registered = True
         print("gateway aponta para", public_url)
+        children = {
+            "vllm": lambda: vllm.poll() is None,
+            "gate": gate_thread.is_alive,
+            "cloudflared": lambda: tunnel.poll() is None,
+        }
+        beat = threading.Thread(
+            target=heartbeat_loop,
+            args=(lambda: set_upstream(public_url, key), children, stop_beat),
+            name="heartbeat",
+            daemon=True,
+        )
+        beat.start()
         while True:
-            if vllm.poll() is not None:
-                raise SystemExit(f"vLLM saiu com {vllm.returncode}")
-            if tunnel.poll() is not None:
-                raise SystemExit(f"cloudflared saiu com {tunnel.returncode}")
+            dead = dead_child(children)
+            if dead is not None:
+                raise SystemExit(f"{dead} morreu; limpando o upstream")
             time.sleep(5)
     finally:
         shutdown()

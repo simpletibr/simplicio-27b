@@ -5,6 +5,7 @@
 // (the token is required and the state file is written 0600); {"clear": true}, null or "" deletes.
 // The state file now holds a secret, so SIMPLETI_UPSTREAM_FILE is required: an absolute path outside the
 // system temp dir and outside the web root (a missing 0700 directory is created). There is no default.
+// Every successful store stamps "updated_at": re-POSTing the same body is the heartbeat (gateway/upstream_lease.php).
 header('Content-Type: application/json; charset=utf-8');
 
 function respond(int $status, array $body): void
@@ -62,7 +63,7 @@ if (!is_writable($dir)) {
     respond(500, ['error' => 'upstream dir not writable']);
 }
 $tmp = tempnam($dir, '.upstream-');
-$json = json_encode(['upstream_url' => $url, 'upstream_token' => $token, 'updated' => time()]);
+$json = json_encode(['upstream_url' => $url, 'updated_at' => time(), 'upstream_token' => $token]);
 if ($tmp === false
     || file_put_contents($tmp, $json, LOCK_EX) === false
     || !chmod($tmp, 0600)
