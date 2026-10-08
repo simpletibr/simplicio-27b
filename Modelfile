@@ -1,8 +1,8 @@
 # Simplicio 27B for Ollama (the only Modelfile): ollama run wesleysimplicio/simplicio-27b --think=false
-# Rebuild: put both GGUF files from huggingface.co/wesleysimplicio/Simplicio-27B next to this file.
+# Rebuild: put Qwen3.8-27B.Q4_K_M.gguf from huggingface.co/wesleysimplicio/Simplicio-27B next to this file.
 
+# One FROM only. The vision projector (Qwen3.8-27B.BF16-mmproj.gguf) is left out on purpose: Simplicio is used for text only.
 FROM ./Qwen3.8-27B.Q4_K_M.gguf
-FROM ./Qwen3.8-27B.BF16-mmproj.gguf
 
 # Ollama's built-in Qwen 3.5 prompt renderer and tool-call/thinking parser (Ollama >= 0.30.0).
 RENDERER qwen3.5

@@ -3,7 +3,7 @@
   * `MAX_MODEL_LEN` (deploy/context.env, also read by serve_vllm.sh and hf_instruct.json) is the
     Modelfile's `num_ctx`.
   * There is one Modelfile in the repository, tracked and on disk, and nothing but the tests names
-    a second one.
+    a second one. It has exactly one FROM (the text model); the vision projector is left out.
   * No PARAMETER key is given two different values (`stop` is the one key Ollama accumulates).
   * The README and the distribution guide quote what the Modelfile sets: file names, sampling values,
     context, renderer/parser and the minimum Ollama version.
@@ -35,22 +35,35 @@ KNOWN_PARAMS = {
 MULTI_VALUED = {"stop"}
 
 
-def parameter_pairs(text: str) -> list[tuple[str, str]]:
-    """(key, value) of every `PARAMETER key value` line, outside triple-quoted blocks."""
-    pairs: list[tuple[str, str]] = []
+def top_level_lines(text: str) -> list[str]:
+    """Stripped lines that are not the body of a triple-quoted block (the opening line is kept)."""
+    out: list[str] = []
     in_block = False
     for line in text.splitlines():
         if in_block:
             in_block = '"""' not in line
             continue
         stripped = line.strip()
+        out.append(stripped)
+        if stripped.count('"""') == 1:
+            in_block = True
+    return out
+
+
+def parameter_pairs(text: str) -> list[tuple[str, str]]:
+    """(key, value) of every `PARAMETER key value` line, outside triple-quoted blocks."""
+    pairs: list[tuple[str, str]] = []
+    for stripped in top_level_lines(text):
         if stripped.upper().startswith("PARAMETER"):
             parts = stripped.split(None, 2)
             if len(parts) == 3:
                 pairs.append((parts[1], parts[2]))
-        if stripped.count('"""') == 1:
-            in_block = True
     return pairs
+
+
+def from_values(text: str) -> list[str]:
+    """The value of every `FROM` line. Ollama documents one; a second one is the vision projector trap."""
+    return [s.split(None, 1)[1] for s in top_level_lines(text) if s.upper().startswith("FROM ")]
 
 
 def conflicting_keys(pairs: list[tuple[str, str]]) -> dict[str, set[str]]:
@@ -109,6 +122,17 @@ class SingleModelfileContractTest(unittest.TestCase):
             self.skipTest("not a git checkout")
         tracked = [p for p in run.stdout.split("\0") if p and Path(p).name.lower().startswith("modelfile")]
         self.assertEqual(tracked, ["Modelfile"])
+
+    def test_exactly_one_from_and_it_is_the_text_model(self) -> None:
+        """Ollama documents one FROM. A second one (the mmproj) can make the tag be built from the projector."""
+        text = (ROOT / "Modelfile").read_text(encoding="utf-8")
+        self.assertEqual(from_values(text), ["./Qwen3.8-27B.Q4_K_M.gguf"])
+
+    def test_the_from_checker_fails_on_two_froms(self) -> None:
+        two = "FROM ./Qwen3.8-27B.Q4_K_M.gguf\nFROM ./Qwen3.8-27B.BF16-mmproj.gguf\nPARAMETER num_ctx 40960\n"
+        self.assertEqual(len(from_values(two)), 2)
+        self.assertNotEqual(from_values(two), ["./Qwen3.8-27B.Q4_K_M.gguf"])
+        self.assertEqual(from_values("# FROM ./x.gguf\nSYSTEM \"\"\"\nFROM ./y.gguf\n\"\"\"\nFROM ./z.gguf\n"), ["./z.gguf"])
 
     def test_nothing_but_tests_points_at_a_second_modelfile(self) -> None:
         run = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, text=True, check=False)
@@ -176,11 +200,22 @@ class DocumentedContractTest(unittest.TestCase):
         self.assertIn(f"Ollama {requires} or newer", self.readme)
         self.assertIn(f">= {requires})", self.modelfile)
 
-    def test_from_files_are_the_ones_the_guide_lists(self) -> None:
-        froms = re.findall(r"^FROM \./(\S+)$", self.modelfile, re.MULTILINE)
-        self.assertEqual(len(froms), 2)
-        for name in froms:
-            self.assertIn(f"`{name}`", self.guide)
+    def test_from_file_is_the_one_the_guide_lists(self) -> None:
+        froms = from_values(self.modelfile)
+        self.assertEqual(len(froms), 1)
+        self.assertIn(f"`{froms[0].removeprefix('./')}`", self.guide)
+
+    def test_vision_projector_left_out_on_purpose_is_said_everywhere(self) -> None:
+        self.assertNotIn("mmproj", " ".join(from_values(self.modelfile)))
+        for label, doc in (("Modelfile", self.modelfile), ("README", self.readme), ("guide", self.guide)):
+            self.assertIn("out on purpose", doc, label)
+            self.assertIn("text only", doc, label)
+        self.assertNotIn("holds the Q4_K_M GGUF and the base model's vision projector", self.readme)
+        self.assertNotIn("combines two files", self.guide)
+
+    def test_readme_explains_the_stop_difference_with_the_56_120_run(self) -> None:
+        self.assertIn("The tag stops only at `<|im_end|>`, while the 56/120 run also stopped at `</deliver>`", self.readme)
+        self.assertIn('"stop": ["</deliver>"]', self.readme)
 
     def test_training_stop_and_template_are_gone_from_docs(self) -> None:
         for doc in (self.readme, self.guide):

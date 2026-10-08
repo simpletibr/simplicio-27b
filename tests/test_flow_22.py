@@ -127,9 +127,10 @@ class ModelfileFlowTest(unittest.TestCase):
         self.assertEqual({n for n, _ in self.ins} - INSTRUCTIONS, set())
         self.assertTrue(self.text.endswith("\n"))
 
-    def test_two_local_gguf_from_lines(self) -> None:
+    def test_one_local_gguf_from_line_and_no_vision_projector(self) -> None:
         froms = [v for n, v in self.ins if n == "FROM"]
-        self.assertEqual(froms, ["./Qwen3.8-27B.Q4_K_M.gguf", "./Qwen3.8-27B.BF16-mmproj.gguf"])
+        self.assertEqual(froms, ["./Qwen3.8-27B.Q4_K_M.gguf"])
+        self.assertNotIn("mmproj", " ".join(v for n, v in self.ins if n != "SYSTEM"))
 
     def test_qwen_renderer_and_parser_without_legacy_template(self) -> None:
         """With RENDERER/PARSER set, a legacy TEMPLATE would be ignored by Ollama 0.31.1 (issue #22)."""

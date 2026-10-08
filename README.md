@@ -101,11 +101,11 @@ Simplicio 27B has not been evaluated on SWE-bench, the Aider benchmark, Terminal
 ollama run wesleysimplicio/simplicio-27b --think=false
 ```
 
-If Ollama is not installed, get it from [ollama.com/download](https://ollama.com/download). The `latest` tag is built from the root [`Modelfile`](https://github.com/simpletibr/simplicio-27b/blob/main/Modelfile) and needs Ollama 0.30.0 or newer. It holds the Q4_K_M GGUF and the base model's vision projector, and sets:
+If Ollama is not installed, get it from [ollama.com/download](https://ollama.com/download). The `latest` tag is built from the root [`Modelfile`](https://github.com/simpletibr/simplicio-27b/blob/main/Modelfile) and needs Ollama 0.30.0 or newer. It holds only the Q4_K_M GGUF: the base model's vision projector is left out on purpose, because Simplicio is used for text only, so the tag does not take image input. It sets:
 
 - `RENDERER qwen3.5` and `PARSER qwen3.5`: Ollama's built-in Qwen 3.5 prompt format. Tool calls come back in `message.tool_calls` and reasoning in `message.thinking`.
 - `num_ctx 40960`: a 40,960-token context, the same as vLLM ([`deploy/context.env`](https://github.com/simpletibr/simplicio-27b/blob/main/deploy/context.env)).
-- Qwen's recommended sampling for Qwen3.8-27B in non-thinking mode: `temperature 0.7`, `top_p 0.8`, `top_k 20`, `min_p 0`, `presence_penalty 1.5`, `repeat_penalty 1`. The 56/120 evaluation in this README used temperature 0; to get closer to it, send `"options": {"temperature": 0}`.
+- Qwen's recommended sampling for Qwen3.8-27B in non-thinking mode: `temperature 0.7`, `top_p 0.8`, `top_k 20`, `min_p 0`, `presence_penalty 1.5`, `repeat_penalty 1`. The 56/120 evaluation in this README used temperature 0; to get closer to it, send `"options": {"temperature": 0}`. The tag stops only at `<|im_end|>`, while the 56/120 run also stopped at `</deliver>`, so send `"stop": ["</deliver>"]` inside `options` as well if you want to compare numbers.
 - The system prompt used in training (see "Prompt format" below).
 
 **Thinking.** The training data has no `<think>` blocks, so run with thinking off. Ollama turns thinking on by default for models that support it, so turn it off on every request:
@@ -126,7 +126,7 @@ user:   Contexto: <files, stack and bug report>
         Tarefa: <the change to make>
 ```
 
-**Not evaluated.** The 56/120 result is from the BF16 checkpoint; the Q4_K_M file has not been scored. Vision comes from the base model's projector; training was text-only. The training data has no tool calls, so tool calling is whatever the base model does.
+**Not evaluated.** The 56/120 result is from the BF16 checkpoint; the Q4_K_M file has not been scored. The tag has no vision projector (left out on purpose); training was text-only. The training data has no tool calls, so tool calling is whatever the base model does.
 
 ### vLLM (OpenAI-compatible server with tool calls)
 
@@ -262,7 +262,7 @@ An earlier script, [`train_simplicio_27b.py`](https://github.com/simpletibr/simp
 - Only the BF16 checkpoint was evaluated. The Q4_K_M GGUF, the Ollama template and parameters, and the 4-bit base + LoRA path were not.
 - Decoding: the evaluation used temperature 0 (greedy). The sampling defaults in the Hugging Face `generation_config.json` and in the Ollama tag are not greedy and were not evaluated.
 - Aider: the patch markers differ from Aider's edit format, and Aider has not been tested.
-- Vision: the GGUF ships the base model's vision projector, so image input is inherited from Qwen3.8-27B. Training was text-only, and image input has not been evaluated.
+- Vision: the Hugging Face repository ships the base model's vision projector as a separate file, but the Ollama tag leaves it out on purpose because Simplicio is used for text only. Training was text-only, and image input has not been evaluated.
 
 ## Repository
 

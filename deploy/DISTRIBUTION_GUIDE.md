@@ -13,16 +13,17 @@ The tag `wesleysimplicio/simplicio-27b:latest` is in the Ollama library.
 ollama run wesleysimplicio/simplicio-27b
 ```
 
-It combines two files published in `wesleysimplicio/Simplicio-27B`:
+It is built from one file published in `wesleysimplicio/Simplicio-27B`:
 
 | File | Role | Size |
 |---|---|---|
 | `Qwen3.8-27B.Q4_K_M.gguf` | Q4_K_M weights | 16810715584 bytes |
-| `Qwen3.8-27B.BF16-mmproj.gguf` | vision projector | 931145952 bytes |
 
-The root `Modelfile` uses these file names and sets `RENDERER qwen3.5`, `PARSER qwen3.5`, a 40,960-token context (`deploy/context.env`), Qwen's non-thinking sampling and the training system prompt. The README's Ollama section explains each setting and how to turn thinking off. The Ollama page shows the architecture's maximum window, 256K.
+The same repository also has `Qwen3.8-27B.BF16-mmproj.gguf` (the vision projector, 931145952 bytes). The `Modelfile` leaves it out on purpose, with a single `FROM`, because Simplicio is used for text only.
 
-To recreate the tag, download both files into this folder and run:
+The root `Modelfile` uses this file name and sets `RENDERER qwen3.5`, `PARSER qwen3.5`, a 40,960-token context (`deploy/context.env`), Qwen's non-thinking sampling and the training system prompt. The README's Ollama section explains each setting and how to turn thinking off. The Ollama page shows the architecture's maximum window, 256K.
+
+To recreate the tag, download `Qwen3.8-27B.Q4_K_M.gguf` into this folder and run:
 
 ```bash
 ollama create wesleysimplicio/simplicio-27b -f Modelfile

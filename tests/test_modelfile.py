@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 KEYWORDS = ("FROM ", "RENDERER ", "PARSER ", "REQUIRES ", "PARAMETER ", "TEMPLATE ", "ADAPTER ", "MESSAGE ")
 DIRECTIVES = [
-    "FROM ./Qwen3.8-27B.Q4_K_M.gguf", "FROM ./Qwen3.8-27B.BF16-mmproj.gguf",
+    "FROM ./Qwen3.8-27B.Q4_K_M.gguf",
     "RENDERER qwen3.5", "PARSER qwen3.5", "REQUIRES 0.30.0", "PARAMETER num_ctx 40960",
     "PARAMETER temperature 0.7", "PARAMETER top_p 0.8", "PARAMETER top_k 20", "PARAMETER min_p 0",
     "PARAMETER presence_penalty 1.5", "PARAMETER repeat_penalty 1", 'PARAMETER stop "<|im_end|>"',
