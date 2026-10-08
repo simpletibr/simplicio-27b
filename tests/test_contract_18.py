@@ -9,6 +9,12 @@ Fixa, sem rede e sem produção:
     print/log/raise; o formato deles casa com a regex de set_upstream.php e upstream_token.php;
   * set_upstream.php exige `upstream_token`, grava o estado com modo 0600 e não o devolve; upstream_token.php
     não tem os textos que #19 e #20 usam para achar o proxy;
+  * o vLLM herda só uma allowlist de variáveis de ambiente (nunca SIMPLETI_ADMIN_KEY nem o token do gate) e o
+    cloudflared herda o ambiente sem nenhuma SIMPLETI_*; provado com processos de verdade que despejam o
+    nome e o hash (nunca o valor) de cada variável que receberam;
+  * pedido com Transfer-Encoding (chunked) é recusado com 411 `length required` (depois do 401 e do 404, antes
+    de tocar o vLLM); set_upstream.php e status.php não têm caminho padrão em /tmp (SIMPLETI_UPSTREAM_FILE
+    obrigatório, absoluto) e o diretório que o script cria é 0700;
   * nenhum token literal de 16+ caracteres no repo (git ls-files, mais os novos ainda não adicionados). O
     scanner é provado com um valor fictício gerado aqui (secrets) e não olha este próprio arquivo, que
     carrega as regexes.
@@ -26,6 +32,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -52,6 +59,8 @@ with open(os.environ["CONTRACT_OUT"], "w") as out:
     json.dump({{
         "argv": sys.argv[1:],
         "host_env": os.environ.get("HOST"),
+        "env_names": sorted(os.environ),
+        "env_sha": sorted(hashlib.sha256(v.encode()).hexdigest() for v in os.environ.values()),
         "key_ok": hashlib.sha256(os.environ.get("VLLM_API_KEY", "").encode()).hexdigest() == os.environ["CONTRACT_KEY_SHA"],
     }}, out)
 """
@@ -100,6 +109,26 @@ def read_text(path: Path) -> str | None:
     if b"\0" in raw:
         return None
     return raw.decode("utf-8", errors="replace")
+
+
+def sha(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def raw_http(port: int, head: str, body: bytes = b"") -> tuple[int, dict[str, str], bytes]:
+    """Manda o pedido byte a byte como escrito (http.client não deixa montar Transfer-Encoding à mão)."""
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+        sock.sendall(head.replace("\n", "\r\n").encode() + b"\r\n\r\n" + body)
+        data = b""
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    raw_head, _, raw_body = data.partition(b"\r\n\r\n")
+    lines = raw_head.decode("latin-1").split("\r\n")
+    headers = {k.lower(): v.strip() for k, v in (line.split(":", 1) for line in lines[1:])}
+    return int(lines[0].split()[1]), headers, raw_body
 
 
 def fake_vllm_run(env_extra: dict[str, str], cmd: list[str]) -> dict:
@@ -155,6 +184,79 @@ class BindContractTests(unittest.TestCase):
         ]
         self.assertEqual(len(launches), 1)
         self.assertEqual({k.arg: ast.unparse(k.value) for k in launches[0].keywords}["env"], "serve_env()")
+
+    def test_vllm_environment_is_an_allowlist(self) -> None:
+        admin = "admin-" + secrets.token_hex(16)
+        canary = "canary-" + secrets.token_hex(16)
+        planted = {
+            "SIMPLETI_ADMIN_KEY": admin,
+            "SIMPLETI_API_KEY": canary,
+            "GITHUB_TOKEN": canary,
+            "AWS_SECRET_ACCESS_KEY": canary,
+            "ANTHROPIC_API_KEY": canary,
+            "SOME_UNLISTED_SECRET": canary,
+            "VLLM_API_KEY": "outer-" + secrets.token_hex(16),  # a do ambiente de fora não pode vencer a do gate
+            "CUDA_VISIBLE_DEVICES": "0",
+            "HF_HOME": "/hf",
+        }
+        with patch.dict(os.environ, planted):
+            env = serve_colab.serve_env()
+            ran = fake_vllm_run(env, serve_colab.serve_cmd())
+        names, hashes = set(ran["env_names"]), set(ran["env_sha"])
+        for name in ("SIMPLETI_ADMIN_KEY", "SIMPLETI_API_KEY", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY",
+                     "ANTHROPIC_API_KEY", "SOME_UNLISTED_SECRET"):
+            self.assertNotIn(name, names)
+            self.assertNotIn(name, env)
+        for secret in (admin, canary, serve_colab.GATE_TOKEN, planted["VLLM_API_KEY"]):
+            self.assertNotIn(sha(secret), hashes)
+            self.assertNotIn(secret, env.values())
+        self.assertIn(sha(serve_colab.VLLM_TOKEN), hashes)  # a chave do vLLM chegou: o teste não é vazio
+        for name in ("PATH", "HOST", "VLLM_API_KEY", "CUDA_VISIBLE_DEVICES", "HF_HOME"):
+            self.assertIn(name, names)
+        self.assertTrue(ran["key_ok"])
+        self.assertEqual(ran["host_env"], "127.0.0.1")
+
+    def test_vllm_allowlist_covers_what_serve_script_and_vllm_read(self) -> None:
+        with patch.dict(os.environ, {"GPU_MEM": "0.5", "VLLM_BIN": "x", "NCCL_DEBUG": "INFO", "LANG": "C",
+                                      "LC_ALL": "C", "HTTPS_PROXY": "p", "SSL_CERT_FILE": "c"}):
+            env = serve_colab.serve_env()
+        for name in ("GPU_MEM", "VLLM_BIN", "NCCL_DEBUG", "LANG", "LC_ALL", "HTTPS_PROXY", "SSL_CERT_FILE", "PATH"):
+            self.assertIn(name, env)
+
+    def test_cloudflared_inherits_no_simpleti_variable(self) -> None:
+        admin = "admin-" + secrets.token_hex(16)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "env.json"
+            fake = Path(tmp) / "cloudflared"
+            fake.write_text(
+                f"#!{sys.executable}\nimport json, os, sys\n"
+                "with open(os.environ['CONTRACT_OUT'], 'w') as out:\n"
+                "    json.dump(sorted(os.environ), out)\n"
+                "sys.stderr.write('INF https://abc-def.trycloudflare.com\\n')\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            planted = {"SIMPLETI_ADMIN_KEY": admin, "SIMPLETI_SET_UPSTREAM_URL": "https://x.invalid/",
+                       "CLOUDFLARED_BIN": str(fake), "CONTRACT_OUT": str(out)}
+            with patch.dict(os.environ, planted), contextlib.redirect_stdout(io.StringIO()):
+                proc, url = serve_colab.start_cloudflared(8001)
+            proc.wait(timeout=10)
+            proc.stderr.close()
+            names = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(url, "https://abc-def.trycloudflare.com")
+        self.assertEqual([n for n in names if n.startswith("SIMPLETI_")], [])
+        self.assertIn("PATH", names)
+        self.assertIn("CONTRACT_OUT", names)
+
+    def test_every_child_process_gets_an_explicit_environment(self) -> None:
+        tree = ast.parse(SERVE_PY.read_text(encoding="utf-8"))
+        envs = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and ast.unparse(node.func) == "subprocess.Popen":
+                first = ast.unparse(node.args[0])
+                who = "vllm" if first == "serve_cmd()" else "cloudflared" if "tunnel" in first else first
+                envs[who] = {k.arg: ast.unparse(k.value) for k in node.keywords}.get("env")
+        self.assertEqual(envs, {"vllm": "serve_env()", "cloudflared": "tunnel_env()"})
 
     def test_gate_binds_loopback_only(self) -> None:
         with patch.object(serve_colab, "GATE_PORT", 0), contextlib.redirect_stdout(io.StringIO()):
@@ -226,6 +328,34 @@ class GateContractTests(unittest.TestCase):
                 self.assertEqual(json.loads(raw), {"error": {"message": message, "type": "GateError"}})
                 for secret in (serve_colab.GATE_TOKEN, serve_colab.VLLM_TOKEN):
                     self.assertNotIn(secret.encode(), raw)
+
+    def test_transfer_encoding_is_411_after_401_and_404(self) -> None:
+        port = self.gate.server_address[1]
+        good = f"{serve_colab.UPSTREAM_HEADER}: {serve_colab.GATE_TOKEN}"
+        base = "POST /v1/chat/completions HTTP/1.1\nHost: gate"
+        with socket.socket() as probe:  # nada pode chegar ao vLLM: porta fechada, caso chegue vira 502, não 411
+            probe.bind(("127.0.0.1", 0))
+            closed = probe.getsockname()[1]
+        with patch.object(serve_colab, "VLLM_PORT", closed):
+            for label, head, body, status, message in (
+                ("chunked", f"{base}\n{good}\nTransfer-Encoding: chunked", b"", 411, "length required"),
+                ("minúsculas", f"{base}\n{good}\ntransfer-encoding: chunked", b"", 411, "length required"),
+                ("lista", f"{base}\n{good}\nTransfer-Encoding: gzip, chunked", b"", 411, "length required"),
+                ("identity", f"{base}\n{good}\nTransfer-Encoding: identity", b"", 411, "length required"),
+                ("com Content-Length", f"{base}\n{good}\nContent-Length: 2\nTransfer-Encoding: chunked", b"{}",
+                 411, "length required"),
+                ("GET", f"GET /v1/models HTTP/1.1\nHost: gate\n{good}\nTransfer-Encoding: chunked", b"",
+                 411, "length required"),
+                ("sem token", f"{base}\nTransfer-Encoding: chunked", b"", 401, "missing or invalid upstream token"),
+                ("rota fora", f"POST /metrics HTTP/1.1\nHost: gate\n{good}\nTransfer-Encoding: chunked", b"",
+                 404, "not found"),
+            ):
+                with self.subTest(label):
+                    code, headers, raw = raw_http(port, head, body)
+                    self.assertEqual(code, status)
+                    self.assertEqual(headers["content-type"], "application/json")
+                    self.assertEqual(int(headers["content-length"]), len(raw))
+                    self.assertEqual(json.loads(raw), {"error": {"message": message, "type": "GateError"}})
 
     def test_comparison_is_constant_time_and_route_is_not_substring(self) -> None:
         source = SERVE_PY.read_text(encoding="utf-8")
@@ -357,12 +487,30 @@ class GatewayPhpContractTests(unittest.TestCase):
             self.assertIn(f"respond({code},", self.set_upstream)
 
     def test_token_is_validated_before_anything_is_written(self) -> None:
-        self.assertLess(self.set_upstream.index("invalid upstream_token"), self.set_upstream.index("tempnam("))
+        self.assertLess(self.set_upstream.index("invalid upstream_token"), self.set_upstream.index("$tmp = tempnam("))
 
     def test_helper_has_nothing_the_proxy_discovery_greps_for(self) -> None:
         for text in ("X-Simpleti-Upstream-Token", "SIMPLETI_UPSTREAM_FILE", "upstream_url", "simpleti-upstream"):
             self.assertNotIn(text, self.helper)
         self.assertIn("function simpleti_upstream_token(string $file): ?string", self.helper)
+
+    def test_state_path_has_no_default_and_is_never_under_tmp(self) -> None:
+        file_lines = []
+        for name, text in (("set_upstream.php", self.set_upstream), ("status.php", self.status)):
+            self.assertNotIn("sys_get_temp_dir", text, name)
+            self.assertNotIn("/tmp", text.replace("system temp dir", ""), name)
+            file_lines.append(next(line for line in text.splitlines() if line.startswith("$file = ")))
+        self.assertEqual(file_lines, ["$file = getenv('SIMPLETI_UPSTREAM_FILE') ?: '';"] * 2)
+        self.assertIn("respond(500, ['error' => 'upstream file not configured']);", self.set_upstream)
+        self.assertIn("strncmp($file, '/', 1) !== 0", self.set_upstream)
+
+    def test_created_state_directory_is_private(self) -> None:
+        self.assertIn("mkdir($dir, 0700, true)", self.set_upstream)
+        self.assertNotIn("0750", self.set_upstream)
+        self.assertIn("respond(500, ['error' => 'cannot create upstream dir']);", self.set_upstream)
+        self.assertIn("respond(500, ['error' => 'upstream dir not writable']);", self.set_upstream)
+        # o diretório é validado antes de tempnam(), que sem isso cairia no diretório temporário do sistema
+        self.assertLess(self.set_upstream.index("upstream dir not writable"), self.set_upstream.index("$tmp = tempnam("))
 
     def test_status_never_reads_the_token(self) -> None:
         self.assertNotIn("upstream_token", self.status)

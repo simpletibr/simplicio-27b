@@ -153,6 +153,36 @@ class ServeColabTokenTests(unittest.TestCase):
         self.assertEqual(serve_colab.serve_env()["HOST"], "127.0.0.1")
         self.assertEqual(serve_colab.serve_env()["VLLM_API_KEY"], serve_colab.VLLM_TOKEN)
 
+    def test_serve_env_has_no_gateway_credentials(self) -> None:
+        admin = secrets.token_hex(32)
+        planted = {
+            "SIMPLETI_ADMIN_KEY": admin,
+            "SIMPLETI_API_KEY": "k-" + secrets.token_hex(16),
+            "GITHUB_TOKEN": "g-" + secrets.token_hex(16),
+            "CUDA_VISIBLE_DEVICES": "0",
+            "NCCL_DEBUG": "WARN",
+            "VLLM_LOGGING_LEVEL": "INFO",
+            "GPU_MEM": "0.9",
+            "LANG": "C.UTF-8",
+        }
+        with patch.dict(os.environ, planted):
+            env = serve_colab.serve_env()
+        for name in ("SIMPLETI_ADMIN_KEY", "SIMPLETI_API_KEY", "GITHUB_TOKEN"):
+            self.assertNotIn(name, env)
+        for secret in (admin, planted["SIMPLETI_API_KEY"], planted["GITHUB_TOKEN"], serve_colab.GATE_TOKEN):
+            self.assertNotIn(secret, env.values())
+        for name in ("CUDA_VISIBLE_DEVICES", "NCCL_DEBUG", "VLLM_LOGGING_LEVEL", "GPU_MEM", "LANG", "PATH"):
+            self.assertIn(name, env)
+        self.assertEqual(env["HOST"], "127.0.0.1")
+        self.assertEqual(env["VLLM_API_KEY"], serve_colab.VLLM_TOKEN)
+
+    def test_tunnel_env_drops_every_simpleti_variable(self) -> None:
+        with patch.dict(os.environ, {"SIMPLETI_ADMIN_KEY": "a" * 64, "SIMPLETI_SET_UPSTREAM_URL": "u", "KEEP_ME": "1"}):
+            env = serve_colab.tunnel_env()
+        self.assertEqual([n for n in env if n.startswith("SIMPLETI_")], [])
+        self.assertEqual(env["KEEP_ME"], "1")
+        self.assertIn("PATH", env)
+
     def test_no_wildcard_bind(self) -> None:
         self.assertNotIn("0.0.0.0", Path(serve_colab.__file__).read_text(encoding="utf-8"))
 
@@ -261,6 +291,127 @@ class SetUpstreamTokenTests(unittest.TestCase):
         status, _ = self.post({"clear": True})
         self.assertEqual(status, 200)
         self.assertFalse(self.state.exists())
+
+
+@unittest.skipIf(PHP is None, "php não está no PATH")
+class StatePathTests(unittest.TestCase):
+    """O estado agora guarda um segredo: sem caminho padrão em /tmp, e o diretório que o script cria é 0700."""
+
+    URL = "https://abc.trycloudflare.com"
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.systmp = self.base / "systmp"  # é o que sys_get_temp_dir() devolve para o PHP (TMPDIR)
+        self.cwd = self.base / "cwd"
+        self.systmp.mkdir()
+        self.cwd.mkdir()
+        self.proc = None
+
+    def tearDown(self) -> None:
+        if self.proc is not None:
+            self.proc.terminate()
+            self.proc.wait(timeout=5)
+        self.tmp.cleanup()
+
+    def env(self, **extra: str) -> dict[str, str]:
+        env = {k: v for k, v in os.environ.items() if k not in {"SIMPLETI_UPSTREAM_FILE", "TMPDIR"}}
+        return {**env, "SIMPLETI_ADMIN_KEY": ADMIN, "TMPDIR": str(self.systmp), **extra}
+
+    def start(self, **extra: str) -> int:
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        self.proc = subprocess.Popen(
+            [PHP, "-S", f"127.0.0.1:{port}", str(ROOT / "gateway" / "set_upstream.php")],
+            env=self.env(**extra),
+            cwd=self.cwd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=1).close()
+                return port
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise RuntimeError("php -S não subiu")
+                time.sleep(0.1)
+
+    def post(self, port: int, body: dict) -> tuple[int, dict]:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/set_upstream.php",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {ADMIN}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, json.loads(exc.read())
+
+    def assert_nothing_written_outside_the_state_path(self) -> None:
+        self.assertEqual(list(self.systmp.iterdir()), [], "o PHP escreveu no diretório temporário do sistema")
+        self.assertEqual(list(self.cwd.iterdir()), [], "o PHP escreveu no diretório de trabalho")
+
+    def test_sources_have_no_default_path_and_no_tmp(self) -> None:
+        for name in ("set_upstream.php", "status.php"):
+            text = (ROOT / "gateway" / name).read_text(encoding="utf-8")
+            self.assertNotIn("sys_get_temp_dir", text, name)
+            self.assertNotIn("simpleti-upstream.json", text, name)
+
+    def test_without_the_path_variable_it_fails_closed(self) -> None:
+        port = self.start()
+        valid = {"upstream_url": self.URL, "upstream_token": TOKEN}
+        for label, body in (("registrar", valid), ("limpar", {"clear": True})):
+            with self.subTest(label):
+                status, payload = self.post(port, body)
+                self.assertEqual((status, payload), (500, {"error": "upstream file not configured"}))
+        self.assert_nothing_written_outside_the_state_path()
+
+    def test_relative_path_fails_closed(self) -> None:
+        port = self.start(SIMPLETI_UPSTREAM_FILE="state/upstream.json")
+        status, payload = self.post(port, {"upstream_url": self.URL, "upstream_token": TOKEN})
+        self.assertEqual((status, payload), (500, {"error": "upstream file not configured"}))
+        self.assert_nothing_written_outside_the_state_path()
+
+    def test_directories_it_creates_are_0700_and_the_file_0600(self) -> None:
+        state = self.base / "new" / "state" / "upstream.json"
+        port = self.start(SIMPLETI_UPSTREAM_FILE=str(state))
+        status, payload = self.post(port, {"upstream_url": self.URL, "upstream_token": TOKEN})
+        self.assertEqual((status, payload), (200, {"ok": True, "upstream": self.URL}))
+        self.assertEqual(state.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(state.parent.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(state.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(state.read_text())["upstream_token"], TOKEN)
+        self.assertEqual(sorted(p.name for p in state.parent.iterdir()), ["upstream.json"])
+        self.assert_nothing_written_outside_the_state_path()
+
+    def test_unusable_directory_does_not_fall_back_to_the_system_tmp(self) -> None:
+        blocker = self.base / "blocker"
+        blocker.write_text("um arquivo, não um diretório", encoding="utf-8")
+        port = self.start(SIMPLETI_UPSTREAM_FILE=str(blocker / "sub" / "upstream.json"))
+        status, payload = self.post(port, {"upstream_url": self.URL, "upstream_token": TOKEN})
+        self.assertEqual((status, payload), (500, {"error": "cannot create upstream dir"}))
+        self.assert_nothing_written_outside_the_state_path()
+
+    def test_status_does_not_read_the_old_default_path(self) -> None:
+        old = self.systmp / "simpleti-upstream.json"
+        old.write_text(json.dumps({"upstream_url": self.URL, "updated": 1}), encoding="utf-8")
+
+        def registered(**extra: str) -> bool:
+            out = subprocess.run(
+                [PHP, str(ROOT / "gateway" / "status.php")],
+                env=self.env(**extra), capture_output=True, text=True, check=True, cwd=self.cwd,
+            ).stdout
+            return json.loads(out)["upstream_registered"]
+
+        self.assertIs(registered(), False)
+        self.assertIs(registered(SIMPLETI_UPSTREAM_FILE=str(old)), True)  # controle: o arquivo é lido quando configurado
 
 
 @unittest.skipIf(PHP is None, "php não está no PATH")

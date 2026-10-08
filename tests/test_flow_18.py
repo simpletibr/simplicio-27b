@@ -219,6 +219,35 @@ class GateFlowTests(unittest.TestCase):
                     conn.close()
         self.assertEqual(FakeVllm.seen, [])
 
+    def test_chunked_request_is_411_and_never_reaches_vllm(self) -> None:
+        """Sem Content-Length o gate repassaria o POST sem corpo e o vLLM ficaria esperando os chunks."""
+        for label, header in (("chunked", "chunked"), ("minúsculas", "Chunked"), ("lista", "gzip, chunked")):
+            with self.subTest(label):
+                with socket.create_connection(("127.0.0.1", self.port), timeout=10) as sock:
+                    sock.sendall(
+                        (
+                            "POST /v1/chat/completions HTTP/1.1\r\nHost: gate\r\n"
+                            f"{serve_colab.UPSTREAM_HEADER}: {serve_colab.GATE_TOKEN}\r\n"
+                            f"Transfer-Encoding: {header}\r\n\r\n"
+                        ).encode()
+                    )
+                    data = b""
+                    while chunk := sock.recv(65536):
+                        data += chunk
+                head, _, raw = data.partition(b"\r\n\r\n")
+                self.assertTrue(head.startswith(b"HTTP/1."), head)
+                self.assertEqual(head.split()[1], b"411")
+                self.assertEqual(
+                    json.loads(raw), {"error": {"message": "length required", "type": "GateError"}}
+                )
+                self.assert_no_secret({}, data)
+        self.assertEqual(FakeVllm.seen, [])
+        # controle: o mesmo pedido com Content-Length passa
+        status, _, _ = self.gate_call(
+            "POST", "/v1/chat/completions", serve_colab.GATE_TOKEN, {"model": "simplicio-27b", "messages": []}
+        )
+        self.assertEqual(status, 200)
+
     def test_token_is_compared_with_hmac_compare_digest(self) -> None:
         with patch.object(hmac, "compare_digest", wraps=hmac.compare_digest) as spy:
             self.gate_call("GET", "/v1/models", serve_colab.GATE_TOKEN)

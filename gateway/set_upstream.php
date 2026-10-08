@@ -3,6 +3,8 @@
 // POST only, header "Authorization: Bearer <SIMPLETI_ADMIN_KEY>".
 // {"upstream_url":"https://<name>.trycloudflare.com","upstream_token":"<per-run token>"} stores
 // (the token is required and the state file is written 0600); {"clear": true}, null or "" deletes.
+// The state file now holds a secret, so SIMPLETI_UPSTREAM_FILE is required: an absolute path outside the
+// system temp dir and outside the web root (a missing 0700 directory is created). There is no default.
 header('Content-Type: application/json; charset=utf-8');
 
 function respond(int $status, array $body): void
@@ -30,7 +32,10 @@ $body = json_decode(file_get_contents('php://input') ?: '', true);
 if (!is_array($body)) {
     $body = [];
 }
-$file = getenv('SIMPLETI_UPSTREAM_FILE') ?: (sys_get_temp_dir() . '/simpleti-upstream.json');
+$file = getenv('SIMPLETI_UPSTREAM_FILE') ?: '';
+if (strncmp($file, '/', 1) !== 0) {
+    respond(500, ['error' => 'upstream file not configured']);
+}
 $clear = !empty($body['clear'])
     || (array_key_exists('upstream_url', $body)
         && ($body['upstream_url'] === null || $body['upstream_url'] === ''));
@@ -49,8 +54,12 @@ if (!is_string($token) || !preg_match('/^[A-Za-z0-9_-]{32,128}$/D', $token)) {
     respond(400, ['error' => 'invalid upstream_token']);
 }
 $dir = dirname($file);
-if (!is_dir($dir)) {
-    mkdir($dir, 0750, true);
+if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
+    respond(500, ['error' => 'cannot create upstream dir']);
+}
+if (!is_writable($dir)) {
+    // tempnam() would otherwise fall back to the system temp dir and put the token there.
+    respond(500, ['error' => 'upstream dir not writable']);
 }
 $tmp = tempnam($dir, '.upstream-');
 $json = json_encode(['upstream_url' => $url, 'upstream_token' => $token, 'updated' => time()]);

@@ -85,9 +85,35 @@ def serve_cmd() -> list[str]:
     return ["bash", str(DEPLOY / "serve_vllm.sh"), MODEL_ID, str(VLLM_PORT)]
 
 
+# What vLLM may inherit: paths, locale, proxy/CA settings for the weights download, GPU libraries and its own
+# variables (the HF_ ones include the Hugging Face token for private weights; the gateway admin key is not here).
+VLLM_ENV_NAMES = frozenset(
+    {
+        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TMPDIR", "TZ", "LANG", "LANGUAGE",
+        "LD_LIBRARY_PATH", "LIBRARY_PATH", "PYTHONPATH", "PYTHONUNBUFFERED", "PYTHONHASHSEED",
+        "VIRTUAL_ENV", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS", "GPU_MEM", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE", "TRANSFORMERS_CACHE", "TRANSFORMERS_OFFLINE", "TOKENIZERS_PARALLELISM",
+        "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+        "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+    }
+)
+VLLM_ENV_PREFIXES = ("LC_", "CUDA_", "NVIDIA_", "NCCL_", "VLLM_", "HF_", "TORCH_", "TRITON_", "FLASHINFER_")
+
+
 def serve_env() -> dict[str, str]:
-    """vLLM listens only on loopback and requires VLLM_TOKEN on /v1/*."""
-    return {**os.environ, "HOST": LOCAL, "VLLM_API_KEY": VLLM_TOKEN}
+    """vLLM listens only on loopback, requires VLLM_TOKEN on /v1/* and sees no other credential."""
+    inherited = {
+        name: value
+        for name, value in os.environ.items()
+        if name in VLLM_ENV_NAMES or name.startswith(VLLM_ENV_PREFIXES)
+    }
+    return {**inherited, "HOST": LOCAL, "VLLM_API_KEY": VLLM_TOKEN}
+
+
+def tunnel_env() -> dict[str, str]:
+    """cloudflared needs no gateway credential: it inherits the environment without any SIMPLETI_* variable."""
+    return {name: value for name, value in os.environ.items() if not name.startswith("SIMPLETI_")}
 
 
 def _http_json(
@@ -330,6 +356,10 @@ class _GateHandler(BaseHTTPRequestHandler):
         if (self.command, self.path.split("?", 1)[0]) not in GATE_ROUTES:
             self._deny(404, "not found")
             return False
+        if self.headers.get("Transfer-Encoding") is not None:
+            # The gate forwards only Content-Length bodies; a chunked request would reach vLLM with no body.
+            self._deny(411, "length required")
+            return False
         return True
 
     def do_GET(self) -> None:  # noqa: N802
@@ -353,6 +383,7 @@ def start_cloudflared(port: int) -> tuple[subprocess.Popen[str], str]:
     bin_name = os.environ.get("CLOUDFLARED_BIN", "cloudflared")
     proc = subprocess.Popen(
         [bin_name, "tunnel", "--url", f"http://127.0.0.1:{port}"],
+        env=tunnel_env(),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,

@@ -10,7 +10,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
     echo json_encode(['error' => 'method not allowed']);
     exit;
 }
-$file = getenv('SIMPLETI_UPSTREAM_FILE') ?: (sys_get_temp_dir() . '/simpleti-upstream.json');
+$file = getenv('SIMPLETI_UPSTREAM_FILE') ?: '';
 $state = is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
 $registered = is_array($state) && is_string($state['upstream_url'] ?? null) && $state['upstream_url'] !== '';
 $updated = $registered && is_int($state['updated'] ?? null) ? $state['updated'] : null;
