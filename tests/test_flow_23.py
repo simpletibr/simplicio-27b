@@ -214,8 +214,10 @@ class DryRunTest(TempCase):
 
     def test_weights_cited_by_the_readme_are_refused(self):
         src = make_source(self.tmp)
-        cited = [f"assets/x{suffix}" for suffix in (".safetensors", ".bin", ".pt", ".pth", ".gguf", ".ckpt",
-                                                    ".h5", ".onnx", ".SAFETENSORS")]
+        cited = [f"assets/x{suffix}" for suffix in (
+            ".safetensors", ".bin", ".pt", ".pth", ".gguf", ".ckpt", ".h5", ".onnx", ".SAFETENSORS",
+            ".ggml", ".npz", ".pkl", ".pickle", ".msgpack", ".tflite", ".mlmodel", ".engine", ".pb", ".keras",
+            ".joblib", ".sav", ".tar", ".PKL")]
         with open(src / "README.md", "a", encoding="utf-8") as handle:
             handle.writelines(f"\n![w]({name})\n" for name in cited)
         for name in cited:

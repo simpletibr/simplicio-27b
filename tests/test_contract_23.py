@@ -80,8 +80,13 @@ class AllowlistContract(unittest.TestCase):
         self.assertEqual({path for path, _ in scan.refused} & set(scan.entries), set())
 
     def test_weight_formats_are_all_refused_outside_the_adapter(self):
-        self.assertEqual(set(hf_publish.WEIGHT_SUFFIXES),
-                         {".safetensors", ".bin", ".pt", ".pth", ".gguf", ".ckpt", ".h5", ".onnx"})
+        self.assertEqual(set(hf_publish.WEIGHT_SUFFIXES), {
+            ".safetensors", ".bin", ".pt", ".pth", ".gguf", ".ckpt", ".h5", ".onnx",
+            ".ggml", ".npz", ".pkl", ".pickle", ".msgpack", ".tflite", ".mlmodel", ".engine", ".pb", ".keras",
+            ".joblib", ".sav", ".tar"})
+        # Nothing the allowlist uploads today has a weight suffix.
+        uploaded = {*hf_publish.MIRRORED, "lora/adapter_config.json", *hf_publish.ASSET_RE.findall(README)}
+        self.assertEqual([p for p in uploaded if p.lower().endswith(hf_publish.WEIGHT_SUFFIXES)], [])
         root = ROOT.resolve()
         allowed = {*hf_publish.MIRRORED, "lora/adapter_model.safetensors", "lora/adapter_config.json",
                    *(f"assets/x{suffix}" for suffix in hf_publish.WEIGHT_SUFFIXES)}

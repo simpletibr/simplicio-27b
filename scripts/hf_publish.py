@@ -68,7 +68,11 @@ SECRET_NAMES = (
 )
 SKIP_DIRS = frozenset({".git", "__pycache__", ".ruff_cache", ".pytest_cache", ".venv", "venv", "node_modules",
                        ".ipynb_checkpoints", "scratchpad"})
-WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".gguf", ".ckpt", ".h5", ".onnx")
+WEIGHT_SUFFIXES = (
+    ".safetensors", ".bin", ".pt", ".pth", ".gguf", ".ckpt", ".h5", ".onnx",
+    ".ggml", ".npz", ".pkl", ".pickle", ".msgpack", ".tflite", ".mlmodel", ".engine", ".pb", ".keras",
+    ".joblib", ".sav", ".tar",
+)
 SECRET_RE = re.compile(
     r"hf_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}"
     r"|Bearer\s+[A-Za-z0-9._~+/=-]{20,}|sk-[A-Za-z0-9]{20,}"
