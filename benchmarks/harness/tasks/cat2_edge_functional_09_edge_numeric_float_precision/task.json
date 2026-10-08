@@ -9,6 +9,5 @@
     "cat2_edge_functional_19_edge_numeric_float_precision",
     "cat2_edge_functional_29_edge_numeric_float_precision"
   ],
-  "source_prompt": "Use decimal.Decimal to eliminate floating point rounding error (0.1 + 0.2 != 0.3).",
   "forbidden_symbols": []
 }

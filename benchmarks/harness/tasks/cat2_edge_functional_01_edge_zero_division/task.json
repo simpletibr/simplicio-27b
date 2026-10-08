@@ -1,6 +1,6 @@
 {
   "id": "cat2_edge_functional_01_edge_zero_division",
-  "instruction": "Handle b == 0.0 returning 0.0 to prevent ZeroDivisionError.",
+  "instruction": "safe_divide must not raise ZeroDivisionError for a zero divisor: the result in that case is 0.0. Other inputs keep their current result.",
   "context": "",
   "edit_file": "math_utils.py",
   "category": "2_functional_correctness_edge_cases",
@@ -9,6 +9,5 @@
     "cat2_edge_functional_11_edge_zero_division",
     "cat2_edge_functional_21_edge_zero_division"
   ],
-  "source_prompt": "Handle b == 0.0 returning 0.0 to prevent ZeroDivisionError.",
   "forbidden_symbols": []
 }

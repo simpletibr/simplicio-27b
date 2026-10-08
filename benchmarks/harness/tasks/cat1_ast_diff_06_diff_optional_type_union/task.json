@@ -9,6 +9,5 @@
     "cat1_ast_diff_16_diff_optional_type_union",
     "cat1_ast_diff_26_diff_optional_type_union"
   ],
-  "source_prompt": "Modernize return type to Python 3.10+ union syntax str | None.",
   "forbidden_symbols": []
 }

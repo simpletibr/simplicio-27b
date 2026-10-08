@@ -9,6 +9,5 @@
     "cat2_edge_functional_16_edge_mutable_default_argument",
     "cat2_edge_functional_26_edge_mutable_default_argument"
   ],
-  "source_prompt": "Eliminate mutable default argument bug using container: list | None = None.",
   "forbidden_symbols": []
 }

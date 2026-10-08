@@ -9,6 +9,5 @@
     "cat1_ast_diff_17_diff_try_except_clause",
     "cat1_ast_diff_27_diff_try_except_clause"
   ],
-  "source_prompt": "Wrap in try/except FileNotFoundError returning empty string on failure.",
   "forbidden_symbols": []
 }

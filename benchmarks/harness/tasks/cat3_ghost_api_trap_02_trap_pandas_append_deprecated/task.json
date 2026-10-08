@@ -9,7 +9,6 @@
     "cat3_ghost_api_trap_12_trap_pandas_append_deprecated",
     "cat3_ghost_api_trap_22_trap_pandas_append_deprecated"
   ],
-  "source_prompt": "Append row to DataFrame. TRAP: df.append was removed in Pandas 2.0. Use pd.concat.",
   "forbidden_symbols": [
     ".append("
   ]

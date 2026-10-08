@@ -9,6 +9,5 @@
     "cat4_adv_ood_20_adv_context_manager_suppress",
     "cat4_adv_ood_30_adv_context_manager_suppress"
   ],
-  "source_prompt": "Refactor into contextlib.suppress(FileNotFoundError) for cleaner, idiomatic code.",
   "forbidden_symbols": []
 }

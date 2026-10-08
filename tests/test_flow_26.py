@@ -84,14 +84,18 @@ class PromptHasNoAnswer(unittest.TestCase):
                 self.assertNotIn("TRAP", prompt)
                 self.assertNotIn("<patch>", prompt)
 
-    def test_old_prompt_is_kept_only_in_source_prompt(self):
+    def test_prompt_is_built_from_the_new_statement_and_never_from_the_old_prompt(self):
+        old = {}
+        for row in json.loads((ROOT / "data/unseen_eval_120.json").read_text(encoding="utf-8")):
+            old.setdefault(row["id"], row["task"])
         for task in eval_tasks():
             with self.subTest(task=task["id"]):
                 prompt = harness.build_messages(task, "simplicio", False)[-1]["content"]
                 self.assertTrue(prompt.endswith("Tarefa: " + task["instruction"]))
                 self.assertTrue(prompt.startswith("Contexto: \nArquivo: " + task["edit_file"] + "\n"))
-                if task["instruction"] != task["source_prompt"]:
-                    self.assertNotIn(task["source_prompt"], prompt)
+                self.assertNotIn("source_prompt", task)
+                if task["instruction"] != old[task["id"]]:
+                    self.assertNotIn(old[task["id"]], prompt)
 
 
 class DecontaminationFlow(unittest.TestCase):

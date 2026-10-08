@@ -9,6 +9,5 @@
     "cat2_edge_functional_14_edge_list_index_out_of_bounds",
     "cat2_edge_functional_24_edge_list_index_out_of_bounds"
   ],
-  "source_prompt": "Return None if items is empty without raising IndexError.",
   "forbidden_symbols": []
 }

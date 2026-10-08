@@ -9,6 +9,5 @@
     "cat4_adv_ood_13_adv_nested_multiline_lambda",
     "cat4_adv_ood_23_adv_nested_multiline_lambda"
   ],
-  "source_prompt": "Fix TypeError on items.sort() by passing key=lambda x: x['id'].",
   "forbidden_symbols": []
 }

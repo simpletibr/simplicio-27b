@@ -9,6 +9,5 @@
     "cat2_edge_functional_17_edge_shallow_vs_deep_copy",
     "cat2_edge_functional_27_edge_shallow_vs_deep_copy"
   ],
-  "source_prompt": "Use copy.deepcopy(state) to prevent mutation of nested dictionaries.",
   "forbidden_symbols": []
 }

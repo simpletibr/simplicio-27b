@@ -9,6 +9,5 @@
     "cat4_adv_ood_15_adv_unicode_casefolding",
     "cat4_adv_ood_25_adv_unicode_casefolding"
   ],
-  "source_prompt": "Use casefold() instead of lower() for robust internationalized Unicode string comparison (e.g. German 'ß' == 'ss').",
   "forbidden_symbols": []
 }

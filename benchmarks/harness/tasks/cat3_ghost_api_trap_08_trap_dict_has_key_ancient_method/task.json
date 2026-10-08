@@ -9,7 +9,6 @@
     "cat3_ghost_api_trap_18_trap_dict_has_key_ancient_method",
     "cat3_ghost_api_trap_28_trap_dict_has_key_ancient_method"
   ],
-  "source_prompt": "Check if dictionary contains key. TRAP: d.has_key() was removed in Python 3. Use 'k in d'.",
   "forbidden_symbols": [
     ".has_key("
   ]

@@ -9,6 +9,5 @@
     "cat2_edge_functional_12_edge_none_or_empty_string",
     "cat2_edge_functional_22_edge_none_or_empty_string"
   ],
-  "source_prompt": "Safely handle title being None or empty returning empty string.",
   "forbidden_symbols": []
 }

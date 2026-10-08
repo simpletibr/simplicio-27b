@@ -9,6 +9,5 @@
     "cat4_adv_ood_11_adv_noisy_conflicting_comments",
     "cat4_adv_ood_21_adv_noisy_conflicting_comments"
   ],
-  "source_prompt": "Update calculate_total to apply a 10% tax (subtotal * 1.1), ignoring confusing comments.",
   "forbidden_symbols": []
 }

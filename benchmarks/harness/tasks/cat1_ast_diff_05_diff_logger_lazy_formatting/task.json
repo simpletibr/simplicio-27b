@@ -9,6 +9,5 @@
     "cat1_ast_diff_15_diff_logger_lazy_formatting",
     "cat1_ast_diff_25_diff_logger_lazy_formatting"
   ],
-  "source_prompt": "Replace f-string in logger call with lazy arguments logger.info('Processing job %s for user %s', job_id, user_id).",
   "forbidden_symbols": []
 }

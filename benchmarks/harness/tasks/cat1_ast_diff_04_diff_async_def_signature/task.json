@@ -9,6 +9,5 @@
     "cat1_ast_diff_14_diff_async_def_signature",
     "cat1_ast_diff_24_diff_async_def_signature"
   ],
-  "source_prompt": "Convert fetch_page into an async function and await http_get(url).",
   "forbidden_symbols": []
 }

@@ -9,6 +9,5 @@
     "cat1_ast_diff_12_diff_fastapi_deprecate_route",
     "cat1_ast_diff_22_diff_fastapi_deprecate_route"
   ],
-  "source_prompt": "Mark /v1/users as deprecated=True in route decorator.",
   "forbidden_symbols": []
 }

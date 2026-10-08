@@ -9,6 +9,5 @@
     "cat2_edge_functional_15_edge_resource_leak_context_mgr",
     "cat2_edge_functional_25_edge_resource_leak_context_mgr"
   ],
-  "source_prompt": "Refactor to with open(filename, 'a') as f: ensuring descriptor is always closed.",
   "forbidden_symbols": []
 }

@@ -9,7 +9,6 @@
     "cat3_ghost_api_trap_13_trap_sqlalchemy_v2_execute",
     "cat3_ghost_api_trap_23_trap_sqlalchemy_v2_execute"
   ],
-  "source_prompt": "Query users. TRAP: session.query() is legacy in 2.0. Use session.scalars(select(User)).",
   "forbidden_symbols": [
     "session.query"
   ]

@@ -9,7 +9,6 @@
     "cat3_ghost_api_trap_11_trap_pydantic_v1_validator",
     "cat3_ghost_api_trap_21_trap_pydantic_v1_validator"
   ],
-  "source_prompt": "Add validator for name uppercase. TRAP: DO NOT use Pydantic v1 @validator; use Pydantic v2 @field_validator.",
   "forbidden_symbols": [
     "@validator",
     "validator("

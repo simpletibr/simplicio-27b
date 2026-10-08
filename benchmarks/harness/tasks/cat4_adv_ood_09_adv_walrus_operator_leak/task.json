@@ -9,6 +9,5 @@
     "cat4_adv_ood_19_adv_walrus_operator_leak",
     "cat4_adv_ood_29_adv_walrus_operator_leak"
   ],
-  "source_prompt": "Refactor using Python 3.8+ walrus operator := inside the if condition.",
   "forbidden_symbols": []
 }

@@ -9,6 +9,5 @@
     "cat2_edge_functional_18_edge_regex_trailing_newline",
     "cat2_edge_functional_28_edge_regex_trailing_newline"
   ],
-  "source_prompt": "Fix regex to use \\Z instead of $ to avoid matching strings with trailing newlines.",
   "forbidden_symbols": []
 }

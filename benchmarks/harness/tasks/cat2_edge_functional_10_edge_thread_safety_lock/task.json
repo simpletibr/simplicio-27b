@@ -9,6 +9,5 @@
     "cat2_edge_functional_20_edge_thread_safety_lock",
     "cat2_edge_functional_30_edge_thread_safety_lock"
   ],
-  "source_prompt": "Add threading.Lock to inc() making it thread-safe.",
   "forbidden_symbols": []
 }

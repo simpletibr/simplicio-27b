@@ -9,6 +9,5 @@
     "cat4_adv_ood_12_adv_shadowed_builtins",
     "cat4_adv_ood_22_adv_shadowed_builtins"
   ],
-  "source_prompt": "Fix shadowed Python builtins ('list' and 'len') renaming them to 'items' and 'count' and returning actual length.",
   "forbidden_symbols": []
 }

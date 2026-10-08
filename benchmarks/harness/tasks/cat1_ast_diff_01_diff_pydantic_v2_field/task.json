@@ -9,6 +9,5 @@
     "cat1_ast_diff_11_diff_pydantic_v2_field",
     "cat1_ast_diff_21_diff_pydantic_v2_field"
   ],
-  "source_prompt": "Add min_length=11, max_length=14 constraints to tax_id using Field(...).",
   "forbidden_symbols": []
 }

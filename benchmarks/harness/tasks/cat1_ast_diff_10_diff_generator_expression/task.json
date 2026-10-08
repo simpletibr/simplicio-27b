@@ -9,6 +9,5 @@
     "cat1_ast_diff_20_diff_generator_expression",
     "cat1_ast_diff_30_diff_generator_expression"
   ],
-  "source_prompt": "Replace list comprehension inside sum() with generator expression (remove brackets).",
   "forbidden_symbols": []
 }

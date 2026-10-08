@@ -18,7 +18,8 @@ EVAL_FILE = ROOT / "data/unseen_eval_120.json"
 sys.path.insert(0, str(ROOT / "benchmarks/harness"))
 import harness  # noqa: E402
 
-KEYS = {"id", "instruction", "context", "edit_file", "category", "source_ids", "source_prompt", "forbidden_symbols"}
+KEYS = {"id", "instruction", "context", "edit_file", "category", "source_ids", "forbidden_symbols"}
+WINDOW = 12
 # types.py shadows the stdlib module, so the harness (which puts the work dir on sys.path) cannot use that name.
 RENAMED = {"cat1_ast_diff_06_diff_optional_type_union": "item_lookup.py"}
 # Literals the old prompts handed over (answer, API or code to write). None may be back in an instruction.
@@ -33,6 +34,8 @@ LEAKS = {
     "cat1_ast_diff_08": ["[x for x in nums if x % 2 == 0]"],
     "cat1_ast_diff_09": ["{k: v.upper() for k, v in items}"],
     "cat1_ast_diff_10": ["remove brackets", "generator expression"],
+    "cat2_edge_functional_01": ["b == 0", "== 0.0", "return 0.0"],
+    "cat2_edge_functional_03": ["'anonymous'", ".get("],
     "cat2_edge_functional_05": ["with open("],
     "cat2_edge_functional_06": ["container: list | None", "= None"],
     "cat2_edge_functional_07": ["deepcopy"],
@@ -52,14 +55,14 @@ LEAKS = {
     "cat4_adv_ood_01": ["subtotal * 1.1", "return 0"],
     "cat4_adv_ood_03": ["key=lambda", "x['id']"],
     "cat4_adv_ood_05": ["casefold"],
+    "cat4_adv_ood_06": ["'true'", "'1'", "'yes'", ".lower()"],
     "cat4_adv_ood_07": ["items = list(gen)", "list(gen)"],
     "cat4_adv_ood_09": [":="],
     "cat4_adv_ood_10": ["suppress(FileNotFoundError)", "contextlib"],
 }
-# The 8 tasks whose old statement already described behavior only, so the issue keeps it.
+# The 5 tasks whose old statement already described behavior only, so the old text is kept.
 KEPT = {
-    "cat2_edge_functional_01", "cat2_edge_functional_02", "cat2_edge_functional_03", "cat2_edge_functional_04",
-    "cat4_adv_ood_02", "cat4_adv_ood_04", "cat4_adv_ood_06", "cat4_adv_ood_08",
+    "cat2_edge_functional_02", "cat2_edge_functional_04", "cat4_adv_ood_02", "cat4_adv_ood_04", "cat4_adv_ood_08",
 }
 
 
@@ -79,6 +82,33 @@ def unique_rows():
     for r in json.loads(EVAL_FILE.read_text(encoding="utf-8")):
         groups.setdefault((r["original_code"], r["task"], r["test_assertion"]), []).append(r)
     return list(groups.values())
+
+
+def all_strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from all_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from all_strings(item)
+
+
+def oracle_snippets(text, oracle, source):
+    """Windows of WINDOW characters of `text` that are in the oracle but not in the file the model sees.
+
+    Whitespace is collapsed. A window with a space at either end is skipped: it is a shorter snippet
+    that happens to touch a word boundary. What the model already reads in `source` (names, signatures)
+    cannot leak, so only content that the answer adds counts.
+    """
+    text, oracle, source = (" ".join(s.split()) for s in (text, oracle, source))
+    windows = (text[i:i + WINDOW] for i in range(len(text) - WINDOW + 1))
+    return sorted({w for w in windows if w[0] != " " and w[-1] != " " and w in oracle and w not in source})
+
+
+def oracle_and_source(d):
+    return (d / "oracle.txt").read_text(encoding="utf-8"), (d / "files" / meta(d)["edit_file"]).read_text(encoding="utf-8")
 
 
 class TasksContract(unittest.TestCase):
@@ -115,7 +145,6 @@ class TasksContract(unittest.TestCase):
                 self.assertEqual(m["id"], d.name)
                 self.assertEqual(m["context"], "")
                 self.assertEqual(m["source_ids"], [r["id"] for r in rs])
-                self.assertEqual(m["source_prompt"], rs[0]["task"])
                 self.assertEqual(m["category"], rs[0]["category"])
                 self.assertEqual(m["forbidden_symbols"], rs[0]["forbidden_symbols"])
                 self.assertEqual(m["edit_file"], RENAMED.get(d.name, rs[0]["file"]))
@@ -191,16 +220,37 @@ class NoAnswerInThePrompt(unittest.TestCase):
                         for literal in literals:
                             self.assertNotIn(literal, m["instruction"], f"{d.name} leaks {literal!r}")
 
-    def test_32_statements_were_rewritten_and_8_were_kept(self):
-        changed = {d.name for d in eval_dirs() if meta(d)["instruction"] != meta(d)["source_prompt"]}
-        self.assertEqual(len(changed), 32)
+    def test_35_statements_were_rewritten_and_5_were_kept(self):
+        old = {rs[0]["id"]: rs[0]["task"] for rs in unique_rows()}
+        changed = {d.name for d in eval_dirs() if meta(d)["instruction"] != old[d.name]}
+        self.assertEqual(len(changed), 35)
         kept = {d.name for d in eval_dirs()} - changed
-        self.assertEqual(len(kept), 8)
+        self.assertEqual(len(kept), 5)
         self.assertTrue(all(any(n.startswith(k) for k in KEPT) for n in kept))
         self.assertEqual({meta(d)["context"] for d in eval_dirs()}, {""})
         for category in ("cat1", "cat2", "cat3", "cat4"):
             self.assertEqual(sum(d.name.startswith(category + "_") for d in eval_dirs()), 10)
         self.assertEqual(sum("TRAP" in meta(d)["instruction"] for d in eval_dirs()), 0)
+
+    def test_no_string_of_task_json_shares_12_characters_with_the_oracle(self):
+        for d in eval_dirs():
+            oracle, source = oracle_and_source(d)
+            for text in all_strings(meta(d)):
+                with self.subTest(task=d.name, text=text[:50]):
+                    self.assertEqual(oracle_snippets(text, oracle, source), [])
+
+    def test_the_detector_flags_the_old_prompts_that_task_json_no_longer_carries(self):
+        by_id = {d.name: d for d in eval_dirs()}
+        flagged = {}
+        for rs in unique_rows():
+            found = oracle_snippets(rs[0]["task"], *oracle_and_source(by_id[rs[0]["id"]]))
+            if found:
+                flagged[rs[0]["id"]] = found
+        self.assertGreaterEqual(len(flagged), 15)
+        for prefix in ("cat1_ast_diff_01", "cat1_ast_diff_09", "cat4_adv_ood_07", "cat4_adv_ood_10"):
+            self.assertTrue(any(k.startswith(prefix) for k in flagged), prefix)
+        for d in eval_dirs():
+            self.assertNotIn("source_prompt", meta(d))
 
 
 class EvalFileUntouched(unittest.TestCase):

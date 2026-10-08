@@ -9,7 +9,6 @@
     "cat3_ghost_api_trap_19_trap_str_is_numeric_vs_isnumeric",
     "cat3_ghost_api_trap_29_trap_str_is_numeric_vs_isnumeric"
   ],
-  "source_prompt": "Check if string contains only digits. TRAP: Python strings have .isdigit() or .isnumeric(), NOT .is_digit() or .is_numeric().",
   "forbidden_symbols": [
     ".is_numeric(",
     ".is_digit("

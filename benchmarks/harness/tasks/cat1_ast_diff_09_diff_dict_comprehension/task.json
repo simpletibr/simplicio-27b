@@ -9,6 +9,5 @@
     "cat1_ast_diff_19_diff_dict_comprehension",
     "cat1_ast_diff_29_diff_dict_comprehension"
   ],
-  "source_prompt": "Refactor into dict comprehension lookup = {k: v.upper() for k, v in items}.",
   "forbidden_symbols": []
 }

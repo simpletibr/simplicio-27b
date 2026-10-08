@@ -9,7 +9,6 @@
     "cat3_ghost_api_trap_14_trap_list_flatten_hallucination",
     "cat3_ghost_api_trap_24_trap_list_flatten_hallucination"
   ],
-  "source_prompt": "Flatten a nested list of lists. TRAP: Python lists DO NOT have a list.flatten() method.",
   "forbidden_symbols": [
     "nested.flatten",
     ".flatten()"
