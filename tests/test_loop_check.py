@@ -148,6 +148,27 @@ class StructureTests(unittest.TestCase):
         self.assertEqual(rules(loop_check.check(["<simplicio_loop>"])), {"entrada"})
 
 
+class EmptyPhaseTests(unittest.TestCase):
+    def test_empty_phase_fails(self) -> None:
+        for phase in ("orient", "plan", "validate", "deliver"):
+            for body in ("", "   \n\n  "):
+                with self.subTest(phase=phase, body=repr(body)):
+                    problems = loop_check.check(build(bodies={phase: body}))
+                    self.assertIn(f"fase-vazia: <{phase}> (linha ", "\n".join(problems))
+
+    def test_envelope_with_only_a_patch_block_fails(self) -> None:
+        empty = {p: "" for p in ("orient", "plan", "validate", "deliver")}
+        problems = loop_check.check(build(bodies=empty))
+        self.assertEqual(len([p for p in problems if p.startswith("fase-vazia")]), 4)
+
+    def test_ellipsis_counts_as_content(self) -> None:
+        bodies = {p: "…" for p in ("orient", "plan", "validate", "deliver")}
+        self.assertEqual(loop_check.check(build(bodies=bodies)), [])
+
+    def test_patch_phase_without_content_reports_the_missing_block(self) -> None:
+        self.assertIn("patch-sem-bloco", rules(loop_check.check(build(bodies={"patch": ""}))))
+
+
 class PointTests(unittest.TestCase):
     def test_point_outside_its_phase_fails(self) -> None:
         cases = {
@@ -175,6 +196,29 @@ class PointTests(unittest.TestCase):
                 problems = loop_check.check(build(bodies={"orient": bad}))
                 self.assertIn("ponto-malformado", rules(problems))
 
+    def test_point_label_case_and_list_prefix_are_checked(self) -> None:
+        labels = ("[ponto 45: X] x", "[PONTO 45: X] x", "[point 45: X] x", "[Point 45: X] x",
+                  "- [Ponto 45: X] x", "* [ponto 45: X] x", "+ [Point 45: X] x", "• [Ponto 45: X] x",
+                  "1. [Ponto 45: X] x", "12) [ponto 45: X] x", "  - [Ponto 45: X] x")
+        for label in labels:
+            with self.subTest(label=label):
+                problems = loop_check.check(build(bodies={"plan": label}))
+                self.assertIn("ponto-fora-da-fase", rules(problems))
+
+    def test_point_label_case_and_list_prefix_inside_range_pass(self) -> None:
+        for label in ("[ponto 11: X] x", "- [Ponto 11: X] x", "1. [point 11: X] x", "* [PONTO 20: X] x"):
+            with self.subTest(label=label):
+                self.assertEqual(loop_check.check(build(bodies={"plan": label})), [])
+
+    def test_malformed_point_with_prefix_or_lowercase_fails(self) -> None:
+        for bad in ("- [Ponto X: Y] x", "[ponto 1 Raiz] x", "1. [point 1:] x"):
+            with self.subTest(bad=bad):
+                self.assertIn("ponto-malformado", rules(loop_check.check(build(bodies={"orient": bad}))))
+
+    def test_prefixed_points_count_in_complete_mode(self) -> None:
+        text = full_envelope().replace("[Ponto 7: Nome 7]", "- [ponto 7: Nome 7]")
+        self.assertEqual(loop_check.check(text, complete=True), [])
+
     def test_default_mode_does_not_demand_all_50_points(self) -> None:
         self.assertEqual(loop_check.check(build()), [])
         self.assertEqual(loop_check.check(build(), complete=False), [])
@@ -200,7 +244,9 @@ class PatchTests(unittest.TestCase):
 
     def test_indented_markers_are_not_blocks(self) -> None:
         body = "  <<<< SEARCH\nx = 1\n  ====\nx = 2\n  >>>> REPLACE"
-        self.assertIn("patch-sem-bloco", rules(self.patch_problems(body)))
+        problems = self.patch_problems(body)
+        self.assertIn("patch-sem-bloco", rules(problems))
+        self.assertIn("patch-marcador", rules(problems))
 
     def test_block_without_replace_fails(self) -> None:
         self.assertIn("patch-bloco", rules(self.patch_problems("<<<< SEARCH\nx = 1\n====\nx = 2")))
@@ -217,6 +263,106 @@ class PatchTests(unittest.TestCase):
         self.assertIn("patch-bloco", rules(self.patch_problems(BLOCK + "\n====")))
         self.assertIn("patch-bloco", rules(self.patch_problems(BLOCK + "\n>>>> REPLACE")))
 
+
+
+class PatchMarkerHardeningTests(unittest.TestCase):
+    """Marcadores exatos: 4 caracteres, sozinhos na linha, sem indentação, em qualquer ponto de <patch>."""
+
+    def patch_problems(self, body: str) -> list[str]:
+        return loop_check.check(build(bodies={"patch": body}))
+
+    def test_wrong_length_replace_closing_an_open_block_fails(self) -> None:
+        for n in (5, 6, 7):
+            with self.subTest(length=n):
+                body = f"<<<< SEARCH\nx = 1\n====\nx = 2\n{'>' * n} REPLACE"
+                self.assertIn("patch-marcador", rules(self.patch_problems(body)))
+
+    def test_seven_character_replace_cannot_hide_behind_a_later_valid_block(self) -> None:
+        body = (
+            "<<<< SEARCH\nx = 1\n====\nx = 2\n>>>>>>> REPLACE\n"
+            "<<<< SEARCH\ny = 1\n====\ny = 2\n>>>> REPLACE"
+        )
+        self.assertIn("patch-marcador", rules(self.patch_problems(body)))
+
+    def test_wrong_length_divider_inside_a_search_fails(self) -> None:
+        for n in (5, 6, 7):
+            with self.subTest(length=n):
+                body = f"<<<< SEARCH\nx = 1\n{'=' * n}\nx = 2\n>>>> REPLACE"
+                self.assertIn("patch-marcador", rules(self.patch_problems(body)))
+
+    def test_wrong_length_divider_inside_a_replace_fails(self) -> None:
+        body = "<<<< SEARCH\nx = 1\n====\nx = 2\n=======\nx = 3\n>>>> REPLACE"
+        self.assertIn("patch-marcador", rules(self.patch_problems(body)))
+
+    def test_wrong_length_search_inside_an_open_block_fails(self) -> None:
+        for n in (5, 7):
+            with self.subTest(length=n):
+                body = f"<<<< SEARCH\nx = 1\n{'<' * n} SEARCH\n====\nx = 2\n>>>> REPLACE"
+                self.assertIn("patch-marcador", rules(self.patch_problems(body)))
+
+    def test_wrong_length_markers_outside_a_block_fail(self) -> None:
+        for n in (5, 6, 7):
+            with self.subTest(length=n):
+                body = BLOCK + f"\n{'<' * n} SEARCH\ny = 1\n{'=' * n}\ny = 2\n{'>' * n} REPLACE"
+                self.assertIn("patch-marcador", rules(self.patch_problems(body)))
+
+    def test_indented_search_or_replace_inside_an_open_block_fails(self) -> None:
+        inside_search = "<<<< SEARCH\nx = 1\n    >>>> REPLACE\n====\nx = 2\n>>>> REPLACE"
+        inside_replace = "<<<< SEARCH\nx = 1\n====\nx = 2\n  <<<< SEARCH\n>>>> REPLACE"
+        for body in (inside_search, inside_replace):
+            with self.subTest(body=body):
+                self.assertIn("patch-marcador", rules(self.patch_problems(body)))
+
+    def test_indented_block_after_a_valid_one_fails(self) -> None:
+        body = BLOCK + "\n  <<<< SEARCH\ny = 1\n  ====\ny = 2\n  >>>> REPLACE"
+        self.assertIn("patch-marcador", rules(self.patch_problems(body)))
+
+    def test_tab_indented_marker_fails(self) -> None:
+        body = BLOCK + "\n\t<<<< SEARCH\ny = 1\n====\ny = 2\n>>>> REPLACE"
+        self.assertIn("patch-marcador", rules(self.patch_problems(body)))
+
+    def test_marker_with_extra_or_missing_space_fails(self) -> None:
+        for search, replace in (("<<<<  SEARCH", ">>>> REPLACE"), ("<<<<SEARCH", ">>>> REPLACE"),
+                                ("<<<< SEARCH", ">>>>  REPLACE"), ("<<<< SEARCH", ">>>>REPLACE")):
+            with self.subTest(search=search, replace=replace):
+                body = f"{search}\nx = 1\n====\nx = 2\n{replace}"
+                self.assertIn("patch-marcador", rules(self.patch_problems(body)))
+
+    def test_trailing_whitespace_on_markers_is_allowed(self) -> None:
+        body = "<<<< SEARCH  \nx = 1\n====\t\nx = 2\n>>>> REPLACE \n"
+        self.assertEqual(self.patch_problems(body), [])
+
+    def test_indented_divider_inside_a_block_is_content(self) -> None:
+        # Limitação documentada: pode ser o sublinhado de um título RST/Markdown no código editado.
+        body = "<<<< SEARCH\n    ====\n====\n    ====\n>>>> REPLACE"
+        self.assertEqual(self.patch_problems(body), [])
+
+    def test_whitespace_only_search_is_empty(self) -> None:
+        for search in ("\n", "   \n", "\n  \n\t\n"):
+            with self.subTest(search=repr(search)):
+                body = f"<<<< SEARCH\n{search}====\nx = 2\n>>>> REPLACE"
+                self.assertIn("patch-search-vazio", rules(self.patch_problems(body)))
+
+    def test_search_marker_outside_patch_fails(self) -> None:
+        for phase in ("orient", "plan", "validate", "deliver"):
+            with self.subTest(phase=phase):
+                text = build(bodies={phase: BODIES[phase] + "\n<<<< SEARCH\nx\n====\ny\n>>>> REPLACE"})
+                self.assertIn("patch-fora-do-patch", rules(loop_check.check(text)))
+
+    def test_search_marker_between_phases_fails(self) -> None:
+        text = build().replace("</orient>\n", "</orient>\n<<<< SEARCH\n")
+        self.assertIn("patch-fora-do-patch", rules(loop_check.check(text)))
+
+    def test_markers_inside_think_do_not_count_as_a_patch(self) -> None:
+        in_patch = loop_check.check(build(bodies={"patch": "<think>\n" + BLOCK + "\n</think>"}))
+        self.assertIn("patch-no-think", rules(in_patch))
+        self.assertIn("patch-sem-bloco", rules(in_patch))
+        in_plan = loop_check.check(build(bodies={"plan": "<think>\n<<<< SEARCH\n</think>\n[Ponto 11: P] x"}))
+        self.assertIn("patch-no-think", rules(in_plan))
+
+    def test_block_after_closed_think_still_counts(self) -> None:
+        body = "<think>\npensando\n</think>\n" + BLOCK
+        self.assertEqual(self.patch_problems(body), [])
 
 class CompleteModeTests(unittest.TestCase):
     def test_full_envelope_passes_both_modes(self) -> None:
@@ -322,6 +468,28 @@ class CliTests(unittest.TestCase):
         self.assertIn("campo: 1 de 1", missing.stdout)
         custom = run_cli("--jsonl", path, "--field", "saida")
         self.assertEqual(custom.returncode, 0, custom.stdout)
+
+    def test_jsonl_empty_file_exits_1_with_a_clear_message(self) -> None:
+        for name, content in (("vazio.jsonl", ""), ("brancos.jsonl", "\n   \n\t\n\n")):
+            with self.subTest(name=name):
+                done = run_cli("--jsonl", self.write(name, content))
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("nenhuma linha para validar", done.stdout)
+                self.assertNotIn("0 falham", done.stdout)
+
+    def test_jsonl_empty_file_makes_a_multi_file_run_fail(self) -> None:
+        good = self.jsonl(build())
+        empty = self.write("vazio.jsonl", "")
+        done = run_cli("--jsonl", good, "--jsonl", empty)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("1 linhas, 1 passam, 0 falham", done.stdout)
+
+    def test_empty_text_file_exits_1(self) -> None:
+        for content in ("", "  \n\n"):
+            with self.subTest(content=repr(content)):
+                done = run_cli(self.write("vazio.txt", content))
+                self.assertEqual(done.returncode, 1)
+                self.assertIn("entrada: saída vazia", done.stdout)
 
     def test_jsonl_skips_blank_lines(self) -> None:
         path = self.write("d.jsonl", json.dumps({"simplicio_trajectory": build()}) + "\n\n")

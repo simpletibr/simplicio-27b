@@ -9,21 +9,24 @@ Uso:
     python3 scripts/loop_check.py ARQUIVO...            # '-' lê a entrada padrão
     python3 scripts/loop_check.py --jsonl ARQUIVO       # valida o campo de cada linha
     python3 scripts/loop_check.py --complete ARQUIVO    # exige os 50 pontos
-Saída: 0 se tudo passou, 1 se alguma saída falhou (ou um arquivo não pôde ser lido),
-2 em erro de uso. Na API: check(text, complete=False) -> lista de problemas (vazia = ok).
-Cada problema é "regra: detalhe"; a regra (texto antes do primeiro ':') serve para contar razões.
+Saída: 0 se tudo passou, 1 se alguma saída falhou (ou um arquivo não pôde ser lido, ou um
+--jsonl não tem nenhuma linha), 2 em erro de uso. Na API: check(text, complete=False) -> lista
+de problemas (vazia = ok). Cada problema é "regra: detalhe"; a regra (texto antes do primeiro
+':') serve para contar razões.
 
 Especificação (fonte entre parênteses)
 1. A saída é um único <simplicio_loop> ... </simplicio_loop>; nada além de espaço fora dele (README).
 2. Dentro dele, as fases <orient>, <plan>, <patch>, <validate>, <deliver>, cada uma uma vez,
    nessa ordem, abertas e fechadas, sem aninhar. Cada tag fica sozinha na linha (README, dataset).
-3. Um ponto é uma linha "[Ponto N: Nome]" (dataset) ou "[Point N: Name]" (README, traduzido).
+   <orient>, <plan>, <validate> e <deliver> não podem ficar vazias (o README abrevia com "…", que conta).
+3. Um ponto é uma linha "[Ponto N: Nome]" (dataset) ou "[Point N: Name]" (README, traduzido), com ou
+   sem diferença de caixa em "Ponto"/"Point" e com ou sem prefixo de lista ("- ", "* ", "1. ").
    Faixas: orient 1-10, plan 11-20, patch 21-30, validate 31-40, deliver 41-50 (generate_dataset.py).
    Ponto numerado fora da faixa da fase onde aparece, ou fora de qualquer fase, é problema.
 4. <patch> tem um ou mais blocos "<<<< SEARCH" / "====" / ">>>> REPLACE", marcadores de exatamente
-   4 caracteres, sozinhos na linha e sem espaço à esquerda (README; benchmarks/harness/harness.py).
-   SEARCH não pode ser vazio (harness: empty_search). REPLACE pode ser vazio (apagar trecho).
-   Os 3 a 7+ caracteres do Git/Aider (<<<<<<< SEARCH) são problema.
+   4 caracteres, sozinhos na linha, sem indentação e com um único espaço antes de SEARCH/REPLACE
+   (README; benchmarks/harness/harness.py). SEARCH não pode ser vazio nem só espaços e linhas em
+   branco (harness: empty_search). REPLACE pode ser vazio (apagar trecho).
 
 Escolhas onde a especificação é ambígua (sempre a leitura mais literal)
 - Modo padrão (envelope): o README diz "cada fase é uma lista de pontos", mas o próprio exemplo
@@ -32,12 +35,23 @@ Escolhas onde a especificação é ambígua (sempre a leitura mais literal)
 - --complete / complete=True: o system prompt do repo diz "os 50 pontos do Simplicio-Loop". Este modo
   acrescenta: todos os 50 pontos, cada um uma vez, na faixa da sua fase, em ordem crescente.
 - O nome do ponto não é conferido (o README traduz "Identificacao de Raiz" por "Root" e o gerador
-  usa nomes diferentes nos exemplos manuais e nos gerados); só o número conta. "Ponto" e "Point" valem.
+  usa nomes diferentes nos exemplos manuais e nos gerados); só o número conta.
 - Linhas de texto livre dentro de uma fase são permitidas (o README usa "…"). Texto entre as fases, ou
   fora de <simplicio_loop> (inclusive um bloco <think>), é problema. O README manda rodar sem thinking.
-- Marcadores só têm significado em <patch>. Como no harness, dentro de um bloco aberto tudo é conteúdo
-  até o ">>>> REPLACE" (um "<<<< SEARCH" ou "</patch>" ali dentro não é interpretado). Exceção: um
-  ">>>> REPLACE" antes do "====" encerra o bloco e é reportado, pois falta uma parte obrigatória.
+- Marcadores são exatos. O harness aceita de 4 a 7 caracteres; o README exige 4, então 5 a 7 (o estilo
+  Git/Aider) é problema em qualquer lugar de <patch>, inclusive dentro de um bloco aberto (onde o
+  harness fecharia o bloco com ele). Marcador SEARCH/REPLACE indentado ou com espaçamento diferente de
+  um único espaço também é problema em qualquer lugar de <patch>. Marcador SEARCH/REPLACE fora de
+  <patch>, ou dentro de um <think> (tags <think> e </think> sozinhas na linha), é problema, e um bloco
+  dentro de <think> não conta como patch.
+- Dentro de um bloco aberto, o resto é conteúdo até o marcador que o fecha (como no harness): um
+  "<<<< SEARCH" exato ou "</patch>" ali dentro não é interpretado.
+
+Limitações conhecidas
+- Dentro de um bloco aberto, um "====" INDENTADO é conteúdo, não erro: pode ser o sublinhado de um
+  título RST/Markdown no código sendo editado, e o harness também o trata como texto. Já uma linha
+  inteira de 5 a 7 "=" é reportada mesmo sendo sublinhado, porque o harness a leria como divisor.
+- <think> em uma única linha ("<think>...</think>") não é rastreado; só as tags sozinhas na linha.
 - Não confere se o SEARCH existe no arquivo-alvo (isso exige o código; é o que o harness mede).
 """
 
@@ -48,6 +62,7 @@ import json
 import re
 import sys
 from collections import Counter
+from typing import NamedTuple
 
 ROOT_TAG = "simplicio_loop"
 PHASES = ("orient", "plan", "patch", "validate", "deliver")
@@ -62,14 +77,42 @@ DEFAULT_FIELD = "simplicio_trajectory"
 MAX_SHOWN_LINES = 20
 
 TAG_RE = re.compile(r"^<(/?)(simplicio_loop|orient|plan|patch|validate|deliver)>$")
-POINT_START_RE = re.compile(r"^\[(?:Ponto|Point)\b")
-POINT_RE = re.compile(r"^\[(?:Ponto|Point)\s+(\d{1,4})\s*:\s*[^\]\n]+\]")
-SEARCH_RE = re.compile(r"^<{4} SEARCH\s*$")
-DIVIDER_RE = re.compile(r"^={4}\s*$")
-REPLACE_RE = re.compile(r"^>{4} REPLACE\s*$")
-ANY_SEARCH_RE = re.compile(r"^(<+) SEARCH\s*$")
-ANY_REPLACE_RE = re.compile(r"^(>+) REPLACE\s*$")
-LONG_DIVIDER_RE = re.compile(r"^={5,}\s*$")
+THINK_RE = re.compile(r"^<(/?)think>$")
+_LIST_PREFIX = r"(?:(?:[-*+•]|\d+[.)])\s+)?"
+POINT_START_RE = re.compile(rf"^{_LIST_PREFIX}\[(?:ponto|point)\b", re.IGNORECASE)
+POINT_RE = re.compile(rf"^{_LIST_PREFIX}\[(?:ponto|point)\s+(\d{{1,4}})\s*:\s*[^\]\n]+\]", re.IGNORECASE)
+MARKER_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?:(?P<lt><+)(?P<gap1>[ \t]*)SEARCH|(?P<gt>>+)(?P<gap2>[ \t]*)REPLACE|(?P<eq>={4,7}))[ \t]*$"
+)
+
+
+class _Marker(NamedTuple):
+    kind: str  # search | divider | replace
+    length: int
+    clean: bool  # sem indentação e com o espaço único do formato
+
+    @property
+    def exact(self) -> bool:
+        return self.clean and self.length == 4
+
+    @property
+    def harness_marker(self) -> bool:
+        """O que o harness reconheceria: sem indentação, espaço único e 4 a 7 caracteres."""
+        return self.clean and 4 <= self.length <= 7
+
+
+def _marker(raw: str) -> _Marker | None:
+    """Classifica uma linha que parece marcador de SEARCH/REPLACE; None se não parece."""
+    found = MARKER_RE.match(raw)
+    if not found:
+        return None
+    if found["lt"]:
+        kind, run, gap = "search", found["lt"], found["gap1"]
+    elif found["gt"]:
+        kind, run, gap = "replace", found["gt"], found["gap2"]
+    else:
+        kind, run, gap = "divider", found["eq"], " "
+    return _Marker(kind, len(run), not found["indent"] and gap == " ")
 
 
 class _Scan:
@@ -81,7 +124,9 @@ class _Scan:
         self.root_closed = False
         self.current: str | None = None
         self.current_line = 0
+        self.in_think = False
         self.opens: dict[str, list[int]] = {p: [] for p in PHASES}
+        self.filled: dict[str, int] = {p: 0 for p in PHASES}
         self.order: list[str] = []
         self.points: list[tuple[int, int, str | None]] = []
         self.outside: list[int] = []
@@ -98,19 +143,36 @@ class _Scan:
     def run(self, text: str) -> None:
         for no, raw in enumerate(text.splitlines(), 1):
             if self.block is not None:
+                self._count(raw)
                 self._in_block(no, raw)
                 continue
             line = raw.strip()
             if not line:
                 continue
+            inside = self.root_open and not self.root_closed
+            think = THINK_RE.match(line)
+            if think and inside:
+                self.in_think = not think.group(1)
+                continue
             tag = TAG_RE.match(line)
             if tag:
                 self._tag(no, tag.group(2), bool(tag.group(1)))
-            elif self.current == "patch" and self._patch_marker(no, raw):
                 continue
-            else:
-                self._text(no, line)
+            self._count(line)
+            if self.current == "patch" and not self.in_think and self._patch_marker(no, raw):
+                continue
+            mark = _marker(raw)
+            if inside and mark is not None and mark.kind != "divider":
+                rule = "patch-no-think" if self.in_think else "patch-fora-do-patch"
+                where = "dentro de um <think>" if self.in_think else "fora de <patch>"
+                self.add(rule, f"linha {no}: marcador {line!r} {where}")
+                continue
+            self._text(no, line)
         self._finish()
+
+    def _count(self, line: str) -> None:
+        if self.current is not None and line.strip():
+            self.filled[self.current] += 1
 
     def _tag(self, no: int, name: str, close: bool) -> None:
         if name == ROOT_TAG:
@@ -176,41 +238,53 @@ class _Scan:
                 f"linha {no}: ponto {number} dentro de <{self.current}>, que aceita {low}-{high}",
             )
 
+    def _bad_marker(self, no: int, raw: str, mark: _Marker) -> None:
+        why = []
+        if mark.length != 4:
+            why.append(f"{mark.length} caracteres (o loop usa 4)")
+        if not mark.clean:
+            why.append("indentado ou com espaçamento fora do formato")
+        self.add(
+            "patch-marcador",
+            f"linha {no}: marcador {raw.strip()!r}: {'; '.join(why)}; "
+            "o formato exato é '<<<< SEARCH', '====', '>>>> REPLACE', sozinho na linha e sem indentação",
+        )
+
     def _patch_marker(self, no: int, raw: str) -> bool:
         """Trata marcadores fora de bloco dentro de <patch>. True se a linha foi consumida."""
-        if SEARCH_RE.match(raw):
+        mark = _marker(raw)
+        if mark is None:
+            return False
+        if not mark.exact:
+            self._bad_marker(no, raw, mark)
+        elif mark.kind == "search":
             self.block, self.block_line, self.search_lines = "search", no, []
-            return True
-        found = ANY_SEARCH_RE.match(raw) or ANY_REPLACE_RE.match(raw)
-        if found and len(found.group(1)) != 4:
-            self.add(
-                "patch-marcador",
-                f"linha {no}: marcador de {len(found.group(1))} caracteres ({raw.strip()!r}); "
-                "o loop usa 4: '<<<< SEARCH', '====', '>>>> REPLACE'",
-            )
-            return True
-        if LONG_DIVIDER_RE.match(raw):
-            self.add("patch-marcador", f"linha {no}: divisor de {len(raw.strip())} caracteres; o loop usa '===='")
-            return True
-        if DIVIDER_RE.match(raw) or REPLACE_RE.match(raw):
+        else:
             self.add("patch-bloco", f"linha {no}: {raw.strip()!r} fora de um bloco aberto por '<<<< SEARCH'")
-            return True
-        return False
+        return True
 
     def _in_block(self, no: int, raw: str) -> None:
-        if self.block == "search":
-            if DIVIDER_RE.match(raw):
-                if "\n".join(self.search_lines) == "":
-                    self.add("patch-search-vazio", f"linha {self.block_line}: bloco com SEARCH vazio")
+        mark = _marker(raw)
+        if mark is not None and mark.kind == "divider" and not mark.clean:
+            mark = None  # divisor indentado dentro de bloco é conteúdo (ver "Limitações conhecidas")
+        if mark is not None:
+            if not mark.exact:
+                self._bad_marker(no, raw, mark)
+            if mark.harness_marker and self.block == "search" and mark.kind == "divider":
+                if not any(line.strip() for line in self.search_lines):
+                    self.add("patch-search-vazio", f"linha {self.block_line}: bloco com SEARCH vazio ou só com espaços")
                 self.block = "replace"
-            elif REPLACE_RE.match(raw):
+                return
+            if mark.harness_marker and self.block == "search" and mark.kind == "replace":
                 self.add("patch-bloco", f"linha {no}: '>>>> REPLACE' sem '====' (bloco da linha {self.block_line})")
                 self.block = None
-            else:
-                self.search_lines.append(raw)
-        elif REPLACE_RE.match(raw):
-            self.blocks_done += 1
-            self.block = None
+                return
+            if mark.harness_marker and self.block == "replace" and mark.kind == "replace":
+                self.blocks_done += 1
+                self.block = None
+                return
+        if self.block == "search":
+            self.search_lines.append(raw)
 
     def _finish(self) -> None:
         if self.block is not None:
@@ -239,6 +313,8 @@ class _Scan:
                 self.add("fase-ausente", f"falta <{phase}>")
             elif len(lines) > 1:
                 self.add("fase-repetida", f"<{phase}> aparece {len(lines)} vezes (linhas {', '.join(map(str, lines))})")
+            elif phase != "patch" and self.filled[phase] == 0:
+                self.add("fase-vazia", f"<{phase}> (linha {lines[0]}) não tem conteúdo")
         found = list(dict.fromkeys(self.order))
         if found != [p for p in PHASES if p in found]:
             self.add(
@@ -341,6 +417,9 @@ def _check_jsonl(path: str, field: str, complete: bool) -> bool:
             reasons.update({rule_of(p) for p in problems})
         else:
             passed += 1
+    if total == 0:
+        print(f"FALHA  {path}\n  - jsonl: nenhuma linha para validar (arquivo vazio ou só com linhas em branco)")
+        return False
     modo = "completo (50 pontos)" if complete else "envelope"
     print(f"{path}: {total} linhas, {passed} passam, {total - passed} falham (campo {field!r}, modo {modo})")
     for no, problems in failures[:MAX_SHOWN_LINES]:
