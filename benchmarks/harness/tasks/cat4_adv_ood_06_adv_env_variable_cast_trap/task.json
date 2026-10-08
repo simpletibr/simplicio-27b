@@ -1,0 +1,14 @@
+{
+  "id": "cat4_adv_ood_06_adv_env_variable_cast_trap",
+  "instruction": "Fix os.getenv() always returning string bug: cast 'true', '1', 'yes' to boolean True.",
+  "context": "",
+  "edit_file": "settings.py",
+  "category": "4_adversarial_and_out_of_distribution",
+  "source_ids": [
+    "cat4_adv_ood_06_adv_env_variable_cast_trap",
+    "cat4_adv_ood_16_adv_env_variable_cast_trap",
+    "cat4_adv_ood_26_adv_env_variable_cast_trap"
+  ],
+  "source_prompt": "Fix os.getenv() always returning string bug: cast 'true', '1', 'yes' to boolean True.",
+  "forbidden_symbols": []
+}

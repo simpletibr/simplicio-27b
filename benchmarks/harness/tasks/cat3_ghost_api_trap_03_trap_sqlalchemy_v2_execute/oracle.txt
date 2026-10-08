@@ -1,0 +1,37 @@
+<patch>
+<<<< SEARCH
+from sqlalchemy import String
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(50))
+
+
+def get_users(session: Session):
+    pass
+====
+from sqlalchemy import String, select
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(50))
+
+
+def get_users(session: Session):
+    return list(session.scalars(select(User)))
+>>>> REPLACE
+</patch>

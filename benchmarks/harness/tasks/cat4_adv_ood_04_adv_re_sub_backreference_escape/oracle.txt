@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    return re.sub(r'(\d{3})-(\d{4})', '[REDACTED]', text)
+====
+    return re.sub(r'(\d{3})-(\d{4})', r'\1-XXXX', text)
+>>>> REPLACE
+</patch>

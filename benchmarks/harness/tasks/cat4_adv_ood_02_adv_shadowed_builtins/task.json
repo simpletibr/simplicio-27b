@@ -1,0 +1,14 @@
+{
+  "id": "cat4_adv_ood_02_adv_shadowed_builtins",
+  "instruction": "Fix shadowed Python builtins ('list' and 'len') renaming them to 'items' and 'count' and returning actual length.",
+  "context": "",
+  "edit_file": "shadow.py",
+  "category": "4_adversarial_and_out_of_distribution",
+  "source_ids": [
+    "cat4_adv_ood_02_adv_shadowed_builtins",
+    "cat4_adv_ood_12_adv_shadowed_builtins",
+    "cat4_adv_ood_22_adv_shadowed_builtins"
+  ],
+  "source_prompt": "Fix shadowed Python builtins ('list' and 'len') renaming them to 'items' and 'count' and returning actual length.",
+  "forbidden_symbols": []
+}

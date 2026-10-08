@@ -1,0 +1,11 @@
+<patch>
+<<<< SEARCH
+    return open(path).read()
+====
+    try:
+        with open(path) as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
+>>>> REPLACE
+</patch>

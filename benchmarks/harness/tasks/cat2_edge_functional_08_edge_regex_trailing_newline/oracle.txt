@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    return bool(re.match(r'^[a-z0-9-]+$', slug))
+====
+    return bool(re.match(r'^[a-z0-9-]+\Z', slug))
+>>>> REPLACE
+</patch>

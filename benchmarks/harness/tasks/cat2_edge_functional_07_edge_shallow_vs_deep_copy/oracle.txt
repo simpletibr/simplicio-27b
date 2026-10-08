@@ -1,0 +1,12 @@
+<patch>
+<<<< SEARCH
+def copy_state(state: dict) -> dict:
+    return state.copy()
+====
+import copy
+
+
+def copy_state(state: dict) -> dict:
+    return copy.deepcopy(state)
+>>>> REPLACE
+</patch>

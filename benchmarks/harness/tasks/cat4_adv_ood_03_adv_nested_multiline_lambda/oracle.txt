@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    items.sort()
+====
+    items.sort(key=lambda x: x['id'])
+>>>> REPLACE
+</patch>

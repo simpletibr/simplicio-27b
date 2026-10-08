@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+DEBUG = os.getenv('DEBUG', False)
+====
+DEBUG = os.getenv('DEBUG', '').strip().lower() in ('true', '1', 'yes')
+>>>> REPLACE
+</patch>

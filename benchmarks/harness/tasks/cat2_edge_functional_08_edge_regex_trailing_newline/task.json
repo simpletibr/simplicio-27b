@@ -1,0 +1,14 @@
+{
+  "id": "cat2_edge_functional_08_edge_regex_trailing_newline",
+  "instruction": "is_valid_slug must return False when a valid slug is followed by a trailing newline.",
+  "context": "",
+  "edit_file": "slug_validator.py",
+  "category": "2_functional_correctness_edge_cases",
+  "source_ids": [
+    "cat2_edge_functional_08_edge_regex_trailing_newline",
+    "cat2_edge_functional_18_edge_regex_trailing_newline",
+    "cat2_edge_functional_28_edge_regex_trailing_newline"
+  ],
+  "source_prompt": "Fix regex to use \\Z instead of $ to avoid matching strings with trailing newlines.",
+  "forbidden_symbols": []
+}

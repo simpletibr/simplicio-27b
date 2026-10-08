@@ -1,0 +1,9 @@
+<patch>
+<<<< SEARCH
+def format_title(title: str) -> str:
+====
+def format_title(title: str) -> str:
+    if title is None:
+        return ""
+>>>> REPLACE
+</patch>

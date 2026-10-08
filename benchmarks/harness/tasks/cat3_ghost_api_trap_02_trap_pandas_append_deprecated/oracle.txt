@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    pass
+====
+    return pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+>>>> REPLACE
+</patch>

@@ -1,0 +1,17 @@
+{
+  "id": "cat3_ghost_api_trap_06_trap_datetime_utcnow_deprecation",
+  "instruction": "Implement current_time so it returns the current UTC time as a timezone-aware datetime.",
+  "context": "",
+  "edit_file": "clock.py",
+  "category": "3_ghost_api_and_deprecated_traps",
+  "source_ids": [
+    "cat3_ghost_api_trap_06_trap_datetime_utcnow_deprecation",
+    "cat3_ghost_api_trap_16_trap_datetime_utcnow_deprecation",
+    "cat3_ghost_api_trap_26_trap_datetime_utcnow_deprecation"
+  ],
+  "source_prompt": "Get current UTC time. TRAP: datetime.utcnow() is deprecated in Python 3.12+. Use datetime.now(timezone.utc).",
+  "forbidden_symbols": [
+    "datetime.utcnow",
+    "utcnow()"
+  ]
+}

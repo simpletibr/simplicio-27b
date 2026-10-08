@@ -1,0 +1,14 @@
+{
+  "id": "cat2_edge_functional_04_edge_list_index_out_of_bounds",
+  "instruction": "Return None if items is empty without raising IndexError.",
+  "context": "",
+  "edit_file": "queue_manager.py",
+  "category": "2_functional_correctness_edge_cases",
+  "source_ids": [
+    "cat2_edge_functional_04_edge_list_index_out_of_bounds",
+    "cat2_edge_functional_14_edge_list_index_out_of_bounds",
+    "cat2_edge_functional_24_edge_list_index_out_of_bounds"
+  ],
+  "source_prompt": "Return None if items is empty without raising IndexError.",
+  "forbidden_symbols": []
+}

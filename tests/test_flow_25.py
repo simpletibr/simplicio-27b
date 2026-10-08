@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-TASKS = ROOT / "benchmarks/harness/tasks"
+TASKS = ROOT / "tests/fixtures/harness_tasks"
 sys.path.insert(0, str(ROOT / "benchmarks/harness"))
 import harness  # noqa: E402
 

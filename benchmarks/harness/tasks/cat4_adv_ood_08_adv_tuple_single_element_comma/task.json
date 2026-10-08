@@ -1,0 +1,14 @@
+{
+  "id": "cat4_adv_ood_08_adv_tuple_single_element_comma",
+  "instruction": "Fix syntax bug where singleton_param is parsed as a str rather than a single-element tuple.",
+  "context": "",
+  "edit_file": "params.py",
+  "category": "4_adversarial_and_out_of_distribution",
+  "source_ids": [
+    "cat4_adv_ood_08_adv_tuple_single_element_comma",
+    "cat4_adv_ood_18_adv_tuple_single_element_comma",
+    "cat4_adv_ood_28_adv_tuple_single_element_comma"
+  ],
+  "source_prompt": "Fix syntax bug where singleton_param is parsed as a str rather than a single-element tuple.",
+  "forbidden_symbols": []
+}

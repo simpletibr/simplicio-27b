@@ -1,0 +1,14 @@
+{
+  "id": "cat4_adv_ood_05_adv_unicode_casefolding",
+  "instruction": "compare_usernames must use full Unicode case-insensitive matching, so that 'straße' equals 'STRASSE'.",
+  "context": "",
+  "edit_file": "auth_user.py",
+  "category": "4_adversarial_and_out_of_distribution",
+  "source_ids": [
+    "cat4_adv_ood_05_adv_unicode_casefolding",
+    "cat4_adv_ood_15_adv_unicode_casefolding",
+    "cat4_adv_ood_25_adv_unicode_casefolding"
+  ],
+  "source_prompt": "Use casefold() instead of lower() for robust internationalized Unicode string comparison (e.g. German 'ß' == 'ss').",
+  "forbidden_symbols": []
+}

@@ -1,0 +1,14 @@
+{
+  "id": "cat1_ast_diff_09_diff_dict_comprehension",
+  "instruction": "Rewrite the body of build_lookup as a single dict comprehension with the same result.",
+  "context": "",
+  "edit_file": "mapper.py",
+  "category": "1_surgical_diff_ast_precision",
+  "source_ids": [
+    "cat1_ast_diff_09_diff_dict_comprehension",
+    "cat1_ast_diff_19_diff_dict_comprehension",
+    "cat1_ast_diff_29_diff_dict_comprehension"
+  ],
+  "source_prompt": "Refactor into dict comprehension lookup = {k: v.upper() for k, v in items}.",
+  "forbidden_symbols": []
+}

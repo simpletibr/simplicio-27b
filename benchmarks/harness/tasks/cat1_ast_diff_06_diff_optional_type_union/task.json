@@ -1,0 +1,14 @@
+{
+  "id": "cat1_ast_diff_06_diff_optional_type_union",
+  "instruction": "Rewrite the return annotation of find_by_id with the Python 3.10 union operator and remove the import that becomes unused.",
+  "context": "",
+  "edit_file": "item_lookup.py",
+  "category": "1_surgical_diff_ast_precision",
+  "source_ids": [
+    "cat1_ast_diff_06_diff_optional_type_union",
+    "cat1_ast_diff_16_diff_optional_type_union",
+    "cat1_ast_diff_26_diff_optional_type_union"
+  ],
+  "source_prompt": "Modernize return type to Python 3.10+ union syntax str | None.",
+  "forbidden_symbols": []
+}

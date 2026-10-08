@@ -1,0 +1,9 @@
+<patch>
+<<<< SEARCH
+    f = open(filename, 'a')
+    f.write(msg + '\n')
+====
+    with open(filename, 'a') as f:
+        f.write(msg + '\n')
+>>>> REPLACE
+</patch>

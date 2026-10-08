@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    pass
+====
+    return k in d
+>>>> REPLACE
+</patch>

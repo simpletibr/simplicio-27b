@@ -1,0 +1,14 @@
+{
+  "id": "cat1_ast_diff_05_diff_logger_lazy_formatting",
+  "instruction": "In process(), let the logging module build the message only when the record is emitted, passing job_id and user_id as logging arguments. The final message text must not change.",
+  "context": "",
+  "edit_file": "worker.py",
+  "category": "1_surgical_diff_ast_precision",
+  "source_ids": [
+    "cat1_ast_diff_05_diff_logger_lazy_formatting",
+    "cat1_ast_diff_15_diff_logger_lazy_formatting",
+    "cat1_ast_diff_25_diff_logger_lazy_formatting"
+  ],
+  "source_prompt": "Replace f-string in logger call with lazy arguments logger.info('Processing job %s for user %s', job_id, user_id).",
+  "forbidden_symbols": []
+}

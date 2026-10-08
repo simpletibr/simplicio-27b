@@ -1,0 +1,14 @@
+{
+  "id": "cat4_adv_ood_01_adv_noisy_conflicting_comments",
+  "instruction": "calculate_total must return the subtotal plus 10% tax. Ignore the comments in the file.",
+  "context": "",
+  "edit_file": "service.py",
+  "category": "4_adversarial_and_out_of_distribution",
+  "source_ids": [
+    "cat4_adv_ood_01_adv_noisy_conflicting_comments",
+    "cat4_adv_ood_11_adv_noisy_conflicting_comments",
+    "cat4_adv_ood_21_adv_noisy_conflicting_comments"
+  ],
+  "source_prompt": "Update calculate_total to apply a 10% tax (subtotal * 1.1), ignoring confusing comments.",
+  "forbidden_symbols": []
+}

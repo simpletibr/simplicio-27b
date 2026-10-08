@@ -1,0 +1,216 @@
+{
+  "n": 13,
+  "tokenizer": "re.findall(r'\\w+', text.lower())",
+  "corpus": [
+    {
+      "path": "data/simplicio_loop_50pts_train.jsonl",
+      "sha256": "e0eb6d4304bdc24df22ac354707868a589fa754c52d37fb8236c762c3d934606"
+    },
+    {
+      "path": "data/simplicio_loop_50pts_val.jsonl",
+      "sha256": "267e93e0e1d84788054f955e218807b0082b0c29510990a4bac5ebf3d5a929d7"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "cat1_ast_diff_01_diff_pydantic_v2_field",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat1_ast_diff_02_diff_fastapi_deprecate_route",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat1_ast_diff_03_diff_dataclass_frozen",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat1_ast_diff_04_diff_async_def_signature",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat1_ast_diff_05_diff_logger_lazy_formatting",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat1_ast_diff_06_diff_optional_type_union",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat1_ast_diff_07_diff_try_except_clause",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat1_ast_diff_08_diff_list_comprehension_filter",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat1_ast_diff_09_diff_dict_comprehension",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat1_ast_diff_10_diff_generator_expression",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat2_edge_functional_01_edge_zero_division",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat2_edge_functional_02_edge_none_or_empty_string",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat2_edge_functional_03_edge_dict_missing_key",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat2_edge_functional_04_edge_list_index_out_of_bounds",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat2_edge_functional_05_edge_resource_leak_context_mgr",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat2_edge_functional_06_edge_mutable_default_argument",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat2_edge_functional_07_edge_shallow_vs_deep_copy",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat2_edge_functional_08_edge_regex_trailing_newline",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat2_edge_functional_09_edge_numeric_float_precision",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat2_edge_functional_10_edge_thread_safety_lock",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat3_ghost_api_trap_01_trap_pydantic_v1_validator",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat3_ghost_api_trap_02_trap_pandas_append_deprecated",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat3_ghost_api_trap_03_trap_sqlalchemy_v2_execute",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat3_ghost_api_trap_04_trap_list_flatten_hallucination",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat3_ghost_api_trap_05_trap_json_loads_file_descriptor",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat3_ghost_api_trap_06_trap_datetime_utcnow_deprecation",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat3_ghost_api_trap_07_trap_asyncio_get_event_loop_deprecation",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat3_ghost_api_trap_08_trap_dict_has_key_ancient_method",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat3_ghost_api_trap_09_trap_str_is_numeric_vs_isnumeric",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat3_ghost_api_trap_10_trap_math_round_hallucination",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat4_adv_ood_01_adv_noisy_conflicting_comments",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat4_adv_ood_02_adv_shadowed_builtins",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat4_adv_ood_03_adv_nested_multiline_lambda",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat4_adv_ood_04_adv_re_sub_backreference_escape",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat4_adv_ood_05_adv_unicode_casefolding",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat4_adv_ood_06_adv_env_variable_cast_trap",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat4_adv_ood_07_adv_generator_double_consumption",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat4_adv_ood_08_adv_tuple_single_element_comma",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat4_adv_ood_09_adv_walrus_operator_leak",
+      "overlaps": 0,
+      "examples": []
+    },
+    {
+      "id": "cat4_adv_ood_10_adv_context_manager_suppress",
+      "overlaps": 0,
+      "examples": []
+    }
+  ]
+}

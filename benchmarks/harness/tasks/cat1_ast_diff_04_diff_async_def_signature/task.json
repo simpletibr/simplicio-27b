@@ -1,0 +1,14 @@
+{
+  "id": "cat1_ast_diff_04_diff_async_def_signature",
+  "instruction": "http_get is a coroutine function. Fix fetch_page so that awaiting fetch_page(url) returns the page text.",
+  "context": "",
+  "edit_file": "crawler.py",
+  "category": "1_surgical_diff_ast_precision",
+  "source_ids": [
+    "cat1_ast_diff_04_diff_async_def_signature",
+    "cat1_ast_diff_14_diff_async_def_signature",
+    "cat1_ast_diff_24_diff_async_def_signature"
+  ],
+  "source_prompt": "Convert fetch_page into an async function and await http_get(url).",
+  "forbidden_symbols": []
+}

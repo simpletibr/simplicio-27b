@@ -1,0 +1,16 @@
+<patch>
+<<<< SEARCH
+from pydantic import BaseModel
+class User(BaseModel):
+    name: str
+====
+from pydantic import BaseModel, field_validator
+class User(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def upper_name(cls, value: str) -> str:
+        return value.upper()
+>>>> REPLACE
+</patch>

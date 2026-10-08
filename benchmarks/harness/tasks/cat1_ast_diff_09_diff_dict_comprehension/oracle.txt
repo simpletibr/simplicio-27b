@@ -1,0 +1,9 @@
+<patch>
+<<<< SEARCH
+    lookup = {}
+    for k, v in items:
+        lookup[k] = v.upper()
+====
+    lookup = {k: v.upper() for k, v in items}
+>>>> REPLACE
+</patch>

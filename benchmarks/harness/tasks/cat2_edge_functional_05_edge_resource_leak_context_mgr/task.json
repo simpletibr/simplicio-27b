@@ -1,0 +1,14 @@
+{
+  "id": "cat2_edge_functional_05_edge_resource_leak_context_mgr",
+  "instruction": "log_message must always close the file it opens; the appended text must not change.",
+  "context": "",
+  "edit_file": "file_logger.py",
+  "category": "2_functional_correctness_edge_cases",
+  "source_ids": [
+    "cat2_edge_functional_05_edge_resource_leak_context_mgr",
+    "cat2_edge_functional_15_edge_resource_leak_context_mgr",
+    "cat2_edge_functional_25_edge_resource_leak_context_mgr"
+  ],
+  "source_prompt": "Refactor to with open(filename, 'a') as f: ensuring descriptor is always closed.",
+  "forbidden_symbols": []
+}

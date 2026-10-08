@@ -1,0 +1,8 @@
+<patch>
+<<<< SEARCH
+    match = re.search(pattern, text)
+    if match:
+====
+    if match := re.search(pattern, text):
+>>>> REPLACE
+</patch>

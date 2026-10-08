@@ -1,0 +1,10 @@
+<patch>
+<<<< SEARCH
+    evens = []
+    for x in nums:
+        if x % 2 == 0:
+            evens.append(x)
+====
+    evens = [x for x in nums if x % 2 == 0]
+>>>> REPLACE
+</patch>

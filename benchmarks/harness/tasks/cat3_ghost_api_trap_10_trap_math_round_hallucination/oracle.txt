@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+    pass
+====
+    return round(x)
+>>>> REPLACE
+</patch>

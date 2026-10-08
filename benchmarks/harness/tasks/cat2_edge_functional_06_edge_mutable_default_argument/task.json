@@ -1,0 +1,14 @@
+{
+  "id": "cat2_edge_functional_06_edge_mutable_default_argument",
+  "instruction": "Calls to collect_data without a container argument must not share state between calls.",
+  "context": "",
+  "edit_file": "accumulator.py",
+  "category": "2_functional_correctness_edge_cases",
+  "source_ids": [
+    "cat2_edge_functional_06_edge_mutable_default_argument",
+    "cat2_edge_functional_16_edge_mutable_default_argument",
+    "cat2_edge_functional_26_edge_mutable_default_argument"
+  ],
+  "source_prompt": "Eliminate mutable default argument bug using container: list | None = None.",
+  "forbidden_symbols": []
+}

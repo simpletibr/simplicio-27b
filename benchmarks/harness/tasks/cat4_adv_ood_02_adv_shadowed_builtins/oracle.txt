@@ -1,0 +1,11 @@
+<patch>
+<<<< SEARCH
+def process_items(list: list) -> int:
+    len = 0
+    return len
+====
+def process_items(items: list) -> int:
+    count = len(items)
+    return count
+>>>> REPLACE
+</patch>

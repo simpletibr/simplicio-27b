@@ -1,0 +1,14 @@
+<patch>
+<<<< SEARCH
+def try_remove(path: str):
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+====
+from contextlib import suppress
+def try_remove(path: str):
+    with suppress(FileNotFoundError):
+        os.remove(path)
+>>>> REPLACE
+</patch>

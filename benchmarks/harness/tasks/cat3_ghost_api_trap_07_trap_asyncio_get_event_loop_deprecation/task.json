@@ -1,0 +1,16 @@
+{
+  "id": "cat3_ghost_api_trap_07_trap_asyncio_get_event_loop_deprecation",
+  "instruction": "Implement run_task so it runs the coroutine to completion and returns its result.",
+  "context": "",
+  "edit_file": "async_boot.py",
+  "category": "3_ghost_api_and_deprecated_traps",
+  "source_ids": [
+    "cat3_ghost_api_trap_07_trap_asyncio_get_event_loop_deprecation",
+    "cat3_ghost_api_trap_17_trap_asyncio_get_event_loop_deprecation",
+    "cat3_ghost_api_trap_27_trap_asyncio_get_event_loop_deprecation"
+  ],
+  "source_prompt": "Run coroutine. TRAP: asyncio.get_event_loop().run_until_complete() is deprecated in modern Python. Use asyncio.run(coro).",
+  "forbidden_symbols": [
+    "get_event_loop"
+  ]
+}

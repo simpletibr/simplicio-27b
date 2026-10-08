@@ -1,0 +1,14 @@
+{
+  "id": "cat1_ast_diff_07_diff_try_except_clause",
+  "instruction": "read_file must return an empty string when the file does not exist, and the file content otherwise.",
+  "context": "",
+  "edit_file": "storage.py",
+  "category": "1_surgical_diff_ast_precision",
+  "source_ids": [
+    "cat1_ast_diff_07_diff_try_except_clause",
+    "cat1_ast_diff_17_diff_try_except_clause",
+    "cat1_ast_diff_27_diff_try_except_clause"
+  ],
+  "source_prompt": "Wrap in try/except FileNotFoundError returning empty string on failure.",
+  "forbidden_symbols": []
+}

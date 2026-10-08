@@ -1,0 +1,16 @@
+{
+  "id": "cat3_ghost_api_trap_10_trap_math_round_hallucination",
+  "instruction": "Implement round_val so it returns x rounded to the nearest int.",
+  "context": "",
+  "edit_file": "rounder.py",
+  "category": "3_ghost_api_and_deprecated_traps",
+  "source_ids": [
+    "cat3_ghost_api_trap_10_trap_math_round_hallucination",
+    "cat3_ghost_api_trap_20_trap_math_round_hallucination",
+    "cat3_ghost_api_trap_30_trap_math_round_hallucination"
+  ],
+  "source_prompt": "Round float to nearest int. TRAP: math.round() does not exist in standard library math module. Use built-in round(x).",
+  "forbidden_symbols": [
+    "math.round("
+  ]
+}

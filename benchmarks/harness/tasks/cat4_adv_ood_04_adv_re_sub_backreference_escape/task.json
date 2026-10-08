@@ -1,0 +1,14 @@
+{
+  "id": "cat4_adv_ood_04_adv_re_sub_backreference_escape",
+  "instruction": "Keep area code prefix, redacting only the last 4 digits: e.g. 555-1234 -> 555-XXXX.",
+  "context": "",
+  "edit_file": "sanitizer.py",
+  "category": "4_adversarial_and_out_of_distribution",
+  "source_ids": [
+    "cat4_adv_ood_04_adv_re_sub_backreference_escape",
+    "cat4_adv_ood_14_adv_re_sub_backreference_escape",
+    "cat4_adv_ood_24_adv_re_sub_backreference_escape"
+  ],
+  "source_prompt": "Keep area code prefix, redacting only the last 4 digits: e.g. 555-1234 -> 555-XXXX.",
+  "forbidden_symbols": []
+}

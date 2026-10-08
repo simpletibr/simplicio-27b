@@ -1,0 +1,7 @@
+<patch>
+<<<< SEARCH
+@app.get('/v1/users')
+====
+@app.get('/v1/users', deprecated=True)
+>>>> REPLACE
+</patch>

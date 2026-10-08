@@ -1,0 +1,16 @@
+{
+  "id": "cat3_ghost_api_trap_03_trap_sqlalchemy_v2_execute",
+  "instruction": "Implement get_users so it returns a list with every User row.",
+  "context": "",
+  "edit_file": "db.py",
+  "category": "3_ghost_api_and_deprecated_traps",
+  "source_ids": [
+    "cat3_ghost_api_trap_03_trap_sqlalchemy_v2_execute",
+    "cat3_ghost_api_trap_13_trap_sqlalchemy_v2_execute",
+    "cat3_ghost_api_trap_23_trap_sqlalchemy_v2_execute"
+  ],
+  "source_prompt": "Query users. TRAP: session.query() is legacy in 2.0. Use session.scalars(select(User)).",
+  "forbidden_symbols": [
+    "session.query"
+  ]
+}
