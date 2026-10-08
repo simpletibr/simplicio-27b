@@ -281,8 +281,10 @@ def build_trajectory(case: Case, observed_before: dict, patched: str) -> str:
     failed = [n for n, msg in observed_before.items() if msg is not None]
     n_failed, n_passed = len(failed), total - len(failed)
     first = failed[0]
+    # A mensagem observada so entra na trajetoria como leitura do codigo (sem verbo de execucao
+    # e sem texto de excecao): a trajetoria nao pode apresentar saida de comando como vista.
     first_msg = " ".join(str(observed_before[first]).split())
-    h_o, h_p = sha(case.original)[:12], sha(patched)[:12]
+    first_msg = re.sub(r" levantou (\w+):.*$", r" levanta \1", first_msg).replace(" devolveu ", " devolve ")
     src_lines = case.original.split("\n")
     n_lines = len(src_lines) - (1 if src_lines[-1] == "" else 0)
     ln = case.original[: case.original.index(case.search)].count("\n") + 1
@@ -328,19 +330,19 @@ def build_trajectory(case: Case, observed_before: dict, patched: str) -> str:
         ("Regras Locais", "Sem AGENTS.md, CLAUDE.md ou linter configurado; vale o estilo do arquivo: indentacao de 4 espacos."),
         ("Runtimes & Deps", runtime),
         ("Camadas", f"Camada unica de logica pura em {file}; sem I/O, rede ou banco."),
-        ("Ambiguidade", f"Requisito sem ambiguidade: {dr.behavior}. O teste {first} fixa o esperado: {first_msg}."),
-        ("Baseline Handle", f"sha256sum {file} -> {h_o}; pytest -q tests -> {n_failed} failed, {n_passed} passed."),
+        ("Ambiguidade", f"Requisito sem ambiguidade: {dr.behavior}. O teste {first} fixa o esperado; por leitura do codigo, {first_msg}."),
+        ("Baseline Handle", f"Plano: antes de editar, rodar sha256sum {file} e pytest -q tests e registrar a saida real depois; nenhuma saida e mostrada aqui. Espera-se {n_failed} falha(s) neste baseline."),
     ]
     plan = [
-        ("Decomposicao Atomica", f"Passo 1: {dr.fix_desc} (linha {ln}). Passo 2: rodar pytest tests e confirmar {total} passed."),
+        ("Decomposicao Atomica", f"Passo 1: {dr.fix_desc} (linha {ln}). Passo 2: rodar pytest tests e conferir que os {total} testes ficam verdes."),
         ("Roteamento", f"simplicio_edit com um bloco SEARCH/REPLACE (marcadores de 4 caracteres) em {file}."),
-        ("Plano Linear", f"Ler {file} -> aplicar o patch -> py_compile -> pytest tests."),
+        ("Plano Linear", f"Ler {file}, aplicar o patch, rodar py_compile e rodar pytest tests, nessa ordem."),
         ("Barreira Fan-Out", f"Somente {file} muda; tests/{tfile} fica intocado."),
-        ("Efeito Colateral", f"Efeito restrito a {fn}; os {n_passed} testes que ja passavam devem continuar verdes depois do patch."),
+        ("Efeito Colateral", f"Efeito restrito a {fn}; espera-se que os {n_passed} testes que ja passam continuem verdes depois do patch."),
         ("Zero Fantasma", f"Nenhum import novo e nenhum simbolo inexistente: o patch usa so {dr.api}."),
         ("Hierarquia de Restricoes", f"Teste do usuario > contrato de {fn} ({sig_b}) > estilo do arquivo."),
-        ("Condicao de Parada", f"pytest tests sem falhas: {total} passed, 0 failed."),
-        ("Rollback", f"Restaurar {file} com sha256 {h_o} (conteudo original) se algum teste regredir."),
+        ("Condicao de Parada", f"Parar quando pytest tests nao tiver falhas: espera-se {total} testes verdes e 0 falhas depois do patch."),
+        ("Rollback", f"Restaurar {file} ao conteudo original (sha256 registrado no baseline) se algum teste regredir."),
         ("Rationale", f"Causa raiz: {dr.cause}."),
     ]
     patch = [
@@ -352,32 +354,32 @@ def build_trajectory(case: Case, observed_before: dict, patched: str) -> str:
         ("Importacoes Nao-Destrutivas", imp_text),
         ("Codegen Estruturado", f"Um bloco SEARCH/REPLACE; o SEARCH aparece 1 vez em {file}, entao a troca e inequivoca."),
         ("Isolamento de Configs", f"Nenhum arquivo de configuracao existe; so {file} foi editado."),
-        ("Idempotencia", "O SEARCH nao existe mais no arquivo corrigido; reaplicar o patch falha com search_not_found em vez de duplicar a correcao."),
-        ("Validacao Sintatica", f"ast.parse de {file} depois do patch -> sem SyntaxError."),
+        ("Idempotencia", "O SEARCH nao existe mais no arquivo corrigido; reaplicar o patch deve falhar com search_not_found em vez de duplicar a correcao."),
+        ("Validacao Sintatica", f"Rodar ast.parse de {file} depois do patch e esperar que nao haja SyntaxError."),
     ]
     validate = [
-        ("Validacao Estatica", f"python3 -m py_compile {file} -> exit 0."),
-        ("Testes Direcionados", f"pytest tests/{tfile}::{first} -> passed (antes: FAILED)."),
-        ("Leitura Cirurgica", f"Falha original: {first_msg}; a causa esta na linha {ln}: {dr.cause}."),
-        ("Loop Guiado por Falha", "Falha -> patch -> verde em 1 ciclo; nenhuma falha nova apareceu."),
-        ("Inibicao de Loop", "1 tentativa de patch; nenhuma repeticao do mesmo erro."),
-        ("Anti-Placebo", f"Antes do patch: {n_failed} failed, {n_passed} passed. Depois: {total} passed, 0 failed."),
-        ("Regressao Cruzada", f"pytest tests (diretorio inteiro) -> {total} passed; os {n_passed} que ja passavam seguem verdes."),
-        ("Shell Sanitizado", "pytest -q -p no:cacheprovider tests, saida lida inteira; sem pipes nem redirecionamentos."),
-        ("Warnings Silenciosos", "Nenhuma linha de warning na saida do pytest."),
+        ("Validacao Estatica", f"Rodar python3 -m py_compile {file} depois do patch e esperar exit 0."),
+        ("Testes Direcionados", f"Rodar pytest tests/{tfile}::{first}: espera-se falha antes do patch e sucesso depois."),
+        ("Leitura Cirurgica", f"Falha esperada pela leitura do codigo: {first_msg}; a causa esta na linha {ln}: {dr.cause}."),
+        ("Loop Guiado por Falha", "Ciclo guiado pela falha: ler a falha, aplicar o patch e rodar de novo; espera-se verde em 1 ciclo, sem falha nova."),
+        ("Inibicao de Loop", "Limite de 1 tentativa de patch; se o mesmo erro voltar, parar e reler em vez de repetir o patch."),
+        ("Anti-Placebo", f"Espera-se {n_failed} falha(s) antes do patch e {total} testes verdes, 0 falhas, depois; um teste que ja passa antes do patch nao prova a correcao."),
+        ("Regressao Cruzada", f"Rodar pytest tests (diretorio inteiro): espera-se {total} testes verdes, incluindo os {n_passed} que ja passam."),
+        ("Shell Sanitizado", "Usar pytest -q -p no:cacheprovider tests, sem pipes nem redirecionamentos, para a saida do pytest aparecer completa."),
+        ("Warnings Silenciosos", "Conferir que a saida do pytest nao tem linha de warning."),
         ("Casos de Borda", f"Cobertos por tests/{tfile}: {dr.edge}."),
     ]
     deliver = [
-        ("Poda de Tokens", "Resposta curta: um bloco de patch e os fatos medidos, sem prosa extra."),
+        ("Poda de Tokens", "Resposta curta: um bloco de patch e so os fatos que a execucao real confirmar, sem prosa extra."),
         ("Convergencia Deterministica", 'simplicio_deliver(status="VERIFIED_GREEN")'),
-        ("Resumo Explicativo", f"{fn}: {dr.fix_desc}; pytest tests -> {total} passed."),
-        ("Limpeza", "Nenhum arquivo temporario ficou no repo; pytest sem cache (-p no:cacheprovider) e sem bytecode."),
+        ("Resumo Explicativo", f"{fn}: {dr.fix_desc}; confirmar com pytest tests depois de rodar."),
+        ("Limpeza", "Nao deixar arquivo temporario no repo; usar pytest sem cache (-p no:cacheprovider) e sem bytecode."),
         ("Performance", dr.perf),
         ("Metricas de Economia", f"Diff de {changed} linhas (SEARCH+REPLACE) contra {n_lines} linhas do arquivo: {economy}% de economia."),
         ("Validacao de Interface", iface),
         ("Aprendizado Persistido", dr.lesson),
-        ("Zero Alucinacao", f"Cada afirmacao vem de execucao: pytest antes ({n_failed} failed) e depois ({total} passed), ast.parse, py_compile e sha256."),
-        ("Selo de Entrega", f"SELO SIMPLICIO: COMMIT_READY (sha256 final de {file}: {h_p})"),
+        ("Zero Alucinacao", "Afirmar so o que a execucao real mostrar: pytest antes e depois, ast.parse, py_compile e sha256; nada neste texto e saida observada."),
+        ("Selo de Entrega", f"SELO SIMPLICIO: COMMIT_READY (sha256 final de {file} a registrar a partir da execucao real)"),
     ]
     out = ["<simplicio_loop>"]
     number = 1
