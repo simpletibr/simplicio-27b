@@ -203,6 +203,24 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(FakeGateway.requests, [])
         self.assertEqual(self.run_script(key="   ")["code"], 2)  # chave só com espaços também é ausente
 
+    def test_plain_http_is_refused_except_for_loopback(self) -> None:
+        port = self.server.server_address[1]
+        run = self.run_script(url="http://exemplo.invalido/v1")
+        self.assertEqual(run["code"], 2)
+        self.assertIn("https", run["err"])
+        self.assertNotIn("exemplo.invalido", run["out"] + run["err"])
+        self.assertFalse(run["dir_created"])
+        self.assertEqual(FakeGateway.requests, [])
+        for refused in ("http://exemplo.invalido/v1", "HTTP://EXEMPLO.INVALIDO/v1", "http://10.0.0.5:8000/v1",
+                        "http://127.0.0.2/v1", "http://127.0.0.1.exemplo.invalido/v1",
+                        "http://localhost.exemplo.invalido/v1", "http://[::2]/v1"):
+            self.assertIsNotNone(live_acceptance.base_url_problem(refused), refused)
+        for accepted in ("https://exemplo.invalido/v1", "http://localhost:8000/v1", "http://127.0.0.1:8000/v1",
+                         "http://[::1]:8000/v1", f"http://127.0.0.1:{port}/v1"):
+            self.assertIsNone(live_acceptance.base_url_problem(accepted), accepted)
+        ok = self.run_script(url=f"http://127.0.0.1:{port}/v1")  # o servidor falso continua aceito
+        self.assertEqual(ok["code"], 0, ok["out"] + ok["err"])
+
     def test_malformed_key_exits_2_without_echo(self) -> None:
         for bad in ("abc\ndef-chave-torta", "abc def-chave-torta", "chave-tórta-é", "abc\tdef-chave-torta"):
             with self.subTest(key=bad):

@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")  # únicos hosts em que http:// é aceito
 KEY_ENV = "SIMPLETI_API_KEY"
 BASE_URL_ENV = "SIMPLETI_BASE_URL"
 SCHEMA = "simplicio.live-acceptance/v1"
@@ -695,7 +696,12 @@ def base_url_problem(url: str) -> str | None:
     except ValueError:
         return "URL-base inválida"
     if parts.scheme not in ("http", "https") or not parts.hostname:
-        return "URL-base precisa começar com http:// ou https:// e ter host"
+        return "URL-base precisa começar com https:// e ter host"
+    if parts.scheme == "http" and parts.hostname not in LOCAL_HOSTS:
+        return (
+            "URL-base precisa usar https: com http a chave iria em texto claro "
+            "(http só vale para localhost, 127.0.0.1 e [::1])"
+        )
     if parts.username is not None or parts.password is not None:
         return "URL-base não pode conter credenciais; a chave vai só em SIMPLETI_API_KEY"
     if parts.query or parts.fragment:

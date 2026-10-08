@@ -8,7 +8,7 @@ python3 scripts/live_acceptance.py --base-url https://simpleti.com.br/v1        
 python3 scripts/live_acceptance.py --base-url https://simpleti.com.br/v1 --phase down  # fase down: Colab desligado há 120 s
 ```
 
-A chave entra só por `SIMPLETI_API_KEY` (nunca por argumento ou URL) e é removida de tudo que o script imprime ou grava. A URL-base não pode ter credenciais, query nem fragmento.
+A chave entra só por `SIMPLETI_API_KEY` (nunca por argumento ou URL) e é removida de tudo que o script imprime ou grava. A URL-base não pode ter credenciais, query nem fragmento, e precisa ser `https://` (`http://` só vale para `localhost`, `127.0.0.1` e `[::1]`, para servidores de teste): com `http://` a chave iria em texto claro.
 
 O script imprime `PASS <id>` ou `FAIL <id>: <motivo>` por checagem e, no fim, `recibo: <caminho>`. Uma checagem que não consegue rodar (rede, 403, 404, 401, exceção) é `FAIL` com o motivo, nunca `PASS`.
 
