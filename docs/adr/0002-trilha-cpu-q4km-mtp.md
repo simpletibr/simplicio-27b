@@ -69,3 +69,17 @@ A Qwen publica, para o Qwen3.8-27B, os resultados abaixo, junto com Qwen3.6-27B,
 **Tempo estimado na VPS, a 0,3 a 0,9 tok/s:** com thinking desligado, um subconjunto de cerca de 20 problemas de LiveCodeBench e cerca de 30 instruções do IFBench levam da ordem de um dia por configuração. Thinking ligado não é viável: a Qwen usa até 32.768 tokens por tarefa.
 
 Cada linha dessa tabela entra no relatório só com o tamanho da amostra, o protocolo e o intervalo de confiança.
+
+## Estado das execuções
+
+Nenhum run desta trilha terminou. Nenhum número é publicado por esta ADR.
+
+| Benchmark | Protocolo | Estado |
+|---|---|---|
+| GPQA Diamond, 30 itens (seed 3407) | múltipla escolha, greedy, thinking desligado | em execução na VPS |
+| IFBench, 30 instruções | grader oficial `allenai/IFBench` (`evaluation_lib`), strict e loose | na fila |
+| HLE, 30 itens de múltipla escolha sem imagem | pontuação por letra, sem juiz | na fila |
+| LiveCodeBench v6 (`test6`, 175 problemas) | grader oficial ainda não montado | dataset baixado, sem run |
+| HLE exact-match sem imagem (1.645 itens) | exige juiz | bloqueado, sem juiz válido |
+
+Os runners estão em [`benchmarks/runs/`](../../benchmarks/runs/). Os datasets de GPQA e HLE têm termos de acesso gated, e por isso não são versionados. Os resultados brutos, com as respostas do modelo, também ficam fora do repo.
