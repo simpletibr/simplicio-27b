@@ -5,21 +5,26 @@ Só biblioteca padrão. O cliente do Hugging Face é injetável (`main(..., clie
 (`HubClient`, que usa huggingface_hub) só é criado com --publish e só importa a biblioteca nessa hora.
 
 Simulação (padrão): não lê o token, não cria cliente, não faz rede. O plano sai do diretório de origem
-(--source, padrão: a raiz do repo) filtrado pela allowlist abaixo. Para ver também o COPY do adapter da
-raiz para lora/ e os DELETE de arquivos fora da allowlist, passe --remote-snapshot com o listing do Hub:
+(--source, padrão: a raiz do repo) filtrado pela allowlist abaixo. Para ver também o que já está igual no Hub
+(UPDATE em vez de ADD) e os arquivos do Hub que a allowlist não cobre, passe --remote-snapshot com o listing:
 a resposta de GET https://huggingface.co/api/models/wesleysimplicio/Simplicio-27B/tree/main?recursive=true
 salva em remote.json (o repo é público, não precisa de token).
   python3 scripts/hf_publish.py --remote-snapshot remote.json
 
 Publicação: só com --publish (alias --apply), com HF_TOKEN no ambiente (nunca em argumento nem em arquivo),
-com a árvore git limpa. Sem HF_TOKEN o script recusa antes de ler qualquer arquivo ou criar o cliente.
+com a árvore git limpa e HEAD igual ao branch remoto (a URL do commit na descrição tem de existir no GitHub).
+Sem HF_TOKEN o script recusa antes de ler qualquer arquivo ou criar o cliente. O commit só ADICIONA e
+ATUALIZA arquivos da allowlist: o script não tem operação que remova ou copie coisa alguma no Hub.
 
 Allowlist, lado local (o que pode subir): README.md (o card), LICENSE, Modelfile, os assets/ que o README
 cita, lora/adapter_config.json e lora/adapter_model.safetensors, e o generation_config.json gerado a partir
 dos PARAMETER de amostragem do Modelfile. Tudo o mais é recusado ou ignorado: nomes de credencial (.env,
 *token*, *.pem, ...), links simbólicos, caminhos que saem do diretório de origem, adapter solto na raiz,
 pesos fora de lora/ e *.gguf (só com --allow-gguf, e só o que o Modelfile cita em FROM ./...).
-Lado remoto: REMOTE_KEEP lista o que já está no Hub e não pode ser apagado; o resto é apagado no mesmo commit.
+Lado remoto: REMOTE_KEEP lista o que o Hub deve ter além da allowlist (config, shards, tokenizer, GGUF, lora/).
+Qualquer outro arquivo do Hub vira um AVISO no plano ("órfão no Hub, não removido"); apagar é decisão do dono,
+à mão. Isso inclui o adapter que hoje está na raiz do Hub: baixe-o para lora/ (ver lora/README.md), deixe o
+--publish subi-lo e só então apague os dois arquivos da raiz.
 
 Saída: 0 se ok, 2 se o script recusou (o motivo vai para o stderr).
 """
@@ -142,17 +147,6 @@ class Add:
     size: int
 
 
-@dataclass(frozen=True)
-class Copy:
-    src: str
-    dest: str
-
-
-@dataclass(frozen=True)
-class Delete:
-    path: str
-
-
 @dataclass
 class Scan:
     entries: dict[str, Entry]
@@ -164,9 +158,10 @@ class Scan:
 
 @dataclass
 class Plan:
-    ops: list[Add | Copy | Delete] = field(default_factory=list)
+    ops: list[Add] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def same_content(entry: Entry, remote: RemoteFile) -> bool:
@@ -408,8 +403,8 @@ def build_plan(entries: dict[str, Entry], modelfile: str, remote: dict[str, Remo
         for path, entry in sorted(entries.items()):
             plan.ops.append(Add(path, entry.payload, entry.size))
             plan.lines.append(f"ADD {path} ({entry.size} bytes)")
-        plan.notes.append("Hub não consultado: COPY do adapter da raiz para lora/ e DELETE fora da allowlist "
-                          "só aparecem com --remote-snapshot ou --publish")
+        plan.notes.append("Hub não consultado: o que já está igual lá (UPDATE) e os órfãos do Hub só aparecem "
+                          "com --remote-snapshot ou --publish")
         return plan
     final = set(remote)
     for path, entry in sorted(entries.items()):
@@ -417,29 +412,16 @@ def build_plan(entries: dict[str, Entry], modelfile: str, remote: dict[str, Remo
             plan.ops.append(Add(path, entry.payload, entry.size))
             plan.lines.append(f"{'UPDATE' if path in remote else 'ADD'} {path} ({entry.size} bytes)")
             final.add(path)
-    for name in ADAPTER:
-        dest = f"{ADAPTER_DIR}/{name}"
-        if dest in entries:
-            continue
-        if dest in remote:
-            if name in remote and remote[name].blob_id != remote[dest].blob_id:
-                raise Refused(f"{name} na raiz difere de {dest}: decida qual vale antes de publicar")
-            continue
-        if name not in remote:
-            raise Refused(f"{name} não está nem na raiz nem em {ADAPTER_DIR}/")
-        plan.ops.append(Copy(name, dest))
-        plan.lines.append(f"COPY {name} -> {dest}")
-        final.add(dest)
     for path in sorted(remote):
         if not remote_allowed(path, entries):
-            plan.ops.append(Delete(path))
-            plan.lines.append(f"DELETE {path}")
-            final.discard(path)
+            hint = f": mova para {ADAPTER_DIR}/ e apague à mão depois de conferir" if path in ADAPTER else ""
+            plan.warnings.append(f"órfão no Hub, não removido: {path}{hint}")
     required = ["config.json", "model.safetensors.index.json", *(f"{ADAPTER_DIR}/{n}" for n in ADAPTER),
                 *FROM_RE.findall(modelfile)]
-    missing = [path for path in required if path not in final]
-    if missing or any(name in final for name in ADAPTER):
-        raise Refused(f"plano inválido: faltam {missing} ou sobrou adapter na raiz")
+    if missing := [path for path in required if path not in final]:
+        hint = (f"; o card cita {ADAPTER_DIR}/: baixe o adapter para {ADAPTER_DIR}/ (ver {ADAPTER_DIR}/README.md)"
+                if any(path.startswith(f"{ADAPTER_DIR}/") for path in missing) else "")
+        raise Refused(f"plano inválido: faltam no Hub {missing}{hint}")
     return plan
 
 
@@ -468,17 +450,9 @@ class HubClient:
     def read_file(self, repo_id: str, path: str, revision: str) -> bytes:
         return Path(self._api.hf_hub_download(repo_id=repo_id, filename=path, revision=revision)).read_bytes()
 
-    def create_commit(self, repo_id: str, ops: list[Add | Copy | Delete], parent: str, message: str,
-                      description: str) -> str:
-        hub = self._hub
-        operations = []
-        for op in ops:
-            if isinstance(op, Add):
-                operations.append(hub.CommitOperationAdd(path_in_repo=op.path, path_or_fileobj=op.payload))
-            elif isinstance(op, Copy):
-                operations.append(hub.CommitOperationCopy(src_path_in_repo=op.src, path_in_repo=op.dest))
-            else:
-                operations.append(hub.CommitOperationDelete(path_in_repo=op.path))
+    def create_commit(self, repo_id: str, ops: list[Add], parent: str, message: str, description: str) -> str:
+        operations = [self._hub.CommitOperationAdd(path_in_repo=op.path, path_or_fileobj=op.payload)
+                      for op in ops]
         info = self._api.create_commit(repo_id, operations=operations, parent_commit=parent,
                                        commit_message=message, commit_description=description)
         return info.commit_url
@@ -489,7 +463,7 @@ def default_git(source: Path) -> Callable[..., str]:
         try:
             done = subprocess.run(["git", *args], cwd=source, capture_output=True, text=True, check=True)
         except (OSError, subprocess.CalledProcessError) as exc:
-            raise Refused(f"git {args[0]} falhou em {source}: não sei se a árvore está limpa") from exc
+            raise Refused(f"git {' '.join(args)} falhou em {source}") from exc
         return done.stdout.strip()
     return run
 
@@ -497,7 +471,7 @@ def default_git(source: Path) -> Callable[..., str]:
 def run(args: argparse.Namespace, env: Any, client_factory: Callable[[str], Any],
         git: Callable[..., str] | None) -> int:
     source = Path(args.source).resolve()
-    token = ""
+    token = upstream = ""
     if args.publish:
         if args.remote_snapshot:
             raise Refused("--remote-snapshot é da simulação; o --publish lê o Hub sozinho")
@@ -508,6 +482,14 @@ def run(args: argparse.Namespace, env: Any, client_factory: Callable[[str], Any]
         git = git or default_git(source)
         if git("status", "--porcelain"):
             raise Refused("working tree com mudanças: faça commit antes de --publish")
+        head = git("rev-parse", "HEAD")
+        try:
+            upstream = git("rev-parse", "@{upstream}")
+        except Refused:
+            raise Refused("o branch atual não tem upstream no GitHub: faça push -u antes de --publish") from None
+        if head != upstream:
+            raise Refused(f"HEAD ({head[:7]}) difere do branch remoto ({upstream[:7]}): faça push ou pull antes de "
+                          "--publish, para a URL do commit na descrição existir no GitHub")
     scan = scan_source(source, allow_gguf=args.allow_gguf)
     entries = dict(scan.entries)
     card = build_card(scan.readme, load_benchmark(source))
@@ -521,7 +503,8 @@ def run(args: argparse.Namespace, env: Any, client_factory: Callable[[str], Any]
     elif args.remote_snapshot:
         remote = load_snapshot(Path(args.remote_snapshot))
     plan = build_plan(entries, scan.modelfile, remote, remote_gen)
-    print(f"{args.repo_id} @ {revision or 'não consultado (simulação offline)'}")
+    where = revision or (f"snapshot {args.remote_snapshot}" if args.remote_snapshot else "não consultado (simulação offline)")
+    print(f"{args.repo_id} @ {where}")
     print(f"origem: {source}")
     for line in plan.lines:
         print(line)
@@ -531,13 +514,15 @@ def run(args: argparse.Namespace, env: Any, client_factory: Callable[[str], Any]
         print(f"SKIP {scan.skipped} arquivo(s) fora da allowlist")
     for note in plan.notes:
         print(f"NOTA {note}")
+    for warning in plan.warnings:
+        print(f"AVISO {warning}")
     print(f"{len(plan.ops)} operações")
     if not plan.ops:
         return 0
     if not args.publish:
         print(f"dry-run: nada foi enviado. Revise o plano e rode de novo com --publish (exige {TOKEN_ENV}).")
         return 0
-    description = f"{GITHUB_COMMIT_URL}{git('rev-parse', 'HEAD')}"
+    description = f"{GITHUB_COMMIT_URL}{upstream}"
     print(client.create_commit(args.repo_id, plan.ops, revision, COMMIT_MESSAGE, description))
     return 0
 
@@ -550,7 +535,7 @@ def main(argv: list[str] | None = None, *, env: Any = None,
     parser.add_argument("--source", default=str(ROOT), help="diretório de origem (padrão: a raiz do repo)")
     parser.add_argument("--repo-id", default=REPO_ID)
     parser.add_argument("--remote-snapshot", metavar="ARQUIVO",
-                        help="listing do Hub salvo em JSON, para a simulação mostrar COPY e DELETE")
+                        help="listing do Hub salvo em JSON, para a simulação comparar com o Hub")
     parser.add_argument("--allow-gguf", action="store_true",
                         help="deixa subir o *.gguf que o Modelfile cita em FROM ./...")
     args = parser.parse_args(argv)

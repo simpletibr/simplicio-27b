@@ -282,7 +282,7 @@ An earlier script, [`train_simplicio_27b.py`](https://github.com/simpletibr/simp
 
 | Path | Contents |
 |---|---|
-| `scripts/hf_publish.py` | Syncs the Hugging Face repo with this one: file allowlist, adapter in `lora/`, one commit; dry-run by default, `--publish` needs `HF_TOKEN` |
+| `scripts/hf_publish.py` | Syncs the Hugging Face repo with this one: file allowlist, adapter in `lora/`, one commit that only adds and updates files, never deletes on the Hub; dry-run by default, `--publish` needs `HF_TOKEN` |
 | `lora/` | Where the LoRA adapter goes (`adapter_config.json`, `adapter_model.safetensors`); the weights are not in git |
 | `notebooks/Simplicio_27B_Training_Colab.ipynb` | Training run that produced the adapter |
 | `notebooks/Simplicio_27B_Merge_Colab.ipynb` | Merges the adapter into 16-bit weights and exports the GGUF Q4_K_M |

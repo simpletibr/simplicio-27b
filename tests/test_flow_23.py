@@ -3,9 +3,10 @@
   * Dry run (the default) over a temporary source directory that holds allowed and forbidden files:
     only the allowlist reaches the plan, everything else is REFUSEd or SKIPped, and the Hub client is
     never even created.
-  * `--publish` without HF_TOKEN is refused before any file is read or client is built. With a token and
-    a clean tree it builds one commit: adapter moved to lora/, files outside the allowlist deleted,
-    generation_config.json rewritten from the Modelfile sampling.
+  * `--publish` without HF_TOKEN is refused before any file is read or client is built. With a token, a
+    clean tree and HEAD pushed it builds one commit that only ADDS and UPDATES allowlisted files
+    (generation_config.json rewritten from the Modelfile sampling). Files the Hub has outside the allowlist,
+    weights included, are reported as orphans and are never deleted or copied.
   * The real client (HubClient) is exercised against a stand-in `huggingface_hub` module.
 Nothing here talks to huggingface.co and no real token is used.
 """
@@ -39,9 +40,10 @@ ALLOWED_ADDS = {
     "LICENSE", "Modelfile", "README.md", "assets/simplicio-logo.png",
     "lora/adapter_config.json", "lora/adapter_model.safetensors",
 }
-# Files the Hub has today (issue #23) that are outside the allowlist.
-GONE = {"adapter_config.json", "adapter_model.safetensors", "assets/leaderboard_top10.svg",
-        "deploy/serve_vllm.sh", "data/x.jsonl"}
+# Files the Hub has today that the allowlist does not cover: reported, never removed.
+ORPHANS = {"adapter_config.json", "adapter_model.safetensors", "assets/leaderboard_top10.svg",
+           "deploy/serve_vllm.sh", "data/x.jsonl", "model.safetensors", "vocab.json", "merges.txt",
+           "special_tokens_map.json", "added_tokens.json", "training_args.bin"}
 MODELFILE = (ROOT / "Modelfile").read_text(encoding="utf-8")
 
 
@@ -61,7 +63,10 @@ def stale_remote() -> dict[str, hf_publish.RemoteFile]:
              regular("processor_config.json", b"p"), regular("chat_template.jinja", b"c"),
              regular("adapter_config.json", b"{}"), lfs("adapter_model.safetensors", b"a"),
              lfs("assets/leaderboard_top10.svg", b"s"), regular("deploy/serve_vllm.sh", b"old"),
-             regular("data/x.jsonl", b"d"), *(lfs(name, b"g") for name in ggufs)]
+             regular("data/x.jsonl", b"d"), lfs("model.safetensors", b"m"), regular("vocab.json", b"v"),
+             regular("merges.txt", b"m"), regular("special_tokens_map.json", b"s"),
+             regular("added_tokens.json", b"a"), lfs("training_args.bin", b"t"),
+             *(lfs(name, b"g") for name in ggufs)]
     return {f.path: f for f in files}
 
 
@@ -88,6 +93,9 @@ class FakeClient:
         self.commits.append({"repo": repo_id, "ops": ops, "parent": parent, "message": message,
                              "description": description})
         return "https://huggingface.co/x/commit/1"
+
+    def __getattr__(self, name):  # any other call (delete_file, copy, ...) is a bug in the script
+        raise AssertionError(f"chamada inesperada ao cliente do Hub: {name}")
 
 
 def write_snapshot(path: Path) -> None:
@@ -235,19 +243,17 @@ class DryRunTest(TempCase):
 
 
 class SnapshotTest(TempCase):
-    def test_snapshot_shows_copy_and_delete_in_the_tree_api_shape(self):
-        src = make_source(self.tmp, adapter=False)
+    def test_snapshot_shows_orphans_and_never_delete_or_copy(self):
+        src = make_source(self.tmp)
         snapshot = self.tmp / "remote.json"
         write_snapshot(snapshot)
         code, out, err = run_main("--source", str(src), "--remote-snapshot", str(snapshot))
         self.assertEqual((code, err), (0, ""))
-        for line in ("COPY adapter_config.json -> lora/adapter_config.json",
-                     "COPY adapter_model.safetensors -> lora/adapter_model.safetensors",
-                     "DELETE adapter_config.json", "DELETE adapter_model.safetensors",
-                     "DELETE assets/leaderboard_top10.svg"):
-            self.assertIn(line, out)
-        self.assertNotRegex(out, r"(?m)^DELETE (\.gitattributes|config\.json|model[-.]|tokenizer|chat_template"
-                                 r"|processor_config|lora/|.*\.gguf)")
+        warned = set(re.findall(r"(?m)^AVISO órfão no Hub, não removido: (\S+?)(?::.*)?$", out))
+        self.assertEqual(warned, ORPHANS)
+        self.assertIn("ADD lora/adapter_config.json", out)
+        self.assertIn("ADD Modelfile", out)
+        self.assertNotRegex(out, r"(?m)^(DELETE|COPY|REMOVE|MOVE)\b")
         self.assertIn("MERGE generation_config.json", out)
 
     def test_bad_snapshot_is_refused(self):
@@ -260,7 +266,7 @@ class SnapshotTest(TempCase):
 
 
 class PublishTest(TempCase):
-    def publish(self, remote=None, adapter=False, **kw):
+    def publish(self, remote=None, adapter=True, **kw):
         src = make_source(self.tmp, adapter=adapter)
         client = FakeClient(stale_remote() if remote is None else remote)
         tokens = []
@@ -303,15 +309,28 @@ class PublishTest(TempCase):
         self.assertEqual(commit["description"], "https://github.com/simpletibr/simplicio-27b/commit/c0ffee")
         self.assertIn("https://huggingface.co/x/commit/1", out)
         ops = commit["ops"]
-        copies = [i for i, op in enumerate(ops) if isinstance(op, hf_publish.Copy)]
-        self.assertEqual([(ops[i].src, ops[i].dest) for i in copies],
-                         [("adapter_config.json", "lora/adapter_config.json"),
-                          ("adapter_model.safetensors", "lora/adapter_model.safetensors")])
-        deletes = [i for i, op in enumerate(ops) if isinstance(op, hf_publish.Delete)]
-        self.assertLess(copies[-1], deletes[0])
-        self.assertEqual({ops[i].path for i in deletes}, GONE)
-        added = {op.path: op for op in ops if isinstance(op, hf_publish.Add)}
-        self.assertLessEqual({"README.md", "LICENSE", "Modelfile", "generation_config.json"}, set(added))
+        self.assertEqual({type(op) for op in ops}, {hf_publish.Add})
+        self.assertEqual({op.path for op in ops},
+                         ALLOWED_ADDS | {"generation_config.json"})
+        self.assertNotRegex(out, r"(?m)^(DELETE|COPY)\b")
+
+    def test_publish_never_deletes_what_the_hub_has_outside_the_allowlist(self):
+        remote = stale_remote()
+        self.assertLessEqual({"model.safetensors", "vocab.json", "merges.txt", "special_tokens_map.json",
+                              "added_tokens.json", "training_args.bin"}, set(remote))
+        before = dict(remote)
+        code, out, err, client, _ = self.publish(remote=remote)
+        self.assertEqual((code, err), (0, ""))
+        (commit,) = client.commits
+        sent = {op.path for op in commit["ops"]}
+        self.assertEqual({type(op) for op in commit["ops"]}, {hf_publish.Add})
+        self.assertEqual(sent & ORPHANS, set())
+        self.assertEqual(client.files, before)  # the fake Hub's tree was not touched
+        warned = set(re.findall(r"(?m)^AVISO órfão no Hub, não removido: (\S+?)(?::.*)?$", out))
+        self.assertEqual(warned, ORPHANS)
+        self.assertNotIn("DELETE", out)
+        self.assertNotIn("DELETE", " ".join(repr(op) for op in commit["ops"]))
+        self.assertEqual([c for c in client.calls if "delete" in c.lower() or "copy" in c.lower()], [])
 
     def test_generation_config_takes_the_modelfile_sampling(self):
         _, _, _, client, _ = self.publish()
@@ -322,20 +341,18 @@ class PublishTest(TempCase):
             "min_p": 0.0, "presence_penalty": 1.5, "repetition_penalty": 1.0,
         })
 
-    def test_local_adapter_is_uploaded_to_lora_and_root_copy_is_deleted(self):
-        _, _, _, client, _ = self.publish(adapter=True)
-        ops = client.commits[0]["ops"]
-        self.assertEqual([op for op in ops if isinstance(op, hf_publish.Copy)], [])
-        added = {op.path: op for op in ops if isinstance(op, hf_publish.Add)}
-        self.assertEqual(added["lora/adapter_config.json"].payload.endswith("adapter_config.json"), True)
-        self.assertLessEqual({"adapter_config.json", "adapter_model.safetensors"},
-                             {op.path for op in ops if isinstance(op, hf_publish.Delete)})
+    def test_local_adapter_goes_to_lora_and_the_root_copy_is_only_warned(self):
+        _, out, _, client, _ = self.publish()
+        added = {op.path: op for op in client.commits[0]["ops"]}
+        self.assertTrue(added["lora/adapter_config.json"].payload.endswith("adapter_config.json"))
+        self.assertIn("AVISO órfão no Hub, não removido: adapter_config.json: mova para lora/", out)
+        self.assertIn("AVISO órfão no Hub, não removido: adapter_model.safetensors: mova para lora/", out)
 
     def test_no_commit_when_in_sync(self):
         src = make_source(self.tmp)
         scan = hf_publish.scan_source(src)
         gen = hf_publish.generation_config(GEN, scan.modelfile)
-        remote = {p: f for p, f in stale_remote().items() if p not in GONE and p != "generation_config.json"}
+        remote = {p: f for p, f in stale_remote().items() if p not in ORPHANS and p != "generation_config.json"}
         remote["generation_config.json"] = regular("generation_config.json", gen)
         for path, entry in scan.entries.items():
             remote[path] = hf_publish.RemoteFile(path, entry.blob_sha1())
@@ -360,21 +377,42 @@ class PublishTest(TempCase):
         self.assertEqual((code, out), (2, ""))
         self.assertIn("git status", err)
 
+    def test_head_must_be_the_pushed_commit(self):
+        src = make_source(self.tmp)
+        git = lambda *a: {"status": "", "rev-parse": "c0ffee" if a[1] == "HEAD" else "bad1dea"}[a[0]]  # noqa: E731
+        code, out, err = run_main("--source", str(src), "--publish", env={"HF_TOKEN": FAKE_TOKEN}, git=git)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("difere do branch remoto", err)
+
+    def test_branch_without_upstream_is_refused(self):
+        src = make_source(self.tmp)
+
+        def git(*a):
+            if a == ("rev-parse", "@{upstream}"):
+                raise hf_publish.Refused("sem upstream")
+            return "c0ffee" if a[0] == "rev-parse" else ""
+
+        code, out, err = run_main("--source", str(src), "--publish", env={"HF_TOKEN": FAKE_TOKEN}, git=git)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("upstream", err)
+
+    def test_commit_url_comes_from_the_remote_branch(self):
+        calls = []
+
+        def git(*a):
+            calls.append(a)
+            return "feed123" if a[0] == "rev-parse" else ""
+
+        _, _, _, client, _ = self.publish(git=git)
+        self.assertIn(("rev-parse", "@{upstream}"), calls)
+        self.assertTrue(client.commits[0]["description"].endswith("/commit/feed123"))
+
     def test_snapshot_and_publish_do_not_mix(self):
         src = make_source(self.tmp)
         code, _, err = run_main("--source", str(src), "--publish", "--remote-snapshot", "x.json",
                                 env={"HF_TOKEN": FAKE_TOKEN})
         self.assertEqual(code, 2)
         self.assertIn("--remote-snapshot", err)
-
-    def test_root_and_lora_adapter_differ(self):
-        remote = stale_remote()
-        remote["lora/adapter_config.json"] = regular("lora/adapter_config.json", b'{"r": 8}')
-        remote["lora/adapter_model.safetensors"] = lfs("lora/adapter_model.safetensors", b"a")
-        code, _, err, client, _ = self.publish(remote=remote)
-        self.assertEqual(code, 2)
-        self.assertIn("difere", err)
-        self.assertNotIn("create_commit", client.calls)
 
     def test_modelfile_gguf_must_exist_on_the_hub(self):
         remote = {p: f for p, f in stale_remote().items() if not p.endswith(".gguf")}
@@ -383,11 +421,13 @@ class PublishTest(TempCase):
         self.assertIn("plano inválido", err)
         self.assertNotIn("create_commit", client.calls)
 
-    def test_adapter_missing_everywhere_is_refused(self):
-        remote = {p: f for p, f in stale_remote().items() if not p.startswith("adapter_")}
-        code, _, err, _, _ = self.publish(remote=remote)
-        self.assertEqual(code, 2)
-        self.assertIn("nem na raiz nem em lora/", err)
+    def test_adapter_missing_from_lora_is_refused_without_copying_it(self):
+        code, out, err, client, _ = self.publish(adapter=False)  # the Hub has it only at the root
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("plano inválido", err)
+        self.assertIn("lora/adapter_config.json", err)
+        self.assertIn("baixe o adapter para lora/", err)
+        self.assertNotIn("create_commit", client.calls)
 
 
 class SamplingTest(unittest.TestCase):
@@ -408,7 +448,9 @@ class SamplingTest(unittest.TestCase):
         self.assertNotEqual(cfg["temperature"], 1.0)  # the thinking-mode value the Hub has today
 
 
-def fake_hub_module():
+def fake_hub_module(files=None):
+    """Stand-in for huggingface_hub. It has no delete or copy operation, and HfApi traps any call besides
+    the four the script is allowed to make."""
     hub = types.ModuleType("huggingface_hub")
     hub.seen = {}
 
@@ -419,27 +461,28 @@ def fake_hub_module():
     class CommitOperationAdd(Op):
         pass
 
-    class CommitOperationCopy(Op):
-        pass
-
-    class CommitOperationDelete(Op):
-        pass
-
     class HfApi:
         def __init__(self, token=None):
             hub.seen["token"] = token
+
+        def __getattr__(self, name):
+            raise AssertionError(f"chamada inesperada ao Hub: {name}")
 
         def model_info(self, repo_id):
             return SimpleNamespace(sha="abc123")
 
         def list_repo_tree(self, repo_id, recursive=False, revision=None):
+            if files is not None:
+                return [SimpleNamespace(path=f.path, blob_id=f.blob_id,
+                                        lfs=SimpleNamespace(sha256=f.lfs_sha256) if f.lfs_sha256 else None)
+                        for f in files.values()]
             return [SimpleNamespace(path="a.txt", blob_id="b" * 40, lfs=None),
                     SimpleNamespace(path="w.bin", blob_id="c" * 40, lfs=SimpleNamespace(sha256="d" * 64)),
                     SimpleNamespace(path="lora", tree_id="t")]  # a folder: no blob_id
 
         def hf_hub_download(self, repo_id, filename, revision=None):
             path = Path(tempfile.mkdtemp()) / filename
-            path.write_bytes(b"{}")
+            path.write_bytes(GEN if files is not None else b"{}")
             return str(path)
 
         def create_commit(self, repo_id, operations, parent_commit, commit_message, commit_description):
@@ -447,8 +490,7 @@ def fake_hub_module():
                             description=commit_description)
             return SimpleNamespace(commit_url="https://huggingface.co/x/commit/9")
 
-    hub.CommitOperationAdd, hub.CommitOperationCopy = CommitOperationAdd, CommitOperationCopy
-    hub.CommitOperationDelete, hub.HfApi = CommitOperationDelete, HfApi
+    hub.CommitOperationAdd, hub.HfApi = CommitOperationAdd, HfApi
     return hub
 
 
@@ -464,16 +506,29 @@ class HubClientTest(unittest.TestCase):
                 "w.bin": hf_publish.RemoteFile("w.bin", "c" * 40, "d" * 64),
             })
             self.assertEqual(client.read_file("x/y", "generation_config.json", "abc123"), b"{}")
-            url = client.create_commit(
-                "x/y", [hf_publish.Add("README.md", b"card", 4), hf_publish.Copy("a", "lora/a"),
-                        hf_publish.Delete("old")], "abc123", "msg", "desc")
+            url = client.create_commit("x/y", [hf_publish.Add("README.md", b"card", 4)], "abc123", "msg", "desc")
         self.assertEqual(url, "https://huggingface.co/x/commit/9")
-        add, copy, delete = hub.seen["operations"]
+        (add,) = hub.seen["operations"]
         self.assertEqual(add.kw, {"path_in_repo": "README.md", "path_or_fileobj": b"card"})
-        self.assertEqual(copy.kw, {"src_path_in_repo": "a", "path_in_repo": "lora/a"})
-        self.assertEqual(delete.kw, {"path_in_repo": "old"})
         self.assertEqual((hub.seen["parent"], hub.seen["message"], hub.seen["description"]),
                          ("abc123", "msg", "desc"))
+
+    def test_publish_through_the_hub_client_only_adds(self):
+        hub = fake_hub_module(stale_remote())
+        src = make_source(Path(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, src.parent, ignore_errors=True)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(sys.modules, {"huggingface_hub": hub}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = hf_publish.main(["--source", str(src), "--publish"], env={"HF_TOKEN": FAKE_TOKEN},
+                                   git=lambda *a: "c0ffee" if a[0] == "rev-parse" else "")
+        self.assertEqual((code, err.getvalue()), (0, ""))
+        operations = hub.seen["operations"]
+        self.assertEqual({type(op).__name__ for op in operations}, {"CommitOperationAdd"})
+        self.assertEqual({op.kw["path_in_repo"] for op in operations} & ORPHANS, set())
+        self.assertIn("model.safetensors", out.getvalue())  # reported as an orphan
+        self.assertNotIn("DELETE", out.getvalue())
+        self.assertNotIn(FAKE_TOKEN, out.getvalue())
 
     def test_missing_library_is_a_clean_refusal(self):
         with mock.patch.dict(sys.modules, {"huggingface_hub": None}):

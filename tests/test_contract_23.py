@@ -1,7 +1,8 @@
 """Contract test for issue #23: what the Hub, the README and the other files expect from scripts/hf_publish.py.
 
   * The allowlist is exactly what the issue lists (mirrored files, adapter files and `lora/`, what the Hub
-    keeps), and a plan against the Hub listing of the issue never deletes a file the Hub needs.
+    keeps). Against a Hub listing, files outside it are orphans: a warning, never an operation.
+  * `--publish` has no delete or copy anywhere: no such operation type, no such Hub call, no such string.
   * The card is the README.md, unchanged, with the metadata the issue sets (pretty_name, license, base_model,
     base_model_relation, library_name, tags, homepage). Every result figure in it traces to
     benchmarks/live_colab_g4_bf16_n120.json; a figure the benchmark file does not back is refused.
@@ -83,22 +84,23 @@ class AllowlistContract(unittest.TestCase):
         self.assertEqual({p for p in hf_publish.scan_source(ROOT).entries if p.startswith("assets/")},
                          {p for p in cited if (ROOT / p).is_file()})
 
-    def test_plan_keeps_what_the_hub_needs(self):
+    def test_orphans_on_the_hub_are_warnings_never_operations(self):
         needed = (".gitattributes", "config.json", "generation_config.json", "model.safetensors.index.json",
                   "model-00001-of-00018.safetensors", "tokenizer.json", "tokenizer_config.json",
                   "chat_template.jinja", "processor_config.json", "preprocessor_config.json",
                   "lora/adapter_config.json", "lora/adapter_model.safetensors", "Qwen3.8-27B.Q4_K_M.gguf",
                   "Qwen3.8-27B.BF16-mmproj.gguf")
-        remote = {p: hf_publish.RemoteFile(p, "a" * 40) for p in needed}
-        remote.update({p: hf_publish.RemoteFile(p, "a" * 40) for p in ("assets/leaderboard_top10.svg",
-                                                                          "benchmarks/AUDIT_RESPONSE_AND_PROOF.md",
-                                                                          "deploy/serve_vllm.sh")})
+        orphans = ("assets/leaderboard_top10.svg", "benchmarks/AUDIT_RESPONSE_AND_PROOF.md",
+                   "deploy/serve_vllm.sh", "model.safetensors", "vocab.json", "merges.txt",
+                   "special_tokens_map.json", "added_tokens.json", "training_args.bin")
+        remote = {p: hf_publish.RemoteFile(p, "a" * 40) for p in (*needed, *orphans)}
         scan = hf_publish.scan_source(ROOT)
         plan = hf_publish.build_plan(scan.entries, scan.modelfile, remote, b"{}")
-        deleted = {op.path for op in plan.ops if isinstance(op, hf_publish.Delete)}
-        self.assertEqual(deleted, {"assets/leaderboard_top10.svg", "benchmarks/AUDIT_RESPONSE_AND_PROOF.md",
-                                   "deploy/serve_vllm.sh"})
-        self.assertEqual(deleted & set(needed), set())
+        self.assertEqual({type(op) for op in plan.ops}, {hf_publish.Add})
+        self.assertEqual({op.path for op in plan.ops},
+                         {"README.md", "LICENSE", "Modelfile", "assets/simplicio-logo.png", "generation_config.json"})
+        self.assertEqual(sorted(w.split(": ", 1)[1] for w in plan.warnings), sorted(orphans))
+        self.assertTrue(all(w.startswith("órfão no Hub, não removido: ") for w in plan.warnings))
 
     def test_every_modelfile_from_must_exist_on_the_hub(self):
         self.assertEqual(hf_publish.FROM_RE.findall(MODELFILE), ["Qwen3.8-27B.Q4_K_M.gguf"])
@@ -193,6 +195,62 @@ class CardContract(unittest.TestCase):
                         if name in ISSUE_SAMPLING}
         self.assertEqual({float(v) for v in params.values()}, in_modelfile)
         self.assertEqual(params["temperature"], 0.7)
+
+
+class NoDeleteContract(unittest.TestCase):
+    """Nothing in scripts/hf_publish.py can delete, move or copy a file on the Hub."""
+
+    SCRIPT_TREE = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+    BANNED = re.compile(r"(?i)delete|remove|unlink|rmtree|rmdir|copy|move|rename|squash|CommitOperation(?!Add)")
+
+    def test_no_identifier_or_string_names_a_delete_or_copy(self):
+        names = set()
+        for node in ast.walk(self.SCRIPT_TREE):
+            if isinstance(node, ast.Name):
+                names.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                names.add(node.attr)
+            elif isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, ast.alias):
+                names.add(node.name)
+            elif isinstance(node, ast.keyword) and node.arg:
+                names.add(node.arg)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node is not \
+                    self.SCRIPT_TREE.body[0].value:  # the module docstring explains the rule in prose
+                names.add(node.value)
+        self.assertEqual(sorted(n for n in names if self.BANNED.search(n)), [])
+
+    def test_the_only_operation_type_is_add(self):
+        classes = {name for name, obj in vars(hf_publish).items()
+                   if isinstance(obj, type) and obj.__module__ == "hf_publish"}
+        self.assertEqual(classes, {"Entry", "RemoteFile", "Add", "Scan", "Plan", "Refused", "HubClient"})
+        self.assertNotIn("Copy", classes | set(vars(hf_publish)))
+        self.assertNotIn("Delete", classes | set(vars(hf_publish)))
+        self.assertEqual(hf_publish.Plan().ops, [])
+
+    def test_hub_client_makes_only_read_calls_and_one_commit_of_adds(self):
+        client = next(n for n in self.SCRIPT_TREE.body if isinstance(n, ast.ClassDef) and n.name == "HubClient")
+        calls = {}
+        for node in ast.walk(client):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute) \
+                    and isinstance(node.value.value, ast.Name) and node.value.value.id == "self":
+                calls.setdefault(node.value.attr, set()).add(node.attr)
+        self.assertEqual(calls, {
+            "_api": {"model_info", "list_repo_tree", "hf_hub_download", "create_commit"},
+            "_hub": {"CommitOperationAdd"},
+        })
+        # HfApi(token=...) is the only other thing the client builds.
+        built = {node.func.attr for node in ast.walk(client) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
+                 and node.func.value.id == "hub"}
+        self.assertEqual(built, {"HfApi"})
+
+    def test_commit_description_links_the_remote_head(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertRegex(source, r'description = f"\{GITHUB_COMMIT_URL\}\{upstream\}"')
+        self.assertIn('git("rev-parse", "@{upstream}")', source)
+        self.assertNotRegex(source, r"description = [^\n]*rev-parse")
 
 
 class NoSecretsContract(unittest.TestCase):
