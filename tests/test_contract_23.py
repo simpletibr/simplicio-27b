@@ -79,6 +79,20 @@ class AllowlistContract(unittest.TestCase):
         self.assertTrue(scan.refused)  # deploy/context.env and gateway/upstream_token.php look like credentials
         self.assertEqual({path for path, _ in scan.refused} & set(scan.entries), set())
 
+    def test_weight_formats_are_all_refused_outside_the_adapter(self):
+        self.assertEqual(set(hf_publish.WEIGHT_SUFFIXES),
+                         {".safetensors", ".bin", ".pt", ".pth", ".gguf", ".ckpt", ".h5", ".onnx"})
+        root = ROOT.resolve()
+        allowed = {*hf_publish.MIRRORED, "lora/adapter_model.safetensors", "lora/adapter_config.json",
+                   *(f"assets/x{suffix}" for suffix in hf_publish.WEIGHT_SUFFIXES)}
+        verdicts = {rel: hf_publish.judge(rel, root / rel, root, allowed, set())[0]
+                    for rel in allowed | {"lora/extra.bin"}}
+        self.assertEqual({rel for rel, verdict in verdicts.items() if verdict == "ok"} & set(allowed),
+                         {*hf_publish.MIRRORED, "lora/adapter_model.safetensors", "lora/adapter_config.json"})
+        self.assertEqual(verdicts["lora/extra.bin"], "refuse")
+        for suffix in hf_publish.WEIGHT_SUFFIXES:
+            self.assertEqual(verdicts[f"assets/x{suffix}"], "refuse", suffix)
+
     def test_assets_in_the_allowlist_are_the_ones_the_readme_cites(self):
         cited = set(hf_publish.ASSET_RE.findall(README))
         self.assertEqual({p for p in hf_publish.scan_source(ROOT).entries if p.startswith("assets/")},

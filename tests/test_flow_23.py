@@ -212,6 +212,33 @@ class DryRunTest(TempCase):
         self.assertIn(f"ADD {named} (4 bytes)", out)
         self.assertIn("REFUSE other.gguf (GGUF", out)
 
+    def test_weights_cited_by_the_readme_are_refused(self):
+        src = make_source(self.tmp)
+        cited = [f"assets/x{suffix}" for suffix in (".safetensors", ".bin", ".pt", ".pth", ".gguf", ".ckpt",
+                                                    ".h5", ".onnx", ".SAFETENSORS")]
+        with open(src / "README.md", "a", encoding="utf-8") as handle:
+            handle.writelines(f"\n![w]({name})\n" for name in cited)
+        for name in cited:
+            (src / name).write_bytes(b"weights")
+        (src / "lora" / "extra.safetensors").write_bytes(b"weights")
+        for extra in ([], ["--allow-gguf"]):
+            with self.subTest(extra=extra):
+                code, out, err = run_main("--source", str(src), *extra)
+                self.assertEqual((code, err), (0, ""))
+                self.assertEqual(set(re.findall(r"(?m)^ADD (\S+) \(\d+ bytes\)$", out)), ALLOWED_ADDS)
+                refused = set(re.findall(r"(?m)^REFUSE (\S+) \(", out))
+                self.assertEqual(refused, {*cited, "lora/extra.safetensors"})
+                self.assertRegex(out, r"(?m)^REFUSE assets/x\.safetensors \(pesos só entram em lora/")
+                self.assertRegex(out, r"(?m)^REFUSE assets/x\.gguf \(GGUF")
+
+    def test_only_the_adapter_and_the_modelfile_gguf_may_be_weights(self):
+        src = make_source(self.tmp)
+        named = hf_publish.FROM_RE.findall(MODELFILE)[0]
+        (src / named).write_bytes(b"gguf")
+        _, out, _ = run_main("--source", str(src), "--allow-gguf")
+        added = set(re.findall(r"(?m)^ADD (\S+) \(\d+ bytes\)$", out))
+        self.assertEqual(added, ALLOWED_ADDS | {named})
+
     def test_secret_inside_an_allowed_file_stops_the_run(self):
         src = make_source(self.tmp)
         with open(src / "Modelfile", "a", encoding="utf-8") as handle:

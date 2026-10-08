@@ -68,7 +68,7 @@ SECRET_NAMES = (
 )
 SKIP_DIRS = frozenset({".git", "__pycache__", ".ruff_cache", ".pytest_cache", ".venv", "venv", "node_modules",
                        ".ipynb_checkpoints", "scratchpad"})
-WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt")
+WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".gguf", ".ckpt", ".h5", ".onnx")
 SECRET_RE = re.compile(
     r"hf_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}"
     r"|Bearer\s+[A-Za-z0-9._~+/=-]{20,}|sk-[A-Za-z0-9]{20,}"
@@ -189,18 +189,17 @@ def judge(rel: str, full: Path, root: Path, allowed: set[str], ggufs: set[str]) 
     name = rel.rsplit("/", 1)[-1].lower()
     if any(fnmatch.fnmatch(name, pattern) for pattern in SECRET_NAMES):
         return "refuse", "nome de credencial ou segredo"
-    if name.endswith(".gguf"):
-        if rel in ggufs:
-            return "ok", ""
-        return "refuse", "GGUF grande: só com --allow-gguf e se o Modelfile tiver FROM ./este-arquivo"
-    if not full.resolve().is_relative_to(root):
-        return "refuse", "fora do diretório de origem"
-    if rel in allowed:
-        return "ok", ""
     if rel in ADAPTER:
         return "refuse", f"adapter na raiz: o lugar é {ADAPTER_DIR}/"
-    if name.endswith(WEIGHT_SUFFIXES):
+    # Pesos primeiro: nenhum caminho da allowlist (nem um asset citado no README) faz um peso subir.
+    if name.endswith(WEIGHT_SUFFIXES) and rel not in {f"{ADAPTER_DIR}/adapter_model.safetensors", *ggufs}:
+        if name.endswith(".gguf"):
+            return "refuse", "GGUF grande: só com --allow-gguf e se o Modelfile tiver FROM ./este-arquivo"
         return "refuse", f"pesos só entram em {ADAPTER_DIR}/ e só o adapter"
+    if not full.resolve().is_relative_to(root):
+        return "refuse", "fora do diretório de origem"
+    if rel in allowed or rel in ggufs:
+        return "ok", ""
     return "skip", ""
 
 
