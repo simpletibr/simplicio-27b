@@ -1,29 +1,25 @@
-# Ollama Modelfile for Simplicio 27B
-# Published tag: ollama run wesleysimplicio/simplicio-27b
-# Local recreate expects these two files from huggingface.co/wesleysimplicio/Simplicio-27B
+# Simplicio 27B for Ollama (the only Modelfile): ollama run wesleysimplicio/simplicio-27b --think=false
+# Rebuild: put Qwen3.8-27B.Q4_K_M.gguf from huggingface.co/wesleysimplicio/Simplicio-27B next to this file.
 
+# One FROM only. The vision projector (Qwen3.8-27B.BF16-mmproj.gguf) is left out on purpose: Simplicio is used for text only.
 FROM ./Qwen3.8-27B.Q4_K_M.gguf
-FROM ./Qwen3.8-27B.BF16-mmproj.gguf
 
-# Generation Parameters
-PARAMETER temperature 0.2
-PARAMETER top_p 0.95
-PARAMETER top_k 40
-PARAMETER repeat_penalty 1.1
+# Ollama's built-in Qwen 3.5 prompt renderer and tool-call/thinking parser (Ollama >= 0.30.0).
+RENDERER qwen3.5
+PARSER qwen3.5
+REQUIRES 0.30.0
+
+# Same context as vLLM: deploy/context.env MAX_MODEL_LEN.
 PARAMETER num_ctx 40960
 
-# Deterministic Stop Tokens
+# Qwen3.8-27B recommended sampling for non-thinking mode (huggingface.co/Qwen/Qwen3.8-27B).
+PARAMETER temperature 0.7
+PARAMETER top_p 0.8
+PARAMETER top_k 20
+PARAMETER min_p 0
+PARAMETER presence_penalty 1.5
+PARAMETER repeat_penalty 1
 PARAMETER stop "<|im_end|>"
-PARAMETER stop "</deliver>"
-PARAMETER stop "<|endoftext|>"
 
-# ChatML Template
-TEMPLATE """{{ if .System }}<|im_start|>system
-{{ .System }}<|im_end|>
-{{ end }}{{ if .Prompt }}<|im_start|>user
-{{ .Prompt }}<|im_end|>
-{{ end }}<|im_start|>assistant
-{{ .Response }}<|im_end|>"""
-
-# Official System Prompt
-SYSTEM """Voce e o Simplicio 27B, um modelo especializado em engenharia de software autonoma e edicao cirurgica atomica de codigo (SEARCH/REPLACE), treinado pela simpleti.com.br para maxima assertividade e desperdicio zero de tokens."""
+# System prompt used in training (Simplicio_27B_Training_Colab.ipynb, system_prompt).
+SYSTEM """Voce e o Simplicio 27B, treinado para executar tarefas de desenvolvimento seguindo rigorosamente os 50 pontos do Simplicio-Loop: Orientacao, Planejamento, Edicao Cirurgica por Diff, Validacao e Entrega Verificada sem alucinacao."""

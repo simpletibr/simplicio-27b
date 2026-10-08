@@ -13,16 +13,17 @@ The tag `wesleysimplicio/simplicio-27b:latest` is in the Ollama library.
 ollama run wesleysimplicio/simplicio-27b
 ```
 
-It combines two files published in `wesleysimplicio/Simplicio-27B`:
+It is built from one file published in `wesleysimplicio/Simplicio-27B`:
 
 | File | Role | Size |
 |---|---|---|
 | `Qwen3.8-27B.Q4_K_M.gguf` | Q4_K_M weights | 16810715584 bytes |
-| `Qwen3.8-27B.BF16-mmproj.gguf` | vision projector | 931145952 bytes |
 
-The `Modelfile` at the repository root uses these file names with `temperature` 0.2, `top_p` 0.95, `top_k` 40, `repeat_penalty` 1.1 and `num_ctx` 40960, the value in `deploy/context.env`. The published tag still has `num_ctx` 32768; recreate and push it to bring it in line. The Ollama page shows the architecture's maximum window, 256K.
+The same repository also has `Qwen3.8-27B.BF16-mmproj.gguf` (the vision projector, 931145952 bytes). The `Modelfile` leaves it out on purpose, with a single `FROM`, because Simplicio is used for text only.
 
-To recreate the tag, download both files into this folder and run:
+The root `Modelfile` uses this file name and sets `RENDERER qwen3.5`, `PARSER qwen3.5`, a 40,960-token context (`deploy/context.env`), Qwen's non-thinking sampling and the training system prompt. The README's Ollama section explains each setting and how to turn thinking off. The Ollama page shows the architecture's maximum window, 256K.
+
+To recreate the tag, download `Qwen3.8-27B.Q4_K_M.gguf` into this folder and run:
 
 ```bash
 ollama create wesleysimplicio/simplicio-27b -f Modelfile
@@ -51,7 +52,7 @@ If you host the model on your own GPU (RunPod, Lambda Labs, Scaleway or your own
 
 ## 3. Coding tools
 
-Tool calls need the vLLM server above. The Ollama template does not declare tools, so tools that rely on tool calls only work against vLLM.
+Use the vLLM server above for tools that rely on tool calls. The Ollama tag parses Qwen tool calls (`PARSER qwen3.5`), but no coding tool has been tested against it.
 
 ### A. OpenCode
 Add the vLLM server to `opencode.json` as an OpenAI-compatible provider:

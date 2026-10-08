@@ -55,9 +55,7 @@ OWNER_PENDING = {
     ("README.md", "ollama run wesleysimplicio/simplicio-27b"):
         "Ollama tag `latest` without a digest; Modelfile and GGUF identity are #22/#24",
     ("Modelfile", "FROM ./Qwen3.8-27B.Q4_K_M.gguf"):
-        "GGUF downloaded by hand from HF, no checksum published; #22/#24",
-    ("deploy/Modelfile", "FROM ./Qwen3.8-27B.Q4_K_M.gguf"):
-        "same file as Modelfile; #22/#24 leaves one Modelfile",
+        "GGUF downloaded by hand from HF, no checksum published; #24",
 }
 
 NAME = r"[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._-]+\])?"
@@ -256,12 +254,12 @@ class PinnedDownloadsTest(unittest.TestCase):
         self.assertEqual(unlisted, [])
 
     def test_modelfile_from_is_local_or_digest(self) -> None:
-        for rel in ("Modelfile", "deploy/Modelfile"):
-            froms = [ln.split(None, 1)[1].strip() for ln in (ROOT / rel).read_text(encoding="utf-8").splitlines()
-                     if ln.startswith("FROM ")]
-            self.assertTrue(froms, rel)
-            for ref in froms:
-                self.assertTrue(ref.startswith("./") or "@sha256:" in ref, f"{rel}: FROM {ref}")
+        rel = "Modelfile"
+        froms = [ln.split(None, 1)[1].strip() for ln in (ROOT / rel).read_text(encoding="utf-8").splitlines()
+                 if ln.startswith("FROM ")]
+        self.assertTrue(froms, rel)
+        for ref in froms:
+            self.assertTrue(ref.startswith("./") or "@sha256:" in ref, f"{rel}: FROM {ref}")
 
     def test_owner_pending_entries_are_still_true(self) -> None:
         """A fixed item must leave OWNER_PENDING: every entry still has to be in its file."""

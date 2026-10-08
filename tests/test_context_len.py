@@ -50,11 +50,9 @@ class ContextLenTests(unittest.TestCase):
         self.assertIn("deploy/context.env", text)
         self.assertNotIn("16384", text)
 
-    def test_modelfiles_agree(self) -> None:
-        ctx = load_context()
-        for rel in ("Modelfile", "deploy/Modelfile"):
-            text = (ROOT / rel).read_text(encoding="utf-8")
-            self.assertIn(f"PARAMETER num_ctx {ctx['MAX_MODEL_LEN']}", text)
+    def test_modelfile_uses_constant(self) -> None:
+        text = (ROOT / "Modelfile").read_text(encoding="utf-8")
+        self.assertIn(f"PARAMETER num_ctx {load_context()['MAX_MODEL_LEN']}", text)
 
     def test_no_colab_16384_max_model_len(self) -> None:
         py = (ROOT / "deploy" / "serve_colab.py").read_text(encoding="utf-8")
