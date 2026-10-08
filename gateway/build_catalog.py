@@ -19,9 +19,10 @@ IDS = ("simpleti/simplicio-27b", "simplicio-27b")
 DESCRIPTION = (
     "Research release. LoRA fine-tune of Qwen3.8-27B that answers code-change requests in five tagged "
     "phases and edits code with SEARCH/REPLACE blocks instead of rewriting whole files. On the project's "
-    "internal check it passed 56 of 120 runs (46.7%): 40 unique short Python tasks, each run 3 times, one "
-    "attempt at temperature 0. It has not been evaluated on public benchmarks or compared with the base "
-    "model under the same protocol. Details and limits: https://huggingface.co/wesleysimplicio/Simplicio-27B"
+    "internal check, 56 of 120 runs (46.7%) passed a text-matching check: 40 unique short Python tasks, each "
+    "run 3 times, one attempt at temperature 0. Functional correctness of the patches was not measured. It "
+    "has not been evaluated on public benchmarks or compared with the base model under the same protocol. "
+    "Details and limits: https://huggingface.co/wesleysimplicio/Simplicio-27B"
 )
 
 

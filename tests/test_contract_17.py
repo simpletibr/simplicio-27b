@@ -187,6 +187,31 @@ class ModelsCatalogContractTests(unittest.TestCase):
         self.assertEqual({k: v for k, v in self.data[0].items() if k != "id"},
                          {k: v for k, v in self.data[1].items() if k != "id"})
 
+    def test_score_claim_carries_the_readme_qualifier(self) -> None:
+        # Mesmo qualificador do README: as 56/120 execuções são um teste por casamento de texto.
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("passed a text-matching check", readme)
+        for item in self.data:
+            with self.subTest(id=item["id"]):
+                text = item["description"]
+                self.assertEqual(text.count("56 of 120 runs"), 1)
+                self.assertIn("passed a text-matching check", text)
+                self.assertNotIn("passed 56 of 120", text)
+
+    def test_price_does_not_contradict_the_readme(self) -> None:
+        # O preço por token é decisão do dono (opção 1 ou 2 da #14). Enquanto o README disser que não há
+        # preço público, nem pricing.json nem models.json podem trazer valor.
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        price = json.loads((GATEWAY / "pricing.json").read_text(encoding="utf-8"))
+        if "no public per-token price" in readme:
+            self.assertEqual(price, {})
+            for item in self.data:
+                self.assertNotIn("pricing", item)
+                for side in ("input_modalities", "output_modalities"):
+                    self.assertNotIn("pricing", item[side][0])
+        else:
+            self.assertEqual(set(price) - {"prompt", "completion", "cached_prompt"}, set())
+
     def test_pricing_shape_when_present(self) -> None:
         for item in self.data:
             if "pricing" not in item:

@@ -5,18 +5,12 @@
       "name": "SimpleTI: Simplicio 27B",
       "hugging_face_id": "wesleysimplicio/Simplicio-27B",
       "created": 1791136800,
-      "description": "Research release. LoRA fine-tune of Qwen3.8-27B that answers code-change requests in five tagged phases and edits code with SEARCH/REPLACE blocks instead of rewriting whole files. On the project's internal check it passed 56 of 120 runs (46.7%): 40 unique short Python tasks, each run 3 times, one attempt at temperature 0. It has not been evaluated on public benchmarks or compared with the base model under the same protocol. Details and limits: https://huggingface.co/wesleysimplicio/Simplicio-27B",
+      "description": "Research release. LoRA fine-tune of Qwen3.8-27B that answers code-change requests in five tagged phases and edits code with SEARCH/REPLACE blocks instead of rewriting whole files. On the project's internal check, 56 of 120 runs (46.7%) passed a text-matching check: 40 unique short Python tasks, each run 3 times, one attempt at temperature 0. Functional correctness of the patches was not measured. It has not been evaluated on public benchmarks or compared with the base model under the same protocol. Details and limits: https://huggingface.co/wesleysimplicio/Simplicio-27B",
       "context_length": 40960,
       "architecture": {
         "modality": "text->text",
         "tokenizer": "Qwen",
         "instruct_type": "qwen3"
-      },
-      "pricing": {
-        "prompt": "0.00000014",
-        "completion": "0.00000059",
-        "request": "0",
-        "image": "0"
       },
       "input_modalities": [
         {
@@ -26,19 +20,7 @@
               "value": 40960,
               "unit": "token"
             }
-          },
-          "pricing": [
-            {
-              "type": "prompt",
-              "unit": "token",
-              "cost_usd": "0.00000014"
-            },
-            {
-              "type": "cached_prompt",
-              "unit": "token",
-              "cost_usd": "0.00000001"
-            }
-          ]
+          }
         }
       ],
       "output_modalities": [
@@ -49,14 +31,7 @@
               "value": 4096,
               "unit": "token"
             }
-          },
-          "pricing": [
-            {
-              "type": "completion",
-              "unit": "token",
-              "cost_usd": "0.00000059"
-            }
-          ]
+          }
         }
       ]
     },
@@ -65,18 +40,12 @@
       "name": "SimpleTI: Simplicio 27B",
       "hugging_face_id": "wesleysimplicio/Simplicio-27B",
       "created": 1791136800,
-      "description": "Research release. LoRA fine-tune of Qwen3.8-27B that answers code-change requests in five tagged phases and edits code with SEARCH/REPLACE blocks instead of rewriting whole files. On the project's internal check it passed 56 of 120 runs (46.7%): 40 unique short Python tasks, each run 3 times, one attempt at temperature 0. It has not been evaluated on public benchmarks or compared with the base model under the same protocol. Details and limits: https://huggingface.co/wesleysimplicio/Simplicio-27B",
+      "description": "Research release. LoRA fine-tune of Qwen3.8-27B that answers code-change requests in five tagged phases and edits code with SEARCH/REPLACE blocks instead of rewriting whole files. On the project's internal check, 56 of 120 runs (46.7%) passed a text-matching check: 40 unique short Python tasks, each run 3 times, one attempt at temperature 0. Functional correctness of the patches was not measured. It has not been evaluated on public benchmarks or compared with the base model under the same protocol. Details and limits: https://huggingface.co/wesleysimplicio/Simplicio-27B",
       "context_length": 40960,
       "architecture": {
         "modality": "text->text",
         "tokenizer": "Qwen",
         "instruct_type": "qwen3"
-      },
-      "pricing": {
-        "prompt": "0.00000014",
-        "completion": "0.00000059",
-        "request": "0",
-        "image": "0"
       },
       "input_modalities": [
         {
@@ -86,19 +55,7 @@
               "value": 40960,
               "unit": "token"
             }
-          },
-          "pricing": [
-            {
-              "type": "prompt",
-              "unit": "token",
-              "cost_usd": "0.00000014"
-            },
-            {
-              "type": "cached_prompt",
-              "unit": "token",
-              "cost_usd": "0.00000001"
-            }
-          ]
+          }
         }
       ],
       "output_modalities": [
@@ -109,14 +66,7 @@
               "value": 4096,
               "unit": "token"
             }
-          },
-          "pricing": [
-            {
-              "type": "completion",
-              "unit": "token",
-              "cost_usd": "0.00000059"
-            }
-          ]
+          }
         }
       ]
     }
