@@ -1,7 +1,9 @@
 """Reject chat completions that would look like OpenCode finish=unknown.
 
-A 200 from this gate always has finish_reason in {stop, length, tool_calls}
-and a usage object. Anything else becomes HTTP 502. 4xx/5xx pass through.
+A non-stream 200 from this gate always has finish_reason in {stop, length,
+tool_calls} and a usage object; anything else becomes HTTP 502. Streams are
+forwarded as they arrive (StreamCheck) and end with an SSE error event when
+finish_reason is missing. 4xx/5xx pass through.
 """
 
 from __future__ import annotations
@@ -59,63 +61,68 @@ def json_completion_ok(payload: dict[str, Any]) -> str | None:
     return None
 
 
-def parse_sse_payloads(raw: bytes) -> list[dict[str, Any]]:
-    text = raw.decode("utf-8", errors="replace")
-    out: list[dict[str, Any]] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("data:"):
-            continue
-        data = line[5:].strip()
-        if not data or data == "[DONE]":
-            continue
+SSE_DONE = b"data: [DONE]\n\n"
+
+
+def sse_error_event(message: str) -> bytes:
+    """One SSE event carrying the same error object as the JSON 502 body."""
+    return b"data: " + _error_body(message) + b"\n\n"
+
+
+class StreamCheck:
+    """Watch an SSE stream line by line while it is forwarded to the client."""
+
+    def __init__(self) -> None:
+        self.events = 0
+        self.finish_reason: str | None = None
+        self.usage: dict[str, Any] | None = None
+        self.upstream_error: str | None = None
+        self.done = False
+
+    def feed(self, line: bytes) -> None:
+        text = line.decode("utf-8", errors="replace").strip()
+        if not text.startswith("data:"):
+            return
+        data = text[5:].strip()
+        if data == "[DONE]":
+            self.done = True
+            return
         try:
             obj = json.loads(data)
         except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict):
-            out.append(obj)
-    return out
-
-
-def sse_completion_ok(raw: bytes) -> str | None:
-    events = parse_sse_payloads(raw)
-    if not events:
-        return "empty stream"
-    reason = None
-    usage_payload: dict[str, Any] | None = None
-    for event in events:
-        if event.get("usage"):
-            usage_payload = event
-        choices = event.get("choices") or []
-        if choices:
+            return
+        if not isinstance(obj, dict):
+            return
+        self.events += 1
+        err = obj.get("error")
+        if isinstance(err, dict):
+            self.upstream_error = str(err.get("message") or "upstream error")
+        if usage_ok(obj):
+            self.usage = obj["usage"]
+        choices = obj.get("choices")
+        if isinstance(choices, list) and choices:
             found = finish_reason_of(choices[0])
             if found:
-                reason = found
-    if reason not in VALID_FINISH:
-        return f"stream finish_reason must be stop|length|tool_calls, got {reason!r}"
-    if usage_payload is None or not usage_ok(usage_payload):
-        return "stream missing usage"
-    return None
+                self.finish_reason = found
 
-
-def is_sse(content_type: str, raw: bytes) -> bool:
-    ctype = (content_type or "").lower()
-    if "text/event-stream" in ctype:
-        return True
-    head = raw.lstrip()[:32]
-    return head.startswith(b"data:")
+    def problem(self) -> str | None:
+        """Message for the terminal error event, or None when none is needed."""
+        if self.upstream_error is not None:
+            return None  # the upstream error event already reached the client
+        if self.events == 0:
+            return "empty stream"
+        if self.finish_reason not in VALID_FINISH:
+            return (
+                "stream finish_reason must be stop|length|tool_calls, "
+                f"got {self.finish_reason!r}"
+            )
+        return None
 
 
 def enforce(status: int, raw: bytes, content_type: str) -> tuple[int, bytes, str]:
-    """Return (status, body, content_type)."""
+    """Check a whole non-stream response. Return (status, body, content_type)."""
     if status != 200:
         return status, raw, content_type or "application/json"
-    if is_sse(content_type, raw):
-        err = sse_completion_ok(raw)
-        if err:
-            return BAD_STATUS, _error_body(err), BAD_TYPE
-        return status, raw, content_type or "text/event-stream"
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):

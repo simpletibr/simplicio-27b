@@ -5,14 +5,16 @@ Starts vLLM, puts a completion gate in front of it, opens a Cloudflare
 tunnel to the gate, probes a real chat completion, then registers the
 tunnel on simpleti.com.br. On exit the upstream is cleared.
 
-A 200 from the gate always has finish_reason in {stop, length, tool_calls}
-and a usage object. Completions that would become OpenCode finish=unknown
-are rewritten to HTTP 502.
+A non-stream 200 from the gate always has finish_reason in {stop, length,
+tool_calls} and a usage object; otherwise it becomes HTTP 502. Streams are
+forwarded line by line and end with an SSE error event when finish_reason
+is missing.
 """
 
 from __future__ import annotations
 
 import getpass
+import http.client
 import json
 import os
 import re
@@ -32,7 +34,13 @@ ROOT = DEPLOY.parent
 if str(DEPLOY) not in sys.path:
     sys.path.insert(0, str(DEPLOY))
 
-from completion_gate import enforce, json_completion_ok  # noqa: E402
+from completion_gate import (  # noqa: E402
+    SSE_DONE,
+    StreamCheck,
+    enforce,
+    json_completion_ok,
+    sse_error_event,
+)
 
 GATEWAY_SET = os.environ.get(
     "SIMPLETI_SET_UPSTREAM_URL",
@@ -197,6 +205,19 @@ def clear_upstream(key: str) -> None:
     print("clear_upstream failed:", "; ".join(errors), file=sys.stderr)
 
 
+def _upstream_lines(resp: http.client.HTTPResponse):
+    """Yield upstream SSE lines; stop quietly if the upstream drops mid-stream."""
+    while True:
+        try:
+            line = resp.readline()
+        except (OSError, http.client.HTTPException) as exc:
+            sys.stderr.write(f"gate: upstream caiu no meio do stream: {exc!r}\n")
+            return
+        if not line:
+            return
+        yield line
+
+
 class _GateHandler(BaseHTTPRequestHandler):
     server_version = "SimplicioCompletionGate/1"
 
@@ -214,11 +235,9 @@ class _GateHandler(BaseHTTPRequestHandler):
         headers["User-Agent"] = headers.get("User-Agent") or "SimpleTI-Worker/1.0"
         target = f"http://127.0.0.1:{VLLM_PORT}{self.path}"
         req = urllib.request.Request(target, data=body, headers=headers, method=method)
+        chat = self.path.startswith("/v1/chat/completions")
         try:
-            with urllib.request.urlopen(req, timeout=600) as resp:
-                raw = resp.read()
-                status = resp.status
-                ctype = resp.headers.get("Content-Type") or "application/json"
+            resp = urllib.request.urlopen(req, timeout=600)
         except urllib.error.HTTPError as exc:
             raw = exc.read()
             status = exc.code
@@ -227,13 +246,49 @@ class _GateHandler(BaseHTTPRequestHandler):
             raw = json.dumps({"error": {"message": str(exc), "type": "GateError"}}).encode()
             status = 502
             ctype = "application/json"
-        if self.path.startswith("/v1/chat/completions"):
+        else:
+            with resp:
+                ctype = resp.headers.get("Content-Type") or "application/json"
+                if "text/event-stream" in ctype.lower():
+                    self._stream(resp, ctype, check=chat)
+                    return
+                raw = resp.read()
+                status = resp.status
+        if chat:
             status, raw, ctype = enforce(status, raw, ctype)
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def _stream(self, resp: http.client.HTTPResponse, ctype: str, check: bool) -> None:
+        """Forward SSE line by line; end with an error event if the stream was bad."""
+        self.send_response(resp.status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.close_connection = True
+        tracker = StreamCheck()
+        try:
+            for line in _upstream_lines(resp):
+                tracker.feed(line)
+                if tracker.done:
+                    break
+                self.wfile.write(line)
+                self.wfile.flush()
+            problem = tracker.problem() if check else None
+            if problem:
+                self.log_message("stream inválido: %s", problem)
+                self.wfile.write(sse_error_event(problem))
+            elif check and tracker.usage is None:
+                self.log_message("stream sem usage (falta --enable-force-include-usage?)")
+            self.wfile.write(SSE_DONE)
+            self.wfile.flush()
+        except ConnectionError:
+            self.log_message("cliente desconectou; fechando o upstream")
+        finally:
+            resp.close()
 
     def do_GET(self) -> None:  # noqa: N802
         self._passthrough("GET")
