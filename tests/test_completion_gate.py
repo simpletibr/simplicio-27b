@@ -117,7 +117,7 @@ class StreamCheckTests(unittest.TestCase):
 
 class PhpContractTests(unittest.TestCase):
     def test_clear_contract(self) -> None:
-        php = (Path(__file__).resolve().parents[1] / "deploy" / "set_upstream.php").read_text()
+        php = (Path(__file__).resolve().parents[1] / "gateway" / "set_upstream.php").read_text()
         self.assertIn("clear", php)
         self.assertIn("upstream_url", php)
         self.assertIn("Unauthorized", php)
