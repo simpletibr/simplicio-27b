@@ -170,7 +170,7 @@ class StatusFlowTests(unittest.TestCase):
         self.assertIsNone(json.loads(text)["deploy_sha"])
 
     def test_corrupt_state_file_does_not_leak(self) -> None:
-        self.state.parent.mkdir(parents=True, exist_ok=True)
+        self.state.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.state.write_text("{not json", encoding="utf-8")
         status, _, text = self.call("GET", "/v1/status")
         self.assertEqual(status, 200, text)

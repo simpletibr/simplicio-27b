@@ -128,7 +128,7 @@ class Http503ContractTests(unittest.TestCase):
             conn.close()
 
     def write_state(self, state: object | str) -> None:
-        self.state.parent.mkdir(parents=True, exist_ok=True)
+        self.state.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.state.write_text(state if isinstance(state, str) else json.dumps(state), encoding="utf-8")
 
     def assert_issue_503(self, status: int, headers: list[tuple[str, str]], text: str) -> None:
@@ -150,6 +150,8 @@ class Http503ContractTests(unittest.TestCase):
         cases = {
             "sem arquivo": None,
             "vencido": stale,
+            "no futuro (relógio recuado)": {"upstream_url": URL, "upstream_token": TOKEN, "updated_at": now + 3600},
+            "muito no futuro": {"upstream_url": URL, "upstream_token": TOKEN, "updated_at": now + 10 * 365 * 86400},
             "formato antigo (updated)": {"upstream_url": URL, "upstream_token": TOKEN, "updated": now},
             "updated_at em texto": {"upstream_url": URL, "upstream_token": TOKEN, "updated_at": str(now)},
             "updated_at nulo": {"upstream_url": URL, "upstream_token": TOKEN, "updated_at": None},
@@ -200,6 +202,29 @@ class DeadlineContractTests(unittest.TestCase):
         self.assertIsNone(live_upstream(self.STATE, 1006, "5"))
         self.assertEqual(live_upstream(self.STATE, 1300, "300"), URL)
         self.assertIsNone(live_upstream(self.STATE, 1301, "300"))
+
+    def test_ttl_is_capped_at_3600(self) -> None:
+        state = {"upstream_url": URL, "updated_at": 1000}
+        for value in ("3600", "3601", "7200", "99999", "999999"):
+            with self.subTest(value=value):
+                self.assertEqual(live_upstream(state, 1000 + 3600, value), URL)
+                self.assertIsNone(live_upstream(state, 1000 + 3601, value))
+        self.assertEqual(live_upstream(state, 1000 + 3599, "3599"), URL)
+        self.assertIsNone(live_upstream(state, 1000 + 3600, "3599"))
+        out = php_eval("require $argv[1]; echo simpleti_lease_ttl();", str(LEASE), env={"SIMPLETI_LEASE_TTL_S": "999999"})
+        self.assertEqual(out, "3600")
+        self.assertEqual(re.search(r"const SIMPLETI_LEASE_TTL_MAX_S = (\d+);", LEASE.read_text(encoding="utf-8")).group(1), "3600")
+
+    def test_updated_at_in_the_future_is_expired_beyond_a_5_second_tolerance(self) -> None:
+        for ttl in (None, "5", "3600"):
+            with self.subTest(ttl=ttl):
+                self.assertEqual(live_upstream({"upstream_url": URL, "updated_at": 1005}, 1000, ttl), URL)
+                self.assertIsNone(live_upstream({"upstream_url": URL, "updated_at": 1006}, 1000, ttl))
+                self.assertIsNone(live_upstream({"upstream_url": URL, "updated_at": 1000 + 86400}, 1000, ttl))
+                self.assertIsNone(live_upstream({"upstream_url": URL, "updated_at": 2**62}, 1000, ttl))
+        # a tolerância não encurta o prazo normal: o carimbo "agora" continua vivo até o fim do TTL
+        self.assertEqual(live_upstream({"upstream_url": URL, "updated_at": 1000}, 1090), URL)
+        self.assertIsNone(live_upstream({"upstream_url": URL, "updated_at": 1000}, 1091))
 
     def test_invalid_ttl_falls_back_to_the_default(self) -> None:
         for value in ("", "0", "-1", "abc", "1.5", " 5", "5 ", "5\n", "0x10", "1000000", "+5", "٥"):
@@ -262,6 +287,17 @@ class LeaseSourceContractTests(unittest.TestCase):
         self.assertIn("'updated_at' => time()", self.set_upstream)
         self.assertEqual(self.status.count("$state['updated_at']"), 2)
         self.assertIn("is_int($at)", self.lease)
+
+    def test_existing_state_dir_must_already_be_private(self) -> None:
+        check = "(fileperms($dir) & 0077) !== 0"
+        self.assertIn(check, self.set_upstream)
+        self.assertIn("respond(500, ['error' => 'upstream dir too open']);", self.set_upstream)
+        self.assertIn("error_log(", self.set_upstream)
+        self.assertNotIn("chmod($dir", self.set_upstream)  # recusa e registra; nunca corrige o modo sozinho
+        order = [self.set_upstream.index(x) for x in ("mkdir($dir, 0700, true)", check, "upstream dir not writable", "$tmp = tempnam(")]
+        self.assertEqual(order, sorted(order))
+        # limpar o upstream continua possível com o diretório aberto: só gravar o token é recusado
+        self.assertLess(self.set_upstream.index("respond(200, ['ok' => true, 'upstream' => null]);"), self.set_upstream.index(check))
 
     def test_existing_auth_and_token_checks_are_still_there(self) -> None:
         for needle in (

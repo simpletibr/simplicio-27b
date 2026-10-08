@@ -15,7 +15,10 @@ Caminhos cobertos:
     serve_colab.heartbeat_loop de verdade mantém a rota aberta além do prazo e, parado, deixa o lease vencer;
   * (d) heartbeat sem token, ou com token errado, é 401 e não renova o lease;
   * sem SIMPLETI_UPSTREAM_FILE (ou com caminho relativo) a rota fica fechada, mesmo com um arquivo de estado
-    no diretório temporário: não existe caminho padrão.
+    no diretório temporário: não existe caminho padrão;
+  * um updated_at no futuro (relógio recuado) e um TTL acima do teto de 3600 s não mantêm o lease vivo à toa;
+  * um diretório de estado que já existe mais aberto que 0700 recusa o heartbeat com 500, registra o motivo no log
+    e não tem o modo corrigido; com 0700 o mesmo heartbeat passa.
 A parte PHP precisa de `php` no PATH, o mesmo requisito do `make check`; sem ele a classe é pulada com o motivo.
 """
 
@@ -114,7 +117,7 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
-def start_php(root: Path, env: dict[str, str]) -> tuple[subprocess.Popen, int]:
+def start_php(root: Path, env: dict[str, str], stderr=subprocess.DEVNULL) -> tuple[subprocess.Popen, int]:
     router = root / "router.php"
     router.write_text(ROUTER, encoding="utf-8")
     port = free_port()
@@ -122,7 +125,7 @@ def start_php(root: Path, env: dict[str, str]) -> tuple[subprocess.Popen, int]:
         [PHP, "-S", f"127.0.0.1:{port}", str(router)],
         env={**{k: v for k, v in os.environ.items() if not k.startswith("SIMPLETI_")}, "GATEWAY_DIR": str(GATEWAY), **env},
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=stderr,
     )
     deadline = time.monotonic() + 10
     while True:
@@ -218,7 +221,7 @@ class LeaseFlowTests(unittest.TestCase):
 
     def test_state_without_updated_at_is_503(self) -> None:
         """Um estado do formato antigo (campo "updated") nunca é um lease vivo."""
-        self.state.parent.mkdir(parents=True, exist_ok=True)
+        self.state.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.state.write_text(
             json.dumps({"upstream_url": URL, "upstream_token": serve_colab.GATE_TOKEN, "updated": int(time.time())})
         )
@@ -366,6 +369,82 @@ class LeaseFlowTests(unittest.TestCase):
                         proc.terminate()
                         proc.wait(timeout=5)
         self.assertEqual(FakeUpstream.seen, [])
+
+
+@unittest.skipUnless(PHP, "php não instalado: o fluxo do lease precisa de php -S")
+class StateDirModeFlowTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.admin = secrets.token_hex(32)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.dir = self.root / "state"
+        self.state = self.dir / "upstream.json"
+        self.dir.mkdir(mode=0o700)
+        self.log = (self.root / "php.log").open("wb")
+        self.php, self.port = start_php(
+            self.root,
+            {"SIMPLETI_ADMIN_KEY": self.admin, "SIMPLETI_UPSTREAM_FILE": str(self.state), "SIMPLETI_LEASE_TTL_S": "60"},
+            stderr=self.log,
+        )
+
+    def tearDown(self) -> None:
+        self.php.terminate()
+        self.php.wait(timeout=5)
+        self.log.close()
+        self.tmp.cleanup()
+
+    def heartbeat(self):
+        body = {"upstream_url": URL, "upstream_token": serve_colab.GATE_TOKEN}
+        return call(self.port, "POST", "/api/set_upstream.php", body, {"Authorization": f"Bearer {self.admin}"})
+
+    def php_log(self) -> str:
+        self.log.flush()
+        return (self.root / "php.log").read_text(encoding="utf-8", errors="replace")
+
+    def test_existing_directory_more_open_than_0700_refuses_the_heartbeat_and_is_left_alone(self) -> None:
+        for mode in (0o755, 0o750, 0o710, 0o701, 0o770, 0o777, 0o705):
+            with self.subTest(mode=oct(mode)):
+                self.dir.chmod(mode)
+                status, _, raw = self.heartbeat()
+                self.assertEqual((status, json.loads(raw)), (500, {"error": "upstream dir too open"}))
+                self.assertFalse(self.state.exists())
+                self.assertEqual(list(self.dir.iterdir()), [])  # nem arquivo temporário sobrou
+                self.assertEqual(self.dir.stat().st_mode & 0o777, mode)  # o modo não foi corrigido
+                self.assertNotIn(serve_colab.GATE_TOKEN.encode(), raw)
+                self.assertNotIn(self.admin.encode(), raw)
+        log = self.php_log()
+        self.assertIn("more open than 0700; refusing to store the token", log)
+        self.assertIn(str(self.dir), log)
+        self.assertIn("0755", log)
+        self.assertNotIn(serve_colab.GATE_TOKEN, log)
+        self.assertNotIn(self.admin, log)
+
+    def test_the_same_heartbeat_passes_once_the_owner_fixes_the_mode(self) -> None:
+        self.dir.chmod(0o755)
+        self.assertEqual(self.heartbeat()[0], 500)
+        self.dir.chmod(0o700)
+        status, _, raw = self.heartbeat()
+        self.assertEqual((status, json.loads(raw)), (200, {"ok": True, "upstream": URL}))
+        self.assertEqual(self.state.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.dir.stat().st_mode & 0o777, 0o700)
+
+    def test_a_missing_directory_is_still_created_private(self) -> None:
+        self.dir.rmdir()
+        self.assertEqual(self.heartbeat()[0], 200)
+        self.assertEqual(self.dir.stat().st_mode & 0o777, 0o700)
+
+    def test_clear_still_works_with_an_open_directory(self) -> None:
+        self.assertEqual(self.heartbeat()[0], 200)
+        self.dir.chmod(0o755)
+        status, _, _ = call(self.port, "POST", "/api/set_upstream.php", {"clear": True}, {"Authorization": f"Bearer {self.admin}"})
+        self.assertEqual(status, 200)
+        self.assertFalse(self.state.exists())
+
+    def test_the_admin_key_is_still_checked_first(self) -> None:
+        self.dir.chmod(0o755)
+        status, _, _ = call(self.port, "POST", "/api/set_upstream.php", {"upstream_url": URL}, {"Authorization": "Bearer " + "x" * 64})
+        self.assertEqual(status, 401)
+        self.assertNotIn("more open than 0700", self.php_log())
 
 
 if __name__ == "__main__":

@@ -4,7 +4,8 @@
 // {"upstream_url":"https://<name>.trycloudflare.com","upstream_token":"<per-run token>"} stores
 // (the token is required and the state file is written 0600); {"clear": true}, null or "" deletes.
 // The state file now holds a secret, so SIMPLETI_UPSTREAM_FILE is required: an absolute path outside the
-// system temp dir and outside the web root (a missing 0700 directory is created). There is no default.
+// system temp dir and outside the web root (a missing 0700 directory is created; an existing one must already be
+// 0700, otherwise the store is refused with 500). There is no default.
 // Every successful store stamps "updated_at": re-POSTing the same body is the heartbeat (gateway/upstream_lease.php).
 header('Content-Type: application/json; charset=utf-8');
 
@@ -57,6 +58,12 @@ if (!is_string($token) || !preg_match('/^[A-Za-z0-9_-]{32,128}$/D', $token)) {
 $dir = dirname($file);
 if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
     respond(500, ['error' => 'cannot create upstream dir']);
+}
+if ((fileperms($dir) & 0077) !== 0) {
+    // An existing directory more open than 0700 would expose the token in the state file. Refuse and say why in the
+    // server log; the mode is never changed here.
+    error_log(sprintf('set_upstream: state dir %s has mode %04o, more open than 0700; refusing to store the token', $dir, fileperms($dir) & 07777));
+    respond(500, ['error' => 'upstream dir too open']);
 }
 if (!is_writable($dir)) {
     // tempnam() would otherwise fall back to the system temp dir and put the token there.

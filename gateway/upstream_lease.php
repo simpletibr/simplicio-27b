@@ -1,11 +1,14 @@
 <?php
 // Heartbeat lease for the gateway proxy. deploy/serve_colab.py re-POSTs set_upstream.php every 30 s and
 // set_upstream.php stamps "updated_at" (unix s) on every POST. A state older than the TTL (default 90 s, or
-// SIMPLETI_LEASE_TTL_S when it is a positive integer) means the Colab is gone: the proxy answers 503 + Retry-After
-// instead of calling a dead tunnel. A missing or unreadable state is also "down".
+// SIMPLETI_LEASE_TTL_S when it is a positive integer, capped at 3600) means the Colab is gone: the proxy answers
+// 503 + Retry-After instead of calling a dead tunnel. A missing or unreadable state is also "down", and so is an
+// updated_at more than 5 s in the future (a clock set back must not keep a dead lease alive).
 // The state file comes only from SIMPLETI_UPSTREAM_FILE (absolute, no default, never the system temp dir):
 // without it nothing is live, so the proxy fails closed.
 const SIMPLETI_LEASE_TTL_DEFAULT_S = 90;
+const SIMPLETI_LEASE_TTL_MAX_S = 3600;
+const SIMPLETI_LEASE_FUTURE_SKEW_S = 5;
 const SIMPLETI_RETRY_AFTER_S = 30;
 
 function simpleti_state_file(): ?string
@@ -17,7 +20,10 @@ function simpleti_state_file(): ?string
 function simpleti_lease_ttl(): int
 {
     $raw = getenv('SIMPLETI_LEASE_TTL_S');
-    return is_string($raw) && preg_match('/^[1-9][0-9]{0,5}$/D', $raw) === 1 ? (int) $raw : SIMPLETI_LEASE_TTL_DEFAULT_S;
+    if (!is_string($raw) || preg_match('/^[1-9][0-9]{0,5}$/D', $raw) !== 1) {
+        return SIMPLETI_LEASE_TTL_DEFAULT_S;
+    }
+    return min((int) $raw, SIMPLETI_LEASE_TTL_MAX_S);
 }
 
 function simpleti_read_state(string $file): ?array
@@ -30,7 +36,8 @@ function simpleti_live_upstream(?array $state, int $now): ?string
 {
     $url = $state['upstream_url'] ?? null;
     $at = $state['updated_at'] ?? null;
-    if (!is_string($url) || $url === '' || !is_int($at) || $now - $at > simpleti_lease_ttl()) {
+    if (!is_string($url) || $url === '' || !is_int($at)
+        || $now - $at > simpleti_lease_ttl() || $at - $now > SIMPLETI_LEASE_FUTURE_SKEW_S) {
         return null;
     }
     return $url;
