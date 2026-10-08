@@ -27,7 +27,7 @@ class SetUpstreamPhpTests(unittest.TestCase):
         cls.port = sock.getsockname()[1]
         sock.close()
         cls.proc = subprocess.Popen(
-            ["php", "-S", f"127.0.0.1:{cls.port}", str(ROOT / "deploy" / "set_upstream.php")],
+            ["php", "-S", f"127.0.0.1:{cls.port}", str(ROOT / "gateway" / "set_upstream.php")],
             env={
                 **os.environ,
                 "SIMPLETI_ADMIN_KEY": cls.admin_key,

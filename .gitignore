@@ -21,3 +21,5 @@ benchmarks/harness/results/
 venv/
 scratchpad/
 .claude/worktrees/
+# Written at deploy time by the gateway owner (git rev-parse HEAD > gateway/DEPLOY_SHA)
+gateway/DEPLOY_SHA
