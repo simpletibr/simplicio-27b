@@ -19,10 +19,16 @@ Especificação (fonte entre parênteses)
 2. Dentro dele, as fases <orient>, <plan>, <patch>, <validate>, <deliver>, cada uma uma vez,
    nessa ordem, abertas e fechadas, sem aninhar. Cada tag fica sozinha na linha (README, dataset).
    <orient>, <plan>, <validate> e <deliver> não podem ficar vazias (o README abrevia com "…", que conta).
+   "Vazia" inclui só espaço em branco e só caracteres invisíveis (categoria Unicode Cf: U+200B, U+200C,
+   U+200D, U+2060, U+FEFF...). Esses caracteres também são ignorados nas pontas de cada linha.
 3. Um ponto é uma linha "[Ponto N: Nome]" (dataset) ou "[Point N: Name]" (README, traduzido), com ou
    sem diferença de caixa em "Ponto"/"Point" e com ou sem prefixo de lista ("- ", "* ", "1. ").
    Faixas: orient 1-10, plan 11-20, patch 21-30, validate 31-40, deliver 41-50 (generate_dataset.py).
    Ponto numerado fora da faixa da fase onde aparece, ou fora de qualquer fase, é problema.
+   Prefixo de lista aceito: "- ", "* ", "+ ", "• ", "1. ", "1) ". Qualquer outra marcação antes do ponto
+   ("**[Ponto 45: x]**", "– [Ponto 45: x]", "> [Ponto ...]", "# [Ponto ...]") é erro de formato
+   (ponto-malformado) mesmo dentro da faixa: escolhi rejeitar em vez de aceitar mais prefixos. Uma
+   referência no meio de uma frase ("conforme [Ponto 12: x]") não é linha de ponto e é ignorada.
 4. <patch> tem um ou mais blocos "<<<< SEARCH" / "====" / ">>>> REPLACE", marcadores de exatamente
    4 caracteres, sozinhos na linha, sem indentação e com um único espaço antes de SEARCH/REPLACE
    (README; benchmarks/harness/harness.py). SEARCH não pode ser vazio nem só espaços e linhas em
@@ -37,13 +43,17 @@ Escolhas onde a especificação é ambígua (sempre a leitura mais literal)
 - O nome do ponto não é conferido (o README traduz "Identificacao de Raiz" por "Root" e o gerador
   usa nomes diferentes nos exemplos manuais e nos gerados); só o número conta.
 - Linhas de texto livre dentro de uma fase são permitidas (o README usa "…"). Texto entre as fases, ou
-  fora de <simplicio_loop> (inclusive um bloco <think>), é problema. O README manda rodar sem thinking.
+  fora de <simplicio_loop>, é problema.
+- <think>: o README manda rodar sem thinking e o treino não tem blocos <think>. Por isso qualquer
+  "<think>" ou "</think>" dentro de <simplicio_loop> é problema (think-no-envelope), em qualquer fase ou
+  entre fases, sozinho na linha ou no meio dela, e um <think> sem fechamento também (think-nao-fechado).
+  Dentro de um bloco SEARCH/REPLACE é conteúdo (um patch no próprio harness.py contém "</think>").
 - Marcadores são exatos. O harness aceita de 4 a 7 caracteres; o README exige 4, então 5 a 7 (o estilo
   Git/Aider) é problema em qualquer lugar de <patch>, inclusive dentro de um bloco aberto (onde o
   harness fecharia o bloco com ele). Marcador SEARCH/REPLACE indentado ou com espaçamento diferente de
   um único espaço também é problema em qualquer lugar de <patch>. Marcador SEARCH/REPLACE fora de
-  <patch>, ou dentro de um <think> (tags <think> e </think> sozinhas na linha), é problema, e um bloco
-  dentro de <think> não conta como patch.
+  <patch>, ou entre tags <think> e </think> sozinhas na linha, é problema, e um bloco ali não conta como
+  patch.
 - Dentro de um bloco aberto, o resto é conteúdo até o marcador que o fecha (como no harness): um
   "<<<< SEARCH" exato ou "</patch>" ali dentro não é interpretado.
 
@@ -51,7 +61,7 @@ Limitações conhecidas
 - Dentro de um bloco aberto, um "====" INDENTADO é conteúdo, não erro: pode ser o sublinhado de um
   título RST/Markdown no código sendo editado, e o harness também o trata como texto. Já uma linha
   inteira de 5 a 7 "=" é reportada mesmo sendo sublinhado, porque o harness a leria como divisor.
-- <think> em uma única linha ("<think>...</think>") não é rastreado; só as tags sozinhas na linha.
+- Marcador de patch precedido de caractere invisível (U+200B...) não é reconhecido como marcador.
 - Não confere se o SEARCH existe no arquivo-alvo (isso exige o código; é o que o harness mede).
 """
 
@@ -61,6 +71,7 @@ import argparse
 import json
 import re
 import sys
+import unicodedata
 from collections import Counter
 from typing import NamedTuple
 
@@ -77,13 +88,34 @@ DEFAULT_FIELD = "simplicio_trajectory"
 MAX_SHOWN_LINES = 20
 
 TAG_RE = re.compile(r"^<(/?)(simplicio_loop|orient|plan|patch|validate|deliver)>$")
-THINK_RE = re.compile(r"^<(/?)think>$")
+THINK_RE = re.compile(r"^<(/?)think>$", re.IGNORECASE)
+THINK_ANY_RE = re.compile(r"</?think>", re.IGNORECASE)
 _LIST_PREFIX = r"(?:(?:[-*+•]|\d+[.)])\s+)?"
 POINT_START_RE = re.compile(rf"^{_LIST_PREFIX}\[(?:ponto|point)\b", re.IGNORECASE)
 POINT_RE = re.compile(rf"^{_LIST_PREFIX}\[(?:ponto|point)\s+(\d{{1,4}})\s*:\s*[^\]\n]+\]", re.IGNORECASE)
+# Linha que começa com marcação (**, __, –, >, #, `) e só então o ponto: parece ponto, mas está fora do formato.
+DECORATED_POINT_RE = re.compile(r"^(?:[^\w\s\[\]]|_|\s)*\[(?:ponto|point)\b", re.IGNORECASE)
 MARKER_RE = re.compile(
     r"^(?P<indent>[ \t]*)(?:(?P<lt><+)(?P<gap1>[ \t]*)SEARCH|(?P<gt>>+)(?P<gap2>[ \t]*)REPLACE|(?P<eq>={4,7}))[ \t]*$"
 )
+
+
+def _invisible(ch: str) -> bool:
+    return ch.isspace() or unicodedata.category(ch) == "Cf"
+
+
+def _trim(text: str) -> str:
+    """strip() que também remove caracteres invisíveis (categoria Cf: U+200B, U+FEFF, U+200C, U+2060...)."""
+    start, end = 0, len(text)
+    while start < end and _invisible(text[start]):
+        start += 1
+    while end > start and _invisible(text[end - 1]):
+        end -= 1
+    return text[start:end]
+
+
+def _is_blank(text: str) -> bool:
+    return all(_invisible(ch) for ch in text)
 
 
 class _Marker(NamedTuple):
@@ -146,14 +178,14 @@ class _Scan:
                 self._count(raw)
                 self._in_block(no, raw)
                 continue
-            line = raw.strip()
+            line = _trim(raw)
             if not line:
                 continue
             inside = self.root_open and not self.root_closed
-            think = THINK_RE.match(line)
-            if think and inside:
-                self.in_think = not think.group(1)
-                continue
+            if inside and THINK_ANY_RE.search(line):
+                self._think(no, line)
+                if THINK_RE.match(line):
+                    continue
             tag = TAG_RE.match(line)
             if tag:
                 self._tag(no, tag.group(2), bool(tag.group(1)))
@@ -171,8 +203,15 @@ class _Scan:
         self._finish()
 
     def _count(self, line: str) -> None:
-        if self.current is not None and line.strip():
+        if self.current is not None and not _is_blank(line):
             self.filled[self.current] += 1
+
+    def _think(self, no: int, line: str) -> None:
+        onde = f"dentro de <{self.current}>" if self.current else f"dentro de <{ROOT_TAG}>, entre fases"
+        self.add("think-no-envelope", f"linha {no}: <think> ou </think> {onde}; o envelope não tem blocos de thinking")
+        tag = THINK_RE.match(line)
+        if tag:
+            self.in_think = not tag.group(1)
 
     def _tag(self, no: int, name: str, close: bool) -> None:
         if name == ROOT_TAG:
@@ -219,7 +258,13 @@ class _Scan:
             self.outside.append(no)
             return
         if not POINT_START_RE.match(line):
-            if self.current is None:
+            if DECORATED_POINT_RE.match(line):
+                self.add(
+                    "ponto-malformado",
+                    f"linha {no}: ponto precedido de marcação ({line[:40]!r}); só '- ', '* ', '+ ', '• ', "
+                    "'1. ' e '1) ' podem vir antes de '[Ponto N: Nome]'",
+                )
+            elif self.current is None:
                 self.between.append(no)
             return
         found = POINT_RE.match(line)
@@ -271,7 +316,7 @@ class _Scan:
             if not mark.exact:
                 self._bad_marker(no, raw, mark)
             if mark.harness_marker and self.block == "search" and mark.kind == "divider":
-                if not any(line.strip() for line in self.search_lines):
+                if all(_is_blank(line) for line in self.search_lines):
                     self.add("patch-search-vazio", f"linha {self.block_line}: bloco com SEARCH vazio ou só com espaços")
                 self.block = "replace"
                 return
@@ -291,6 +336,8 @@ class _Scan:
             self.add("patch-bloco", f"bloco aberto na linha {self.block_line} nunca fechado com '>>>> REPLACE'")
         if self.current is not None:
             self.add("fase-nao-fechada", f"<{self.current}> (linha {self.current_line}) nunca foi fechada")
+        if self.in_think:
+            self.add("think-nao-fechado", "<think> aberto dentro do envelope nunca foi fechado com </think>")
         if not self.root_open:
             self.add("envelope", f"falta <{ROOT_TAG}>")
         elif not self.root_closed:
@@ -354,7 +401,7 @@ def check(text: object, *, complete: bool = False) -> list[str]:
     """Devolve a lista de problemas do envelope; lista vazia significa que a saída segue o loop."""
     if not isinstance(text, str):
         return [f"entrada: a saída deve ser texto, veio {type(text).__name__}"]
-    if not text.strip():
+    if _is_blank(text):
         return ["entrada: saída vazia"]
     scan = _Scan()
     scan.run(text)

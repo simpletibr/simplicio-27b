@@ -360,9 +360,120 @@ class PatchMarkerHardeningTests(unittest.TestCase):
         in_plan = loop_check.check(build(bodies={"plan": "<think>\n<<<< SEARCH\n</think>\n[Ponto 11: P] x"}))
         self.assertIn("patch-no-think", rules(in_plan))
 
-    def test_block_after_closed_think_still_counts(self) -> None:
-        body = "<think>\npensando\n</think>\n" + BLOCK
-        self.assertEqual(self.patch_problems(body), [])
+class ThinkTests(unittest.TestCase):
+    """<think> ou </think> dentro do envelope é erro em qualquer fase; dentro de um bloco é conteúdo."""
+
+    def test_think_inside_any_phase_fails(self) -> None:
+        for phase in PHASES:
+            body = BODIES[phase] + "\n<think>\nraciocinio\n[Ponto 12: Roteamento] x\n</think>"
+            with self.subTest(phase=phase):
+                problems = loop_check.check(build(bodies={phase: body}))
+                self.assertIn("think-no-envelope", rules(problems))
+
+    def test_think_with_points_inside_plan_fails(self) -> None:
+        body = "<think>\n[Ponto 11: Passos] pensei\n[Ponto 12: Roteamento] pensei\n</think>"
+        problems = loop_check.check(build(bodies={"plan": body}))
+        self.assertIn("think-no-envelope", rules(problems))
+
+    def test_think_inside_orient_and_patch_fail(self) -> None:
+        in_orient = loop_check.check(build(bodies={"orient": "<think>\n[Ponto 1: Raiz] x\n</think>"}))
+        self.assertIn("think-no-envelope", rules(in_orient))
+        in_patch = loop_check.check(build(bodies={"patch": "<think>\nrefletindo\n</think>\n" + BLOCK}))
+        self.assertIn("think-no-envelope", rules(in_patch))
+        self.assertNotIn("patch-sem-bloco", rules(in_patch))
+
+    def test_inline_and_uppercase_think_fail(self) -> None:
+        for line in ("<think>ideia</think> [Ponto 11: P] x", "[Ponto 11: P] x </think>", "<THINK>", "</Think>"):
+            with self.subTest(line=line):
+                problems = loop_check.check(build(bodies={"plan": line}))
+                self.assertIn("think-no-envelope", rules(problems))
+
+    def test_think_between_phases_fails(self) -> None:
+        text = build().replace("</orient>\n", "</orient>\n<think>\n</think>\n")
+        self.assertIn("think-no-envelope", rules(loop_check.check(text)))
+
+    def test_unclosed_think_fails(self) -> None:
+        problems = loop_check.check(build(bodies={"plan": "<think>\n[Ponto 11: P] x"}))
+        self.assertIn("think-nao-fechado", rules(problems))
+        self.assertIn("think-no-envelope", rules(problems))
+
+    def test_think_unclosed_until_the_end_of_the_envelope_fails(self) -> None:
+        text = build().replace("</deliver>\n", "<think>\n</deliver>\n")
+        self.assertIn("think-nao-fechado", rules(loop_check.check(text)))
+
+    def test_closed_think_is_not_reported_as_unclosed(self) -> None:
+        problems = loop_check.check(build(bodies={"plan": "<think>\nx\n</think>\n[Ponto 11: P] x"}))
+        self.assertNotIn("think-nao-fechado", rules(problems))
+
+    def test_think_text_inside_a_search_replace_block_is_content(self) -> None:
+        body = '<<<< SEARCH\n    if "</think>" in text:\n====\n    if "</think>" in text:  # <think>\n>>>> REPLACE'
+        self.assertEqual(loop_check.check(build(bodies={"patch": body})), [])
+
+    def test_think_outside_the_envelope_fails(self) -> None:
+        problems = loop_check.check("<think>\nx\n</think>\n" + build())
+        self.assertIn("fora-do-envelope", rules(problems))
+
+
+class InvisibleCharTests(unittest.TestCase):
+    INVISIBLES = ("\u200b", "\ufeff", "\u200c", "\u200d", "\u2060")
+
+    def test_phase_with_only_invisible_characters_is_empty(self) -> None:
+        for phase in ("orient", "plan", "validate", "deliver"):
+            for ch in self.INVISIBLES:
+                with self.subTest(phase=phase, char=hex(ord(ch))):
+                    problems = loop_check.check(build(bodies={phase: f"{ch}\n  {ch}{ch} \n\t{ch}"}))
+                    self.assertIn("fase-vazia", rules(problems))
+
+    def test_phase_with_only_whitespace_is_empty(self) -> None:
+        for body in (" ", "\t\t", "\u00a0", "\u2003\n\u3000"):
+            with self.subTest(body=repr(body)):
+                self.assertIn("fase-vazia", rules(loop_check.check(build(bodies={"plan": body}))))
+
+    def test_invisible_characters_do_not_count_as_content_next_to_text(self) -> None:
+        self.assertEqual(loop_check.check(build(bodies={"plan": "\u200b[Ponto 11: P] x\u200b"})), [])
+
+    def test_invisible_only_lines_between_phases_are_ignored(self) -> None:
+        text = build().replace("</orient>\n", "</orient>\n\u200b\n\ufeff\n")
+        self.assertEqual(loop_check.check(text), [])
+
+    def test_leading_bom_does_not_break_the_envelope(self) -> None:
+        self.assertEqual(loop_check.check("\ufeff" + build()), [])
+
+    def test_invisible_only_input_is_empty(self) -> None:
+        self.assertEqual(rules(loop_check.check("\u200b\ufeff\n \u2060")), {"entrada"})
+
+    def test_search_with_only_invisible_characters_is_empty(self) -> None:
+        body = "<<<< SEARCH\n\u200b\n\ufeff \n====\nx = 2\n>>>> REPLACE"
+        problems = loop_check.check(build(bodies={"patch": body}))
+        self.assertIn("patch-search-vazio", rules(problems))
+
+
+class DecoratedPointTests(unittest.TestCase):
+    """Ponto precedido de marcação fora dos prefixos de lista aceitos é erro de formato."""
+
+    def test_decorated_points_are_malformed_even_inside_the_range(self) -> None:
+        labels = ("**[Ponto 45: x]**", "**[Ponto 11: x]**", "– [Ponto 45: x]", "— [Ponto 11: x]",
+                  "> [Ponto 11: x]", "# [Ponto 11: x]", "`[Ponto 11: x]`", "- **[Ponto 11: x]**",
+                  "__[ponto 11: x]__", "(  [Point 11: x]", "–[Ponto 11: x]")
+        for label in labels:
+            with self.subTest(label=label):
+                problems = loop_check.check(build(bodies={"plan": label}))
+                self.assertIn("ponto-malformado", rules(problems))
+
+    def test_decorated_point_between_phases_is_malformed(self) -> None:
+        text = build().replace("</orient>\n", "</orient>\n**[Ponto 11: x]**\n")
+        self.assertIn("ponto-malformado", rules(loop_check.check(text)))
+
+    def test_reference_in_the_middle_of_a_sentence_is_not_a_point_line(self) -> None:
+        body = "[Ponto 11: Passos] conforme o [Ponto 12: Roteamento] e (veja [Point 13: x])\nver [Ponto 99: x]"
+        self.assertEqual(loop_check.check(build(bodies={"plan": body})), [])
+
+    def test_accepted_list_prefixes_are_unchanged(self) -> None:
+        for label in ("- [Ponto 11: x] y", "* [Ponto 11: x] y", "+ [Ponto 11: x] y", "• [Ponto 11: x] y",
+                      "1. [Ponto 11: x] y", "1) [Ponto 11: x] y"):
+            with self.subTest(label=label):
+                self.assertEqual(loop_check.check(build(bodies={"plan": label})), [])
+
 
 class CompleteModeTests(unittest.TestCase):
     def test_full_envelope_passes_both_modes(self) -> None:
