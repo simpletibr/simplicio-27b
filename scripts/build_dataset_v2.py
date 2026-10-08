@@ -690,7 +690,7 @@ def main(argv: list[str] | None = None) -> int:
         return verify_dir(args.verify, args.sample)
     if not importlib.util.find_spec("pytest"):
         print("erro: pytest nao esta instalado (o harness precisa dele): "
-              "python3 -m pip install -r benchmarks/harness/requirements.txt", file=sys.stderr)
+              "instale as dependencias de benchmarks/harness/requirements.txt", file=sys.stderr)
         return 2
     records, rejected, enumerated = generate(args.train_cap, args.limit, args.workers, log=lambda m: print(m, file=sys.stderr))
     manifest = write_outputs(records, rejected, enumerated, args.out, args.train_cap)
