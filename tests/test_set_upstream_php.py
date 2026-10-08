@@ -117,7 +117,7 @@ class UpstreamUrlTests(SetUpstreamPhpTests):
 
     def test_store_then_clear(self) -> None:
         url = "https://abc-def-ghi.trycloudflare.com"
-        status, _, _ = self.call(body={"upstream_url": url}, auth=GOOD)
+        status, _, _ = self.call(body={"upstream_url": url, "upstream_token": "A" * 43}, auth=GOOD)
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(self.state.read_text())["upstream_url"], url)
         self.assertEqual(sorted(p.name for p in self.state.parent.iterdir()), ["upstream.json"])

@@ -116,7 +116,10 @@ class StatusFlowTests(unittest.TestCase):
 
     def register(self, url: str = TUNNEL) -> None:
         status, _, text = self.call(
-            "POST", "/api/set_upstream.php", {"upstream_url": url}, auth=f"Bearer {self.admin_key}"
+            "POST",
+            "/api/set_upstream.php",
+            {"upstream_url": url, "upstream_token": "A" * 43},
+            auth=f"Bearer {self.admin_key}",
         )
         self.assertEqual(status, 200, text)
 

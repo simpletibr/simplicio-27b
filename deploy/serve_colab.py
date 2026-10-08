@@ -14,10 +14,12 @@ is missing.
 from __future__ import annotations
 
 import getpass
+import hmac
 import http.client
 import json
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -48,7 +50,12 @@ GATEWAY_SET = os.environ.get(
 )
 VLLM_PORT = int(os.environ.get("VLLM_PORT", "8000"))
 GATE_PORT = int(os.environ.get("GATE_PORT", "8001"))
-HOST = os.environ.get("HOST", "0.0.0.0")
+LOCAL = "127.0.0.1"
+UPSTREAM_HEADER = "X-Simpleti-Upstream-Token"
+GATE_ROUTES = {("GET", "/v1/models"), ("POST", "/v1/chat/completions")}
+# Per-run secrets. Never print them and never write them to disk.
+VLLM_TOKEN = secrets.token_urlsafe(32)  # only the gate sends it to vLLM
+GATE_TOKEN = secrets.token_urlsafe(32)  # only the gateway sends it to the gate
 MODEL_ID = os.environ.get("MODEL_ID", "wesleysimplicio/Simplicio-27B")
 SERVED_IDS = ("simplicio-27b", "simpleti/simplicio-27b")
 VLLM_LOG = Path("vllm.log")
@@ -76,6 +83,11 @@ def load_context(path: Path | None = None) -> dict[str, int]:
 def serve_cmd() -> list[str]:
     """The only vLLM launch: deploy/serve_vllm.sh holds every flag."""
     return ["bash", str(DEPLOY / "serve_vllm.sh"), MODEL_ID, str(VLLM_PORT)]
+
+
+def serve_env() -> dict[str, str]:
+    """vLLM listens only on loopback and requires VLLM_TOKEN on /v1/*."""
+    return {**os.environ, "HOST": LOCAL, "VLLM_API_KEY": VLLM_TOKEN}
 
 
 def _http_json(
@@ -132,7 +144,9 @@ def wait_vllm(proc: subprocess.Popen[Any], log_path: Path, timeout_s: int = 1200
                 f"Últimas 40 linhas de {log_path}:\n{tail_log(log_path)}"
             )
         try:
-            status, payload = _http_json(url, timeout=5)
+            status, payload = _http_json(
+                url, timeout=5, headers={"Authorization": f"Bearer {VLLM_TOKEN}"}
+            )
             if status == 200:
                 print("vLLM pronto")
                 return
@@ -154,6 +168,7 @@ def probe_completion(base: str, model: str) -> dict[str, Any]:
             "messages": [{"role": "user", "content": "Reply with exactly pong."}],
         },
         timeout=180,
+        headers={UPSTREAM_HEADER: GATE_TOKEN},
     )
     if status != 200 or not isinstance(payload, dict):
         raise RuntimeError(f"probe {model} HTTP {status}: {payload!r}")
@@ -185,7 +200,11 @@ def read_admin_key() -> str:
 
 
 def set_upstream(url: str, key: str) -> Any:
-    status, payload = _http_json(GATEWAY_SET, {"upstream_url": url}, headers=admin_headers(key))
+    status, payload = _http_json(
+        GATEWAY_SET,
+        {"upstream_url": url, "upstream_token": GATE_TOKEN},
+        headers=admin_headers(key),
+    )
     if status >= 400:
         raise RuntimeError(f"set_upstream HTTP {status}: {payload!r}")
     return payload
@@ -230,9 +249,10 @@ class _GateHandler(BaseHTTPRequestHandler):
         headers = {
             key: val
             for key, val in self.headers.items()
-            if key.lower() not in {"host", "content-length"}
+            if key.lower() not in {"host", "content-length", "authorization", UPSTREAM_HEADER.lower()}
         }
         headers["User-Agent"] = headers.get("User-Agent") or "SimpleTI-Worker/1.0"
+        headers["Authorization"] = f"Bearer {VLLM_TOKEN}"
         target = f"http://127.0.0.1:{VLLM_PORT}{self.path}"
         req = urllib.request.Request(target, data=body, headers=headers, method=method)
         chat = self.path.startswith("/v1/chat/completions")
@@ -290,15 +310,39 @@ class _GateHandler(BaseHTTPRequestHandler):
         finally:
             resp.close()
 
+    def _deny(self, status: int, message: str) -> None:
+        length = self.headers.get("Content-Length") or "0"
+        if length.isascii() and length.isdigit():
+            self.rfile.read(min(int(length), 1 << 20))
+        raw = json.dumps({"error": {"message": message, "type": "GateError"}}).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+        self.close_connection = True
+
+    def _allowed(self) -> bool:
+        sent = self.headers.get(UPSTREAM_HEADER) or ""
+        if not hmac.compare_digest(sent.encode(), GATE_TOKEN.encode()):
+            self._deny(401, "missing or invalid upstream token")
+            return False
+        if (self.command, self.path.split("?", 1)[0]) not in GATE_ROUTES:
+            self._deny(404, "not found")
+            return False
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
-        self._passthrough("GET")
+        if self._allowed():
+            self._passthrough("GET")
 
     def do_POST(self) -> None:  # noqa: N802
-        self._passthrough("POST")
+        if self._allowed():
+            self._passthrough("POST")
 
 
 def start_gate() -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((HOST, GATE_PORT), _GateHandler)
+    httpd = ThreadingHTTPServer((LOCAL, GATE_PORT), _GateHandler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     print(f"completion gate on :{GATE_PORT} → vLLM :{VLLM_PORT}")
@@ -332,7 +376,9 @@ def main() -> None:
     key = read_admin_key()
 
     vllm_log = VLLM_LOG.open("w", encoding="utf-8")
-    vllm = subprocess.Popen(serve_cmd(), stdout=vllm_log, stderr=subprocess.STDOUT)
+    vllm = subprocess.Popen(
+        serve_cmd(), env=serve_env(), stdout=vllm_log, stderr=subprocess.STDOUT
+    )
     gate = None
     tunnel = None
     registered = False

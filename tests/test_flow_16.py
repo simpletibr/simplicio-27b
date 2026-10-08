@@ -142,7 +142,8 @@ class GateFlowTests(unittest.TestCase):
         self.addCleanup(conn.close)
         body = json.dumps({"model": scenario, "stream": stream, "messages": []})
         conn.request("POST", "/v1/chat/completions", body=body,
-                     headers={"Content-Type": "application/json"})
+                     headers={"Content-Type": "application/json",
+                              serve_colab.UPSTREAM_HEADER: serve_colab.GATE_TOKEN})
         return conn.getresponse()
 
     def test_valid_sse_arrives_in_chunks_with_http_200(self) -> None:

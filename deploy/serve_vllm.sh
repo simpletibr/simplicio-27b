@@ -3,7 +3,7 @@
 # Serves the merged BF16 checkpoint with the model's own chat template and
 # vLLM's built-in Qwen parsers. Requires vllm==0.31.0.
 # Usage: ./deploy/serve_vllm.sh [MODEL_ID] [PORT]
-# Env:   HOST (default 0.0.0.0), GPU_MEM (default 0.92), VLLM_BIN (default vllm)
+# Env:   HOST (default 127.0.0.1), VLLM_API_KEY (vLLM then requires it on /v1/*), GPU_MEM (default 0.92), VLLM_BIN (default vllm)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,7 +14,7 @@ set +a
 
 MODEL_ID="${1:-wesleysimplicio/Simplicio-27B}"
 PORT="${2:-8000}"
-HOST="${HOST:-0.0.0.0}"
+HOST="${HOST:-127.0.0.1}"
 GPU_MEM="${GPU_MEM:-0.92}"
 VLLM_BIN="${VLLM_BIN:-vllm}"
 

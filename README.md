@@ -145,6 +145,7 @@ This serves the merged BF16 checkpoint, the same weights that scored 56/120 abov
 - `--enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser qwen3`: vLLM's built-in parsers for Qwen's native `<tool_call><function=…>` format.
 - `--enable-force-include-usage`: every response carries `usage`.
 - `--served-model-name simplicio-27b simpleti/simplicio-27b`: both ids reach the same fine-tuned weights.
+- Listens on `127.0.0.1` by default. To serve other machines, put an HTTPS proxy in front that forwards only `GET /v1/models` and `POST /v1/chat/completions`, and set `VLLM_API_KEY=<random token>` so vLLM requires `Authorization: Bearer <token>` on `/v1/*`.
 
 `vllm serve` has no stop flag. `<|im_end|>` already ends generation through `generation_config.json`; to end at `</deliver>`, send `"stop": ["</deliver>"]` in the request.
 

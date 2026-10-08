@@ -149,7 +149,9 @@ class GateContractTests(unittest.TestCase):
         body = None
         if method == "POST":
             body = json.dumps({"model": scenario, "stream": stream, "messages": []})
-        conn.request(method, path, body=body, headers={"Content-Type": "application/json"})
+        conn.request(method, path, body=body,
+                     headers={"Content-Type": "application/json",
+                              serve_colab.UPSTREAM_HEADER: serve_colab.GATE_TOKEN})
         resp = conn.getresponse()
         return resp, resp.read()
 

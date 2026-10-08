@@ -1,7 +1,8 @@
 <?php
 // Gateway helper for Simplicio 27B: simpleti.com.br/api/set_upstream.php
 // POST only, header "Authorization: Bearer <SIMPLETI_ADMIN_KEY>".
-// {"upstream_url":"https://<name>.trycloudflare.com"} stores; {"clear": true}, null or "" deletes.
+// {"upstream_url":"https://<name>.trycloudflare.com","upstream_token":"<per-run token>"} stores
+// (the token is required and the state file is written 0600); {"clear": true}, null or "" deletes.
 header('Content-Type: application/json; charset=utf-8');
 
 function respond(int $status, array $body): void
@@ -43,15 +44,19 @@ $url = $body['upstream_url'] ?? '';
 if (!is_string($url) || !preg_match('#^https://[a-z0-9-]+\.trycloudflare\.com$#D', $url)) {
     respond(400, ['error' => 'invalid upstream_url']);
 }
+$token = $body['upstream_token'] ?? '';
+if (!is_string($token) || !preg_match('/^[A-Za-z0-9_-]{32,128}$/D', $token)) {
+    respond(400, ['error' => 'invalid upstream_token']);
+}
 $dir = dirname($file);
 if (!is_dir($dir)) {
     mkdir($dir, 0750, true);
 }
 $tmp = tempnam($dir, '.upstream-');
-$json = json_encode(['upstream_url' => $url, 'updated' => time()]);
+$json = json_encode(['upstream_url' => $url, 'upstream_token' => $token, 'updated' => time()]);
 if ($tmp === false
     || file_put_contents($tmp, $json, LOCK_EX) === false
-    || !chmod($tmp, 0644)
+    || !chmod($tmp, 0600)
     || !rename($tmp, $file)) {
     if ($tmp !== false && is_file($tmp)) {
         unlink($tmp);

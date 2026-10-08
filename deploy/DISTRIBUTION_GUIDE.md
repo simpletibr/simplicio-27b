@@ -45,7 +45,7 @@ If you host the model on your own GPU (RunPod, Lambda Labs, Scaleway or your own
    pip install vllm==0.31.0
    ./deploy/serve_vllm.sh wesleysimplicio/Simplicio-27B 8000
    ```
-2. Expose the endpoint over HTTPS (Cloudflare Tunnel, Caddy or Nginx).
+2. The script listens on `127.0.0.1`. Put Caddy or Nginx on the same machine in front of it over HTTPS, forward only `GET /v1/models` and `POST /v1/chat/completions`, and start the script with `VLLM_API_KEY=<random token>`. vLLM checks that key only on `/v1`, `/v2`, `/inference` and `/cohere`, so `/metrics`, `/health` and `/invocations` stay open unless the proxy filters them.
 3. Register the OpenAI-compatible endpoint (`https://your-domain.com/v1`) at [openrouter.ai/provider](https://openrouter.ai/provider).
 
 ---
