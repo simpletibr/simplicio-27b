@@ -34,8 +34,18 @@ dele, toda linha não vazia casa com EXATAMENTE uma destas formas; qualquer outr
  (d) a única linha de conteúdo solto é "…" (reticências, U+2026), como no README.
 Linhas em branco, ou só com espaço e caracteres invisíveis (categoria Unicode Cf: U+200B, U+200C,
 U+200D, U+2060, U+FEFF...), são ignoradas. Um U+FEFF no início do texto (BOM) é descartado.
-Cada fase precisa de ao menos uma linha de conteúdo (ponto, "…", ou marcador/conteúdo em <patch>);
-as tags não contam, e linha só de pontuação ("---", "***", "...") é texto-livre e também não conta.
+Cada fase precisa de ao menos uma linha de conteúdo: um ponto (b) ou, em <patch>, um marcador ou
+linha de bloco. As tags não contam, linha só de pontuação ("---", "***", "...") é texto-livre e
+também não conta, e o "…" é só preenchimento: vale ao lado de um ponto ou bloco, nunca sozinho
+(o exemplo abreviado do README, com <deliver> só de "…", portanto falha com fase-vazia).
+Os dígitos de N são só ASCII 0-9 ("1０" em largura total ou "١٠" arábico-índico é ponto-malformado).
+Linhas são divididas só em "\n" (um "\r" final, de CRLF, é descartado). O harness usa str.splitlines(),
+que também quebra em "\r" solto, \x0b, \x0c, \x1c-\x1e, \x85, U+2028 e U+2029; para os dois nunca
+enxergarem linhas diferentes, esses caracteres fora de bloco são erro "quebra-de-linha".
+
+O que este validador mede: FORMATO. Se o patch aplica (o SEARCH existe no arquivo-alvo) e se os
+testes passam é medido pelo harness (benchmarks/harness/harness.py), não aqui. O texto do ponto na
+mesma linha, depois do "]", é formato válido (README: "[Point 1: Root] Root confirmed ...").
 
 Interpretação de (b) (a única ambígua): o enunciado diz "[Ponto N: texto]", mas o README
 ("[Point 1: Root] Root confirmed at ...") e todas as 4.750 linhas de ponto do dataset trazem o texto do
@@ -44,8 +54,8 @@ colado ao ']' é erro. A leitura "nada depois do ']'" rejeitaria 100% dos exempl
 
 <think>: o README manda rodar sem thinking e o treino não tem blocos <think>. Toda linha dentro do
 envelope é normalizada (NFKC, sem espaços e sem caracteres Cf, sem diferença de caixa) e, se contiver
-"<think>" ou "</think>", é "think-no-envelope" (cobre "< think >", "<THINK>" e um U+200B no
-meio da tag, sozinha ou no meio da linha); um <think> sem fechamento também é "think-nao-fechado".
+"<think>", "</think>", "<thinking>" ou "</thinking>", é "think-no-envelope" (cobre "< think >",
+"<THINK>" e um U+200B no meio da tag, sozinha ou no meio da linha); um <think> sem fechamento também é "think-nao-fechado".
 Dentro de um bloco SEARCH/REPLACE é conteúdo (um patch no próprio harness.py contém "</think>").
 Marcador SEARCH/REPLACE fora de <patch>, ou entre tags <think>, é erro e não conta como patch.
 
@@ -65,6 +75,9 @@ Escolhas onde a especificação é ambígua (sempre a leitura mais literal)
   "<<<< SEARCH" exato ou "</patch>" ali dentro não é interpretado.
 
 Limitações conhecidas
+- O CONTEÚDO dos blocos SEARCH/REPLACE não é validado: dentro deles vale qualquer linha, inclusive
+  tags de think, "</patch>", o que parece texto livre, invisíveis e separadores de linha Unicode.
+  Só os marcadores contam. Um U+2028 dentro de um bloco pode fazer o harness ver outra linha.
 - Dentro de um bloco aberto, um "====" INDENTADO é conteúdo, não erro: pode ser o sublinhado de um
   título RST/Markdown no código sendo editado, e o harness também o trata como texto. Já uma linha
   inteira de 5 a 7 "=" é reportada mesmo sendo sublinhado, porque o harness a leria como divisor.
@@ -96,10 +109,13 @@ ELLIPSIS = "…"
 MAX_SHOWN_LINES = 20
 MAX_FREE_TEXT = 10
 
+THINK_RE = re.compile(r"</?think(?:ing)?>")  # aplicada ao texto normalizado
+# Separadores que str.splitlines() (usado em harness.parse_blocks) trata como fim de linha, além de "\n".
+FOREIGN_BREAK_RE = re.compile("[\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
 TAG_RE = re.compile(r"^<(/?)(simplicio_loop|orient|plan|patch|validate|deliver)>$")
-POINT_RE = re.compile(r"^\[(Ponto|Point) ([1-9]\d?): ([^\[\]\s](?:[^\[\]]*[^\[\]\s])?)\](?: (\S.*))?$")
+POINT_RE = re.compile(r"^\[(Ponto|Point) ([1-9][0-9]?): ([^\[\]\s](?:[^\[\]]*[^\[\]\s])?)\](?: (\S.*))?$")
 # Parece uma linha de ponto (com prefixo de lista ou marcação na frente, ou escrita fora do formato).
-POINT_LIKE_RE = re.compile(r"^(?:\d+[.)])?(?:[^\w\s\[\]]|_|\s)*\[(?:ponto|point)\b", re.IGNORECASE)
+POINT_LIKE_RE = re.compile(r"^(?:[0-9]+[.)])?(?:[^\w\s\[\]]|_|\s)*\[(?:ponto|point)\b", re.IGNORECASE)
 MARKER_RE = re.compile(
     r"^(?P<indent>[ \t]*)(?:(?P<lt><+)(?P<gap1>[ \t]*)SEARCH|(?P<gt>>+)(?P<gap2>[ \t]*)REPLACE|(?P<eq>={4,7}))[ \t]*$"
 )
@@ -175,7 +191,9 @@ class _Scan:
     def run(self, text: str) -> None:
         if text.startswith("\ufeff"):
             text = text[1:]
-        for no, raw in enumerate(text.splitlines(), 1):
+        for no, raw in enumerate(text.split("\n"), 1):
+            if raw.endswith("\r"):
+                raw = raw[:-1]
             if self.block is not None:
                 self._count(raw)
                 self._in_block(no, raw)
@@ -184,11 +202,18 @@ class _Scan:
                 continue
             line = raw.rstrip()
             inside = self.root_open and not self.root_closed
+            foreign = FOREIGN_BREAK_RE.search(line)
+            if foreign:
+                self.add(
+                    "quebra-de-linha",
+                    f"linha {no}: contém U+{ord(foreign.group()):04X}, que str.splitlines() (harness) trata como "
+                    "fim de linha; o validador divide só em '\\n'",
+                )
             if inside:
                 norm = _normalize(line)
-                if "<think>" in norm or "</think>" in norm:
+                if THINK_RE.search(norm):
                     self._think(no, line, norm)
-                    if norm in ("<think>", "</think>"):
+                    if THINK_RE.fullmatch(norm):
                         continue
             tag = TAG_RE.match(line)
             if tag:
@@ -205,11 +230,12 @@ class _Scan:
 
     def _think(self, no: int, line: str, norm: str) -> None:
         onde = f"dentro de <{self.current}>" if self.current else f"dentro de <{ROOT_TAG}>, entre fases"
-        self.add("think-no-envelope", f"linha {no}: <think> ou </think> {onde} ({line[:40]!r}); o envelope não tem thinking")
-        if norm == "<think>":
-            self.in_think = True
-        elif norm == "</think>":
-            self.in_think = False
+        self.add(
+            "think-no-envelope",
+            f"linha {no}: <think>/<thinking> ou o fechamento {onde} ({line[:40]!r}); o envelope não tem thinking",
+        )
+        if THINK_RE.fullmatch(norm):
+            self.in_think = not norm.startswith("</")
 
     def _tag(self, no: int, name: str, close: bool) -> None:
         if name == ROOT_TAG:
@@ -254,8 +280,7 @@ class _Scan:
     def _line(self, no: int, raw: str, line: str) -> None:
         """Linha não vazia, fora de bloco, dentro do envelope e que não é tag: tem de ser uma forma aceita."""
         if line == ELLIPSIS:
-            self._count(line)
-            return
+            return  # linha de preenchimento: permitida, mas não conta como conteúdo da fase
         if self.current == "patch" and not self.in_think and self._patch_marker(no, raw):
             self._count(line)
             return
@@ -344,7 +369,7 @@ class _Scan:
         if self.current is not None:
             self.add("fase-nao-fechada", f"<{self.current}> (linha {self.current_line}) nunca foi fechada")
         if self.in_think:
-            self.add("think-nao-fechado", "<think> aberto dentro do envelope nunca foi fechado com </think>")
+            self.add("think-nao-fechado", "<think>/<thinking> aberto dentro do envelope nunca foi fechado")
         if not self.root_open:
             self.add("envelope", f"falta <{ROOT_TAG}>")
         elif not self.root_closed:
@@ -368,7 +393,7 @@ class _Scan:
             elif len(lines) > 1:
                 self.add("fase-repetida", f"<{phase}> aparece {len(lines)} vezes (linhas {', '.join(map(str, lines))})")
             elif self.filled[phase] == 0:
-                self.add("fase-vazia", f"<{phase}> (linha {lines[0]}) não tem conteúdo (ponto, '…' ou, em <patch>, bloco)")
+                self.add("fase-vazia", f"<{phase}> (linha {lines[0]}) não tem conteúdo (ponto ou, em <patch>, bloco; '…' sozinho não conta)")
         found = list(dict.fromkeys(self.order))
         if found != [p for p in PHASES if p in found]:
             self.add(

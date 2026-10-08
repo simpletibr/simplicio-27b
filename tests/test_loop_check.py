@@ -65,10 +65,11 @@ class ValidEnvelopeTests(unittest.TestCase):
     def test_minimal_envelope_passes(self) -> None:
         self.assertEqual(loop_check.check(build()), [])
 
-    def test_phases_without_numbered_points_pass(self) -> None:
+    def test_phases_with_only_ellipsis_fail(self) -> None:
         bodies = {p: "…" for p in PHASES if p != "patch"}
-        self.assertEqual(loop_check.check(build(bodies=bodies)), [])
-
+        problems = loop_check.check(build(bodies=bodies))
+        self.assertEqual(rules(problems), {"fase-vazia"})
+        self.assertEqual(len([p for p in problems if p.startswith("fase-vazia")]), 4)
     def test_point_label_in_english_passes(self) -> None:
         text = build().replace("[Ponto", "[Point")
         self.assertEqual(loop_check.check(text), [])
@@ -97,13 +98,22 @@ class ValidEnvelopeTests(unittest.TestCase):
         body = "<<<< SEARCH\n</patch>\n[Ponto 99: Dentro do codigo]\n====\nnovo\n>>>> REPLACE"
         self.assertEqual(loop_check.check(build(bodies={"patch": body})), [])
 
-    def test_readme_example_follows_its_own_envelope(self) -> None:
+    def readme_example(self) -> str:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         found = re.search(r"## Output format.*?```text\n(.*?)```", readme, re.S)
         self.assertIsNotNone(found, "bloco de exemplo do README não encontrado")
-        self.assertEqual(loop_check.check(found.group(1)), [])
+        return found.group(1)
 
-
+    def test_readme_example_is_abbreviated_only_in_deliver(self) -> None:
+        # O exemplo do README abrevia com "…". O "…" sozinho não preenche uma fase, e o <deliver> do
+        # exemplo é só "…": é o único problema, e o exemplo vira válido ao dar um ponto a essa fase.
+        example = self.readme_example()
+        problems = loop_check.check(example)
+        self.assertEqual(rules(problems), {"fase-vazia"})
+        self.assertIn("<deliver>", problems[0])
+        filled = example.replace("<deliver>\n…\n</deliver>", "<deliver>\n[Point 41: Poda] ok\n…\n</deliver>")
+        self.assertNotEqual(filled, example)
+        self.assertEqual(loop_check.check(filled), [])
 class StructureTests(unittest.TestCase):
     def test_each_missing_phase_fails(self) -> None:
         for phase in PHASES:
@@ -160,10 +170,16 @@ class EmptyPhaseTests(unittest.TestCase):
         problems = loop_check.check(build(bodies=empty))
         self.assertEqual(len([p for p in problems if p.startswith("fase-vazia")]), 4)
 
-    def test_ellipsis_counts_as_content(self) -> None:
-        bodies = {p: "…" for p in ("orient", "plan", "validate", "deliver")}
-        self.assertEqual(loop_check.check(build(bodies=bodies)), [])
+    def test_ellipsis_alone_does_not_fill_a_phase(self) -> None:
+        for phase in ("orient", "plan", "validate", "deliver"):
+            for body in ("…", "…\n…", "\n…\n  \n…   "):
+                with self.subTest(phase=phase, body=repr(body)):
+                    self.assertIn("fase-vazia", rules(loop_check.check(build(bodies={phase: body}))))
 
+    def test_five_phases_with_only_ellipsis_fail(self) -> None:
+        problems = loop_check.check(build(bodies={p: "…" for p in PHASES}))
+        self.assertEqual(len([p for p in problems if p.startswith("fase-vazia")]), 5)
+        self.assertIn("patch-sem-bloco", rules(problems))
     def test_patch_phase_without_content_reports_the_missing_block(self) -> None:
         self.assertIn("patch-sem-bloco", rules(loop_check.check(build(bodies={"patch": ""}))))
 
@@ -505,12 +521,11 @@ class GrammarAcceptedTests(unittest.TestCase):
         body = "<<<< SEARCH\n- item\n**x**\n---\n***\ntexto solto\n====\n- item 2\n>>>> REPLACE"
         self.ok(patch=body)
 
-    def test_d_ellipsis_alone_on_the_line(self) -> None:
-        self.ok(orient="…", plan="[Ponto 11: P] x\n…", validate="…", deliver="…\n")
-
+    def test_d_ellipsis_next_to_a_point_or_block(self) -> None:
+        self.ok(orient="[Ponto 1: A] x\n…", plan="…\n[Ponto 11: P] x\n…", validate="[Ponto 31: V] x\n…",
+                deliver="…\n[Ponto 41: D] x\n", patch="…\n" + BLOCK + "\n…")
     def test_d_ellipsis_with_trailing_whitespace(self) -> None:
-        self.ok(orient="…   ")
-
+        self.ok(orient="[Ponto 1: A] x\n…   ")
     def test_blank_and_invisible_only_lines_are_ignored(self) -> None:
         self.ok(plan="\n[Ponto 11: P] x\n   \n\u200b\n\t\n")
 
@@ -618,6 +633,112 @@ class GrammarRejectedTests(unittest.TestCase):
         problems = [p for p in loop_check.check(build(bodies={"plan": body})) if p.startswith("texto-livre")]
         self.assertEqual(len(problems), loop_check.MAX_FREE_TEXT + 1)
         self.assertIn("e mais 15 linha(s)", problems[-1])
+
+
+class AsciiDigitTests(unittest.TestCase):
+    """N só aceita 0-9 ASCII: dígitos Unicode não viram número de ponto."""
+
+    def test_non_ascii_digits_are_malformed(self) -> None:
+        for number in ("1\uff10", "\uff11\uff10", "\u0661\u0660", "\u096a", "\u06f1\u06f0", "\u2467", "\u00b2"):
+            for phase in ("orient", "plan"):
+                with self.subTest(number=number, phase=phase):
+                    problems = loop_check.check(build(bodies={phase: f"[Ponto {number}: x] y"}))
+                    self.assertIn("ponto-malformado", rules(problems))
+
+    def test_fullwidth_zero_is_not_point_ten(self) -> None:
+        # "1０" (zero em largura total) convertido por int() daria 10, que é válido em <orient>.
+        self.assertNotEqual(loop_check.check(build(bodies={"orient": "[Ponto 1\uff10: x] y"})), [])
+        self.assertEqual(loop_check.check(build(bodies={"orient": "[Ponto 10: x] y"})), [])
+
+    def test_non_ascii_digits_do_not_count_in_complete_mode(self) -> None:
+        text = full_envelope().replace("[Ponto 10: Nome 10]", "[Ponto 1\uff10: Nome 10]")
+        problems = loop_check.check(text, complete=True)
+        self.assertIn("ponto-malformado", rules(problems))
+        self.assertIn("ponto-ausente", rules(problems))
+
+    def test_non_ascii_digits_in_a_list_prefix_are_not_decoration(self) -> None:
+        self.assertNotEqual(loop_check.check(build(bodies={"plan": "\uff11. [Ponto 11: x] y"})), [])
+
+
+class ThinkingTagTests(unittest.TestCase):
+    def test_thinking_after_a_point_fails(self) -> None:
+        for phase in ("orient", "plan", "validate", "deliver"):
+            for tail in ("<thinking>", "</thinking>", "[Ponto 12: R] <thinking>x</thinking>"):
+                with self.subTest(phase=phase, tail=tail):
+                    body = BODIES[phase] + "\n" + tail
+                    self.assertIn("think-no-envelope", rules(loop_check.check(build(bodies={phase: body}))))
+
+    def test_thinking_variants_are_normalized(self) -> None:
+        for tag in ("< thinking >", "<THINKING>", "<Thinking>", "</ THINKING >", "<th\u200binking>", "<thinking\u200b>",
+                    "\uff1cthinking\uff1e", "<think ing>"):
+            with self.subTest(tag=tag):
+                body = BODIES["plan"] + "\n" + tag
+                self.assertIn("think-no-envelope", rules(loop_check.check(build(bodies={"plan": body}))))
+
+    def test_thinking_inside_patch_outside_a_block_fails(self) -> None:
+        body = BODIES["patch"] + "\n<thinking>\n</thinking>"
+        self.assertIn("think-no-envelope", rules(loop_check.check(build(bodies={"patch": body}))))
+
+    def test_unclosed_thinking_fails(self) -> None:
+        body = BODIES["plan"] + "\n<thinking>"
+        self.assertIn("think-nao-fechado", rules(loop_check.check(build(bodies={"plan": body}))))
+
+    def test_thinking_inside_a_block_is_content(self) -> None:
+        body = "<<<< SEARCH\n<thinking>\n====\n</thinking>\n>>>> REPLACE"
+        self.assertEqual(loop_check.check(build(bodies={"patch": body})), [])
+
+    def test_similar_tag_names_are_not_think(self) -> None:
+        for tag in ("<thinker>", "<thinks>", "<thinkingx>", "<thinkers>"):
+            with self.subTest(tag=tag):
+                problems = rules(loop_check.check(build(bodies={"plan": BODIES["plan"] + "\n" + tag})))
+                self.assertNotIn("think-no-envelope", problems)
+                self.assertIn("texto-livre", problems)
+
+
+class LineBreakTests(unittest.TestCase):
+    """Divide só em "\\n"; separadores que o harness (splitlines) quebraria fora de bloco são erro."""
+
+    FOREIGN = ("\u2028", "\u2029", "\x85", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\r")
+
+    def test_unicode_separator_inside_a_point_does_not_split_the_line(self) -> None:
+        for sep in ("\u2028", "\u2029"):
+            with self.subTest(sep=repr(sep)):
+                problems = rules(loop_check.check(build(bodies={"plan": f"[Ponto 11: P] antes{sep}depois"})))
+                self.assertIn("quebra-de-linha", problems)
+                self.assertNotIn("texto-livre", problems)
+                self.assertNotIn("ponto-malformado", problems)
+
+    def test_every_separator_the_harness_would_split_on_is_reported(self) -> None:
+        for sep in self.FOREIGN:
+            with self.subTest(sep=repr(sep)):
+                problems = loop_check.check(build(bodies={"plan": f"[Ponto 11: P] a{sep}b"}))
+                self.assertIn("quebra-de-linha", rules(problems))
+
+    def test_separator_cannot_hide_a_marker_from_the_validator(self) -> None:
+        # O harness (splitlines) veria "<<<< SEARCH" como linha própria dentro de <plan>.
+        body = "[Ponto 11: P] x\u2028<<<< SEARCH"
+        self.assertNotEqual(loop_check.check(build(bodies={"plan": body})), [])
+
+    def test_separator_hiding_a_tag_fails(self) -> None:
+        text = build().replace("</orient>\n<plan>", "</orient>\u2028<plan>")
+        self.assertNotEqual(loop_check.check(text), [])
+
+    def test_separator_inside_a_block_is_content(self) -> None:
+        body = "<<<< SEARCH\nx = '\u2028'\n====\nx = '\x0c'\n>>>> REPLACE"
+        self.assertEqual(loop_check.check(build(bodies={"patch": body})), [])
+
+    def test_crlf_line_endings_pass(self) -> None:
+        self.assertEqual(loop_check.check(build().replace("\n", "\r\n")), [])
+        self.assertEqual(loop_check.check(full_envelope().replace("\n", "\r\n"), complete=True), [])
+
+    def test_crlf_does_not_make_markers_or_tags_free_text(self) -> None:
+        text = build(bodies={"patch": BLOCK + "\n"}).replace("\n", "\r\n")
+        self.assertEqual(loop_check.check(text), [])
+
+    def test_line_numbers_follow_newlines_only(self) -> None:
+        text = build(bodies={"plan": "[Ponto 11: P] a\u2028b\nlinha solta"})
+        free = [p for p in loop_check.check(text) if p.startswith("texto-livre")]
+        self.assertTrue(free and free[0].startswith("texto-livre: linha 7:"), free)
 
 
 class CompleteModeTests(unittest.TestCase):
