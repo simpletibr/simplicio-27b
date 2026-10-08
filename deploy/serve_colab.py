@@ -14,10 +14,12 @@ is missing.
 from __future__ import annotations
 
 import getpass
+import hmac
 import http.client
 import json
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -48,7 +50,12 @@ GATEWAY_SET = os.environ.get(
 )
 VLLM_PORT = int(os.environ.get("VLLM_PORT", "8000"))
 GATE_PORT = int(os.environ.get("GATE_PORT", "8001"))
-HOST = os.environ.get("HOST", "0.0.0.0")
+LOCAL = "127.0.0.1"
+UPSTREAM_HEADER = "X-Simpleti-Upstream-Token"
+GATE_ROUTES = {("GET", "/v1/models"), ("POST", "/v1/chat/completions")}
+# Per-run secrets. Never print them and never write them to disk.
+VLLM_TOKEN = secrets.token_urlsafe(32)  # only the gate sends it to vLLM
+GATE_TOKEN = secrets.token_urlsafe(32)  # only the gateway sends it to the gate
 MODEL_ID = os.environ.get("MODEL_ID", "wesleysimplicio/Simplicio-27B")
 SERVED_IDS = ("simplicio-27b", "simpleti/simplicio-27b")
 VLLM_LOG = Path("vllm.log")
@@ -76,6 +83,37 @@ def load_context(path: Path | None = None) -> dict[str, int]:
 def serve_cmd() -> list[str]:
     """The only vLLM launch: deploy/serve_vllm.sh holds every flag."""
     return ["bash", str(DEPLOY / "serve_vllm.sh"), MODEL_ID, str(VLLM_PORT)]
+
+
+# What vLLM may inherit: paths, locale, proxy/CA settings for the weights download, GPU libraries and its own
+# variables (the HF_ ones include the Hugging Face token for private weights; the gateway admin key is not here).
+VLLM_ENV_NAMES = frozenset(
+    {
+        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TMPDIR", "TZ", "LANG", "LANGUAGE",
+        "LD_LIBRARY_PATH", "LIBRARY_PATH", "PYTHONPATH", "PYTHONUNBUFFERED", "PYTHONHASHSEED",
+        "VIRTUAL_ENV", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS", "GPU_MEM", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE", "TRANSFORMERS_CACHE", "TRANSFORMERS_OFFLINE", "TOKENIZERS_PARALLELISM",
+        "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+        "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+    }
+)
+VLLM_ENV_PREFIXES = ("LC_", "CUDA_", "NVIDIA_", "NCCL_", "VLLM_", "HF_", "TORCH_", "TRITON_", "FLASHINFER_")
+
+
+def serve_env() -> dict[str, str]:
+    """vLLM listens only on loopback, requires VLLM_TOKEN on /v1/* and sees no other credential."""
+    inherited = {
+        name: value
+        for name, value in os.environ.items()
+        if name in VLLM_ENV_NAMES or name.startswith(VLLM_ENV_PREFIXES)
+    }
+    return {**inherited, "HOST": LOCAL, "VLLM_API_KEY": VLLM_TOKEN}
+
+
+def tunnel_env() -> dict[str, str]:
+    """cloudflared needs no gateway credential: it inherits the environment without any SIMPLETI_* variable."""
+    return {name: value for name, value in os.environ.items() if not name.startswith("SIMPLETI_")}
 
 
 def _http_json(
@@ -132,7 +170,9 @@ def wait_vllm(proc: subprocess.Popen[Any], log_path: Path, timeout_s: int = 1200
                 f"Últimas 40 linhas de {log_path}:\n{tail_log(log_path)}"
             )
         try:
-            status, payload = _http_json(url, timeout=5)
+            status, payload = _http_json(
+                url, timeout=5, headers={"Authorization": f"Bearer {VLLM_TOKEN}"}
+            )
             if status == 200:
                 print("vLLM pronto")
                 return
@@ -154,6 +194,7 @@ def probe_completion(base: str, model: str) -> dict[str, Any]:
             "messages": [{"role": "user", "content": "Reply with exactly pong."}],
         },
         timeout=180,
+        headers={UPSTREAM_HEADER: GATE_TOKEN},
     )
     if status != 200 or not isinstance(payload, dict):
         raise RuntimeError(f"probe {model} HTTP {status}: {payload!r}")
@@ -185,7 +226,11 @@ def read_admin_key() -> str:
 
 
 def set_upstream(url: str, key: str) -> Any:
-    status, payload = _http_json(GATEWAY_SET, {"upstream_url": url}, headers=admin_headers(key))
+    status, payload = _http_json(
+        GATEWAY_SET,
+        {"upstream_url": url, "upstream_token": GATE_TOKEN},
+        headers=admin_headers(key),
+    )
     if status >= 400:
         raise RuntimeError(f"set_upstream HTTP {status}: {payload!r}")
     return payload
@@ -230,9 +275,10 @@ class _GateHandler(BaseHTTPRequestHandler):
         headers = {
             key: val
             for key, val in self.headers.items()
-            if key.lower() not in {"host", "content-length"}
+            if key.lower() not in {"host", "content-length", "authorization", UPSTREAM_HEADER.lower()}
         }
         headers["User-Agent"] = headers.get("User-Agent") or "SimpleTI-Worker/1.0"
+        headers["Authorization"] = f"Bearer {VLLM_TOKEN}"
         target = f"http://127.0.0.1:{VLLM_PORT}{self.path}"
         req = urllib.request.Request(target, data=body, headers=headers, method=method)
         chat = self.path.startswith("/v1/chat/completions")
@@ -290,15 +336,43 @@ class _GateHandler(BaseHTTPRequestHandler):
         finally:
             resp.close()
 
+    def _deny(self, status: int, message: str) -> None:
+        length = self.headers.get("Content-Length") or "0"
+        if length.isascii() and length.isdigit():
+            self.rfile.read(min(int(length), 1 << 20))
+        raw = json.dumps({"error": {"message": message, "type": "GateError"}}).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+        self.close_connection = True
+
+    def _allowed(self) -> bool:
+        sent = self.headers.get(UPSTREAM_HEADER) or ""
+        if not hmac.compare_digest(sent.encode(), GATE_TOKEN.encode()):
+            self._deny(401, "missing or invalid upstream token")
+            return False
+        if (self.command, self.path.split("?", 1)[0]) not in GATE_ROUTES:
+            self._deny(404, "not found")
+            return False
+        if self.headers.get("Transfer-Encoding") is not None:
+            # The gate forwards only Content-Length bodies; a chunked request would reach vLLM with no body.
+            self._deny(411, "length required")
+            return False
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
-        self._passthrough("GET")
+        if self._allowed():
+            self._passthrough("GET")
 
     def do_POST(self) -> None:  # noqa: N802
-        self._passthrough("POST")
+        if self._allowed():
+            self._passthrough("POST")
 
 
 def start_gate() -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((HOST, GATE_PORT), _GateHandler)
+    httpd = ThreadingHTTPServer((LOCAL, GATE_PORT), _GateHandler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     print(f"completion gate on :{GATE_PORT} → vLLM :{VLLM_PORT}")
@@ -309,6 +383,7 @@ def start_cloudflared(port: int) -> tuple[subprocess.Popen[str], str]:
     bin_name = os.environ.get("CLOUDFLARED_BIN", "cloudflared")
     proc = subprocess.Popen(
         [bin_name, "tunnel", "--url", f"http://127.0.0.1:{port}"],
+        env=tunnel_env(),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -332,7 +407,9 @@ def main() -> None:
     key = read_admin_key()
 
     vllm_log = VLLM_LOG.open("w", encoding="utf-8")
-    vllm = subprocess.Popen(serve_cmd(), stdout=vllm_log, stderr=subprocess.STDOUT)
+    vllm = subprocess.Popen(
+        serve_cmd(), env=serve_env(), stdout=vllm_log, stderr=subprocess.STDOUT
+    )
     gate = None
     tunnel = None
     registered = False

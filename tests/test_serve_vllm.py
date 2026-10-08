@@ -53,7 +53,7 @@ class ServeScriptTests(unittest.TestCase):
     def test_exact_argv(self) -> None:
         self.assertEqual(
             serve_argv(),
-            ["serve", "wesleysimplicio/Simplicio-27B", "--host", "0.0.0.0",
+            ["serve", "wesleysimplicio/Simplicio-27B", "--host", "127.0.0.1",
              "--port", "8000", "--max-model-len", max_model_len(),
              "--gpu-memory-utilization", "0.92",
              "--served-model-name", "simplicio-27b", "simpleti/simplicio-27b",

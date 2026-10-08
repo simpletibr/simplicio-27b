@@ -50,7 +50,7 @@ class ProbeTests(unittest.TestCase):
             "usage": {"prompt_tokens": 12, "completion_tokens": 1, "total_tokens": 13},
         }
 
-        def fake_http(url, body=None, timeout=30):
+        def fake_http(url, body=None, timeout=30, headers=None):
             sent.append(body["model"])
             return 200, payload
 
@@ -61,7 +61,7 @@ class ProbeTests(unittest.TestCase):
     def test_set_upstream_not_called_when_probe_fails(self) -> None:
         calls: list[tuple] = []
 
-        def fake_http(url, body=None, timeout=30):
+        def fake_http(url, body=None, timeout=30, headers=None):
             calls.append((url, body))
             return 200, {"choices": [{"finish_reason": None}], "usage": {}}
 

@@ -127,7 +127,10 @@ class GateHttpTests(unittest.TestCase):
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.gate.server_address[1]}/v1/chat/completions",
             data=json.dumps({"model": scenario, "stream": stream, "messages": []}).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                serve_colab.UPSTREAM_HEADER: serve_colab.GATE_TOKEN,
+            },
             method="POST",
         )
         return urllib.request.urlopen(req, timeout=10)
