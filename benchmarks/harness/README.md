@@ -15,7 +15,7 @@ Only subdirectories that contain `task.json` count. Two tasks with identical con
 
 ## Prompt
 
-The system prompt is the one used in training. The user template is the one from the `BENCHMARK REAL` cell of `Simplicio_27B_Training_Colab.ipynb`, the same one that produced the 56/120 run: `Contexto`, `Arquivo`, `Codigo Atual`, `Tarefa`. Training itself used only `Contexto` and `Tarefa`, without `Arquivo` or `Codigo Atual`.
+The system prompt is the one used in training. The user template is the one from the `BENCHMARK REAL` cell of `notebooks/Simplicio_27B_Training_Colab.ipynb`, the same one that produced the 56/120 run: `Contexto`, `Arquivo`, `Codigo Atual`, `Tarefa`. Training itself used only `Contexto` and `Tarefa`, without `Arquivo` or `Codigo Atual`.
 
 - `--system none` drops the system prompt (useful for the base model).
 - `--format-hint` appends an explicit description of the SEARCH/REPLACE format.

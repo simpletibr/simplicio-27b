@@ -22,9 +22,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVE_NB = "Simplicio_27B_Serve_Colab.ipynb"
-TRAIN_NB = "Simplicio_27B_Training_Colab.ipynb"
-MERGE_NB = "Simplicio_27B_Merge_Colab.ipynb"
+SERVE_NB = "notebooks/Simplicio_27B_Serve_Colab.ipynb"
+TRAIN_NB = "notebooks/Simplicio_27B_Training_Colab.ipynb"
+MERGE_NB = "notebooks/Simplicio_27B_Merge_Colab.ipynb"
 
 VLLM_PIN = "vllm==0.31.0"
 CLOUDFLARED_VERSION = "2026.10.0"
@@ -42,9 +42,9 @@ SCANNED_NAMES = ("Makefile", "Modelfile", "pre-push")
 OWNER_PENDING = {
     ("README.md", "git clone https://github.com/simpletibr/simplicio-27b"):
         "instruction for readers in the README; issue #31 leaves it (README belongs to #12)",
-    ("Simplicio_27B_Training_Colab.ipynb", 'model_name = "Qwen/Qwen3.8-27B"'):
+    ("notebooks/Simplicio_27B_Training_Colab.ipynb", 'model_name = "Qwen/Qwen3.8-27B"'):
         "base model read from the HF branch main, no revision=; weights review is #23/#29",
-    ("Simplicio_27B_Merge_Colab.ipynb", 'model_name="wesleysimplicio/Simplicio-27B"'):
+    ("notebooks/Simplicio_27B_Merge_Colab.ipynb", 'model_name="wesleysimplicio/Simplicio-27B"'):
         "adapter read from the HF branch main, no revision=; weights review is #23/#29",
     ("deploy/serve_vllm.sh", 'MODEL_ID="${1:-wesleysimplicio/Simplicio-27B}"'):
         "merged weights read from the HF branch main, no --revision; weights review is #23/#29",

@@ -1,3 +1,23 @@
 __pycache__/
 *.py[cod]
 .simplicio/
+# Model weights downloaded from huggingface.co/wesleysimplicio/Simplicio-27B
+*.gguf
+*.safetensors
+# Written by deploy/serve_colab.py and the Serve notebook when run from a checkout
+vllm.log
+cloudflared.log
+/cloudflared
+# Default --out-dir of benchmarks/harness/harness.py
+benchmarks/harness/results/
+# Local tool and editor state
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.env
+.DS_Store
+# Virtual environments and agent session state
+.venv/
+venv/
+scratchpad/
+.claude/worktrees/

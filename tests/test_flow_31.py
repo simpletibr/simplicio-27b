@@ -26,9 +26,9 @@ from hashlib import sha256
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVE_NB = "Simplicio_27B_Serve_Colab.ipynb"
-TRAIN_NB = "Simplicio_27B_Training_Colab.ipynb"
-MERGE_NB = "Simplicio_27B_Merge_Colab.ipynb"
+SERVE_NB = "notebooks/Simplicio_27B_Serve_Colab.ipynb"
+TRAIN_NB = "notebooks/Simplicio_27B_Training_Colab.ipynb"
+MERGE_NB = "notebooks/Simplicio_27B_Merge_Colab.ipynb"
 CLOUDFLARED_URL = ("https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/"
                    "cloudflared-linux-amd64")
 CLOUDFLARED_SHA256 = "d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db"
