@@ -18,7 +18,7 @@ DIRECTIVES = [
 
 
 def training_system_prompt() -> str:
-    nb = json.loads((ROOT / "Simplicio_27B_Training_Colab.ipynb").read_text(encoding="utf-8"))
+    nb = json.loads((ROOT / "notebooks/Simplicio_27B_Training_Colab.ipynb").read_text(encoding="utf-8"))
     for cell in nb["cells"]:
         src = "".join(cell["source"])
         if src.startswith("system_prompt = ("):

@@ -15,7 +15,7 @@ SERVE = ROOT / "deploy" / "serve_vllm.sh"
 SERVE_TEXT = SERVE.read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 GUIDE = (ROOT / "deploy" / "DISTRIBUTION_GUIDE.md").read_text(encoding="utf-8")
-COLAB = (ROOT / "Simplicio_27B_Serve_Colab.ipynb").read_text(encoding="utf-8")
+COLAB = (ROOT / "notebooks/Simplicio_27B_Serve_Colab.ipynb").read_text(encoding="utf-8")
 INSTRUCT = json.loads((ROOT / "deploy" / "hf_instruct.json").read_text(encoding="utf-8"))
 CONTEXT = (ROOT / "deploy" / "context.env").read_text(encoding="utf-8")
 DELETED = (

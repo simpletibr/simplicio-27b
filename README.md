@@ -148,7 +148,7 @@ This serves the merged BF16 checkpoint, the same weights that scored 56/120 abov
 
 `vllm serve` has no stop flag. `<|im_end|>` already ends generation through `generation_config.json`; to end at `</deliver>`, send `"stop": ["</deliver>"]` in the request.
 
-[`Simplicio_27B_Serve_Colab.ipynb`](https://github.com/simpletibr/simplicio-27b/blob/main/Simplicio_27B_Serve_Colab.ipynb) runs the same script on a Colab G4 (RTX PRO 6000, 96 GB) behind the completion gate and a Cloudflare tunnel.
+[`notebooks/Simplicio_27B_Serve_Colab.ipynb`](https://github.com/simpletibr/simplicio-27b/blob/main/notebooks/Simplicio_27B_Serve_Colab.ipynb) runs the same script on a Colab G4 (RTX PRO 6000, 96 GB) behind the completion gate and a Cloudflare tunnel.
 
 ### OpenCode
 
@@ -176,7 +176,7 @@ OpenCode works through tool calls, so point it at the vLLM server. OpenCode has 
 
 ### Python (Unsloth)
 
-This loads the adapter on its 4-bit base, the same way [`Simplicio_27B_Merge_Colab.ipynb`](https://github.com/simpletibr/simplicio-27b/blob/main/Simplicio_27B_Merge_Colab.ipynb) does:
+This loads the adapter on its 4-bit base, the same way [`notebooks/Simplicio_27B_Merge_Colab.ipynb`](https://github.com/simpletibr/simplicio-27b/blob/main/notebooks/Simplicio_27B_Merge_Colab.ipynb) does:
 
 ```python
 from unsloth import FastLanguageModel
@@ -238,7 +238,7 @@ The SEARCH/REPLACE markers are four characters long (`<<<<`, `====`, `>>>>`), no
 
 ## Training
 
-The published adapter was produced by [`Simplicio_27B_Training_Colab.ipynb`](https://github.com/simpletibr/simplicio-27b/blob/main/Simplicio_27B_Training_Colab.ipynb). The settings below come from that notebook and the published `adapter_config.json`.
+The published adapter was produced by [`notebooks/Simplicio_27B_Training_Colab.ipynb`](https://github.com/simpletibr/simplicio-27b/blob/main/notebooks/Simplicio_27B_Training_Colab.ipynb). The settings below come from that notebook and the published `adapter_config.json`.
 
 | Setting | Value |
 |---|---|
@@ -268,9 +268,9 @@ An earlier script, [`train_simplicio_27b.py`](https://github.com/simpletibr/simp
 
 | Path | Contents |
 |---|---|
-| `Simplicio_27B_Training_Colab.ipynb` | Training run that produced the adapter |
-| `Simplicio_27B_Merge_Colab.ipynb` | Merges the adapter into 16-bit weights and exports the GGUF Q4_K_M |
-| `Simplicio_27B_Serve_Colab.ipynb`, `deploy/` | vLLM serve script, Colab launcher, completion gate, context length |
+| `notebooks/Simplicio_27B_Training_Colab.ipynb` | Training run that produced the adapter |
+| `notebooks/Simplicio_27B_Merge_Colab.ipynb` | Merges the adapter into 16-bit weights and exports the GGUF Q4_K_M |
+| `notebooks/Simplicio_27B_Serve_Colab.ipynb`, `deploy/` | vLLM serve script, Colab launcher, completion gate, context length |
 | `Modelfile` | The Ollama tag `wesleysimplicio/simplicio-27b` |
 | `data/unseen_eval_120.json` | The 120 held-out tasks |
 | `benchmarks/live_colab_g4_bf16_n120.json` | The results above |
@@ -285,7 +285,7 @@ make check                           # unittest, ruff F/E9, shellcheck, php -l, 
 git config core.hooksPath .githooks  # once per clone: run make check before every push
 ```
 
-The last step parses the exact `vllm serve` argv from `deploy/serve_vllm.sh` with vLLM's own CLI parser, so it needs `vllm==0.31.0` importable. Without vLLM installed it fails with exit code 1 on purpose: a flag that vLLM does not accept must not pass the gate unnoticed. On a machine without vLLM, export `SIMPLICIO_SKIP_VLLM_ARGS=1` to skip only that check (it prints `SKIP: vllm not importable; argv extracted, not validated`); the other four steps still run. There is no CI: all checks run locally. Commit subjects are one plain sentence, without a `type:` prefix.
+The last step parses the exact `vllm serve` argv from `deploy/serve_vllm.sh` with vLLM's own CLI parser, so it needs `vllm==0.31.0` importable. Without vLLM installed it fails with exit code 1 on purpose: a flag that vLLM does not accept must not pass the gate unnoticed. On a machine without vLLM, export `SIMPLICIO_SKIP_VLLM_ARGS=1` to skip only that check (it prints `SKIP: vllm not importable; argv extracted, not validated`); the other four steps still run. There is no CI: all checks run locally. Commit subjects are one plain sentence, without a `type:` prefix. Colab notebooks live in `notebooks/`; `tests/test_layout.py` fails on a notebook at the repository root or on a `blob/main` link to a missing file.
 
 ## Citation
 
