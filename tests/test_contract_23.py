@@ -93,6 +93,16 @@ class AllowlistContract(unittest.TestCase):
         for suffix in hf_publish.WEIGHT_SUFFIXES:
             self.assertEqual(verdicts[f"assets/x{suffix}"], "refuse", suffix)
 
+    def test_the_gguf_path_only_accepts_the_gguf_suffix(self):
+        self.assertEqual(hf_publish.gguf_targets("FROM ./a.gguf\nFROM ./B.GGUF\n"), {"a.gguf", "B.GGUF"})
+        self.assertEqual(hf_publish.gguf_targets(MODELFILE), {"Qwen3.8-27B.Q4_K_M.gguf"})
+        for bad in ("x.safetensors", "x.bin", "x.pt", "x.ckpt", "x.h5", "x.onnx", "x", "x.gguf.bin",
+                    "sub/x.gguf", "../x.gguf"):
+            with self.subTest(bad), self.assertRaises(hf_publish.Refused):
+                hf_publish.gguf_targets(f"FROM ./{bad}\n")
+        self.assertIn("ggufs = gguf_targets(modelfile) if allow_gguf else set()",
+                      SCRIPT.read_text(encoding="utf-8"))
+
     def test_assets_in_the_allowlist_are_the_ones_the_readme_cites(self):
         cited = set(hf_publish.ASSET_RE.findall(README))
         self.assertEqual({p for p in hf_publish.scan_source(ROOT).entries if p.startswith("assets/")},

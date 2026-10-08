@@ -181,6 +181,15 @@ def is_text_secret(entry: Entry) -> bool:
     return SECRET_RE.search(text) is not None
 
 
+def gguf_targets(modelfile: str) -> set[str]:
+    """Arquivos que --allow-gguf deixa subir: os `FROM ./arquivo.gguf` do Modelfile, na raiz da origem."""
+    names = FROM_RE.findall(modelfile)
+    if bad := [name for name in names if "/" in name or not name.lower().endswith(".gguf")]:
+        raise Refused(f"Modelfile: FROM ./{bad[0]} não é um .gguf na raiz da origem: "
+                      "--allow-gguf só sobe arquivos .gguf")
+    return set(names)
+
+
 def judge(rel: str, full: Path, root: Path, allowed: set[str], ggufs: set[str]) -> tuple[str, str]:
     """('ok'|'refuse'|'skip', motivo). 'skip' é fora da allowlist sem alarde; 'refuse' aparece no plano."""
     if full.is_symlink():
@@ -216,7 +225,7 @@ def scan_source(source: Path, allow_gguf: bool = False) -> Scan:
         modelfile = (root / "Modelfile").read_bytes().decode("utf-8")
     except UnicodeDecodeError as exc:
         raise Refused(f"README.md e Modelfile precisam ser UTF-8: {exc}") from exc
-    ggufs = set(FROM_RE.findall(modelfile)) if allow_gguf else set()
+    ggufs = gguf_targets(modelfile) if allow_gguf else set()
     allowed = {*MIRRORED, *(f"{ADAPTER_DIR}/{name}" for name in ADAPTER), *ASSET_RE.findall(readme)}
     entries: dict[str, Entry] = {}
     refused: list[tuple[str, str]] = []

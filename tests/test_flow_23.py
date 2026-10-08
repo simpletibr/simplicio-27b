@@ -239,6 +239,24 @@ class DryRunTest(TempCase):
         added = set(re.findall(r"(?m)^ADD (\S+) \(\d+ bytes\)$", out))
         self.assertEqual(added, ALLOWED_ADDS | {named})
 
+    def test_allow_gguf_does_not_open_the_door_to_other_weights_in_from(self):
+        named = hf_publish.FROM_RE.findall(MODELFILE)[0]
+        for target in ("x.safetensors", "x.bin", "x.onnx", "x", "sub/x.gguf", "../x.gguf"):
+            with self.subTest(target=target):
+                src = make_source(self.tmp / target.replace("/", "_"))
+                (src / "Modelfile").write_text(MODELFILE.replace(f"FROM ./{named}", f"FROM ./{target}"),
+                                               encoding="utf-8")
+                (src / "sub").mkdir(exist_ok=True)
+                for rel in {target, target.rsplit("/", 1)[-1]} - {"..", "../x.gguf"}:
+                    (src / rel).write_bytes(b"weights")
+                code, out, err = run_main("--source", str(src), "--allow-gguf")
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn(f"FROM ./{target} não é um .gguf na raiz da origem", err)
+                # Without --allow-gguf the same Modelfile plans nothing extra: the weight is just refused.
+                code, out, err = run_main("--source", str(src))
+                self.assertEqual((code, err), (0, ""))
+                self.assertEqual(set(re.findall(r"(?m)^ADD (\S+) \(\d+ bytes\)$", out)), ALLOWED_ADDS)
+
     def test_secret_inside_an_allowed_file_stops_the_run(self):
         src = make_source(self.tmp)
         with open(src / "Modelfile", "a", encoding="utf-8") as handle:
