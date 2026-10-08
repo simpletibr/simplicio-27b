@@ -60,6 +60,7 @@ class ServeScriptTests(unittest.TestCase):
              "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder",
              "--reasoning-parser", "qwen3",
              "--default-chat-template-kwargs", '{"enable_thinking": false}',
+             "--sse-keep-alive-interval", "15",
              "--enable-force-include-usage"],
         )
 
