@@ -272,7 +272,7 @@ An earlier script, [`train_simplicio_27b.py`](https://github.com/simpletibr/simp
 | `notebooks/Simplicio_27B_Training_Colab.ipynb` | Training run that produced the adapter |
 | `notebooks/Simplicio_27B_Merge_Colab.ipynb` | Merges the adapter into 16-bit weights and exports the GGUF Q4_K_M |
 | `notebooks/Simplicio_27B_Serve_Colab.ipynb`, `deploy/` | vLLM serve script, Colab launcher, completion gate, context length |
-| `gateway/` | Gateway code kept in the repo: `set_upstream.php`, `status.php` (`GET /v1/status`), and `build_catalog.py`, which writes `models.json` (`GET /v1/models`) |
+| `gateway/` | Gateway code kept in the repo: `set_upstream.php`, `upstream_lease.php` (heartbeat lease: HTTP 503 when the Colab stops renewing), `status.php` (`GET /v1/status`), and `build_catalog.py`, which writes `models.json` (`GET /v1/models`) |
 | `Modelfile` | The Ollama tag `wesleysimplicio/simplicio-27b` |
 | `data/unseen_eval_120.json` | The 120 held-out tasks |
 | `benchmarks/live_colab_g4_bf16_n120.json` | The results above |

@@ -84,7 +84,7 @@ class StatusTests(unittest.TestCase):
 
     def test_registered_with_sha(self) -> None:
         self.assertEqual(
-            self.run_status({"upstream_url": "https://abc.trycloudflare.com", "updated": 0}, "a" * 40),
+            self.run_status({"upstream_url": "https://abc.trycloudflare.com", "updated_at": 0}, "a" * 40),
             {"upstream_registered": True, "updated_at": "1970-01-01T00:00:00Z", "deploy_sha": "a" * 40},
         )
 
