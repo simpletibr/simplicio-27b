@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Tracked files that may sit at the repository root. generate_dataset.py stays until #28 replaces it.
 ALLOWED_ROOT_FILES = frozenset({
     ".gitignore", "LICENSE", "Makefile", "Modelfile", "README.md", "generate_dataset.py",
+    "PREREG_eval.md", "PREREG_sha256.txt", "RELEASE_EVAL.md",
 })
 FORBIDDEN_ROOT_FILES = ("pyproject.toml",)
 
