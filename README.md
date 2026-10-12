@@ -48,7 +48,11 @@ Simplicio 27B is a LoRA fine-tune of [Qwen3.8-27B](https://huggingface.co/Qwen/Q
 
 No benchmark result is published in this README yet. Numbers that were not produced by a reproducible run have been removed.
 
-The benchmark harness is in [`benchmarks/harness/`](https://github.com/simpletibr/simplicio-27b/tree/main/benchmarks/harness). It runs 40 SEARCH/REPLACE tasks against any OpenAI-compatible endpoint. A task passes only when the hidden pytest tests pass on the patched code. A result will be published here only together with its commit, the model file and its checksum, the prompt hash, the decoding settings, and the per-task output.
+In accordance with the pre-registered protocol (ADR 0001):
+- **Pre-registration:** The evaluation protocol is specified in [`PREREG_eval.md`](PREREG_eval.md) with SHA-256 locked in [`PREREG_sha256.txt`](PREREG_sha256.txt).
+- **Audit template:** Release evaluations are published in [`RELEASE_EVAL.md`](RELEASE_EVAL.md) with two-sided 95% Wilson confidence intervals.
+- **Harness:** The benchmark harness is in [`benchmarks/harness/`](https://github.com/simpletibr/simplicio-27b/tree/main/benchmarks/harness). It runs 40 SEARCH/REPLACE tasks against any OpenAI-compatible endpoint. A task passes only when the hidden pytest tests pass on the patched code. A result will be published here only together with its commit, the model file and its checksum, the prompt hash, the decoding settings, and the per-task output.
+- **Quantization Quality Gate:** Quantized builds (FP8, GGUF, AWQ, MLX) are verified against the unquantized baseline via [`benchmarks/quantized_eval.py`](benchmarks/quantized_eval.py) with Wilson 95% bounds.
 
 Not evaluated: SWE-bench, Aider, Terminal-Bench, the Artificial Analysis indices, and image input.
 
@@ -260,6 +264,38 @@ git config core.hooksPath .githooks  # once per clone: run make check before eve
 ```
 
 The last step parses the exact `vllm serve` argv from `deploy/serve_vllm.sh` with vLLM's own CLI parser, so it needs `vllm==0.31.0` importable. Without vLLM installed it fails with exit code 1 on purpose: a flag that vLLM does not accept must not pass the gate unnoticed. On a machine without vLLM, export `SIMPLICIO_SKIP_VLLM_ARGS=1` to skip only that check (it prints `SKIP: vllm not importable; argv extracted, not validated`); the other four steps still run. There is no CI: all checks run locally. Commit subjects are one plain sentence, without a `type:` prefix. Colab notebooks live in `notebooks/`; `tests/test_layout.py` fails on a notebook at the repository root or on a `blob/main` link to a missing file.
+
+
+## Agent integration (MCP)
+
+Simplicio 27B provides a native Model Context Protocol (MCP) server over stdio in [`scripts/mcp_server.py`](scripts/mcp_server.py) with zero external dependencies.
+
+### Tools
+
+- `apply_surgical_diff`: Atomically applies SEARCH/REPLACE diff blocks to target files with rollback on mismatch.
+- `validate_patch`: Validates diff block structure and syntax offline without modifying files.
+- `format_prompt`: Renders structured prompts conforming to the Simplicio-Loop (`<orient>`, `<plan>`, `<patch>`, `<validate>`, `<deliver>`).
+
+### Diff format compatibility
+
+The server natively accepts both standard diff formats:
+- **Aider standard (7-char):** `<<<<<<< SEARCH`, `=======`, `>>>>>>> REPLACE`
+- **Simplicio compact (4-char):** `<<<<`, `====`, `>>>>`
+
+### MCP configuration
+
+Add to your MCP client configuration (Claude Desktop, Claude Code, Cursor):
+
+```json
+{
+  "mcpServers": {
+    "simplicio": {
+      "command": "python3",
+      "args": ["scripts/mcp_server.py"]
+    }
+  }
+}
+```
 
 ## Citation
 
