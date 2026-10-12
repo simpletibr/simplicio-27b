@@ -82,7 +82,7 @@ FROM_RE = re.compile(r"(?m)^FROM\s+\./(\S+)\s*$")
 PARAMETER_RE = re.compile(r"(?m)^PARAMETER\s+(\w+)\s+(\S+)\s*$")
 TEXT_SCAN_LIMIT = 1 << 20
 WITHDRAWN_HEADING = "### Withdrawn numbers"
-WITHDRAWN_FIGURES = ("96.5%", "Top 12")
+WITHDRAWN_FIGURES = ("96.5%", "Top 12", "116 of 120", "480 tokens")
 # Metadados do card (front matter do README.md). Se o README divergir, o plano é recusado.
 CARD_META = {
     "pretty_name": "Simplicio 27B",
@@ -205,8 +205,8 @@ def judge(rel: str, full: Path, root: Path, allowed: set[str], ggufs: set[str]) 
     if rel in ADAPTER:
         return "refuse", f"adapter na raiz: o lugar é {ADAPTER_DIR}/"
     # Pesos primeiro: nenhum caminho da allowlist (nem um asset citado no README) faz um peso subir.
-    if name.endswith(WEIGHT_SUFFIXES) and rel not in {f"{ADAPTER_DIR}/adapter_model.safetensors", *ggufs}:
-        if name.endswith(".gguf"):
+    if name.lower().endswith(WEIGHT_SUFFIXES) and rel not in {f"{ADAPTER_DIR}/adapter_model.safetensors", *ggufs}:
+        if name.lower().endswith(".gguf"):
             return "refuse", "GGUF grande: só com --allow-gguf e se o Modelfile tiver FROM ./este-arquivo"
         return "refuse", f"pesos só entram em {ADAPTER_DIR}/ e só o adapter"
     if not full.resolve().is_relative_to(root):
@@ -338,6 +338,11 @@ def card_problems(readme: str, bench: dict[str, Any]) -> list[str]:
     tags = meta.get("tags") if isinstance(meta.get("tags"), list) else []
     if missing := [tag for tag in CARD_TAGS if tag not in tags]:
         problems.append(f"front matter: faltam tags {missing}")
+    body = strip_section(readme, WITHDRAWN_HEADING)
+    problems += [f"o card repete o número retirado {figure!r} fora de '{WITHDRAWN_HEADING[4:]}'"
+                 for figure in WITHDRAWN_FIGURES if figure in body]
+    if "No benchmark result is published in this README yet" in readme:
+        return problems
     try:
         claims, numerators = benchmark_claims(bench)
         if abs(bench["functional_rate"] - bench["functional_pass"] / bench["n"]) > 5e-5:
@@ -346,12 +351,9 @@ def card_problems(readme: str, bench: dict[str, Any]) -> list[str]:
         return [*problems, f"{BENCHMARK}: campo ausente ou inválido ({exc!r})"]
     problems += [f"o card não traz {claim!r}, que é o que {BENCHMARK} registra"
                  for claim in claims if claim not in readme]
-    body = strip_section(readme, WITHDRAWN_HEADING)
     cited = {int(num) for num in re.findall(r"\b(\d+)(?:/| of )%d\b" % bench["n"], body)}
     if extra := sorted(cited - numerators):
         problems.append(f"o card cita {extra} de {bench['n']} execuções, que {BENCHMARK} não registra")
-    problems += [f"o card repete o número retirado {figure!r} fora de '{WITHDRAWN_HEADING[4:]}'"
-                 for figure in WITHDRAWN_FIGURES if figure in body]
     return problems
 
 

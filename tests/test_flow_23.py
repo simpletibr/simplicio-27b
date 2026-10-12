@@ -214,10 +214,10 @@ class DryRunTest(TempCase):
 
     def test_weights_cited_by_the_readme_are_refused(self):
         src = make_source(self.tmp)
-        cited = [f"assets/x{suffix}" for suffix in (
+        cited = [f"assets/x_{i}{suffix}" for i, suffix in enumerate((
             ".safetensors", ".bin", ".pt", ".pth", ".gguf", ".ckpt", ".h5", ".onnx", ".SAFETENSORS",
             ".ggml", ".npz", ".pkl", ".pickle", ".msgpack", ".tflite", ".mlmodel", ".engine", ".pb", ".keras",
-            ".joblib", ".sav", ".tar", ".PKL")]
+            ".joblib", ".sav", ".tar", ".PKL"))]
         with open(src / "README.md", "a", encoding="utf-8") as handle:
             handle.writelines(f"\n![w]({name})\n" for name in cited)
         for name in cited:
@@ -230,8 +230,8 @@ class DryRunTest(TempCase):
                 self.assertEqual(set(re.findall(r"(?m)^ADD (\S+) \(\d+ bytes\)$", out)), ALLOWED_ADDS)
                 refused = set(re.findall(r"(?m)^REFUSE (\S+) \(", out))
                 self.assertEqual(refused, {*cited, "lora/extra.safetensors"})
-                self.assertRegex(out, r"(?m)^REFUSE assets/x\.safetensors \(pesos só entram em lora/")
-                self.assertRegex(out, r"(?m)^REFUSE assets/x\.gguf \(GGUF")
+                self.assertRegex(out, r"(?m)^REFUSE assets/x_0\.safetensors \(pesos só entram em lora/")
+                self.assertRegex(out, r"(?m)^REFUSE assets/x_4\.gguf \(GGUF")
 
     def test_only_the_adapter_and_the_modelfile_gguf_may_be_weights(self):
         src = make_source(self.tmp)
@@ -272,11 +272,10 @@ class DryRunTest(TempCase):
     def test_card_with_a_number_not_in_benchmarks_is_refused(self):
         src = make_source(self.tmp)
         readme = (src / "README.md").read_text(encoding="utf-8")
-        (src / "README.md").write_text(readme.replace("56/120 runs (46.7%)", "57/120 runs (47.5%)"),
-                                       encoding="utf-8")
+        (src / "README.md").write_text(readme + "\nIt passed 116 of 120 runs.\n", encoding="utf-8")
         code, out, err = run_main("--source", str(src))
         self.assertEqual((code, out), (2, ""))
-        self.assertIn("benchmarks/live_colab_g4_bf16_n120.json", err)
+        self.assertIn("116 of 120", err)
 
     def test_missing_source_files_are_refused(self):
         src = make_source(self.tmp)

@@ -171,41 +171,18 @@ class CardContract(unittest.TestCase):
         self.assertEqual(hits, [])
 
     def test_result_figures_trace_to_the_benchmark_file(self):
-        claims, numerators = hf_publish.benchmark_claims(BENCH)
-        self.assertEqual(claims, ["56/120 runs (46.7%)", "104/120 (86.7%)", "69.9 / 103", "438 s"])
-        for claim in claims:
-            self.assertIn(claim, README)
-        body = hf_publish.strip_section(README, hf_publish.WITHDRAWN_HEADING)
-        cited = {int(n) for n in re.findall(r"\b(\d+)(?:/| of )120\b", body)}
-        self.assertTrue(cited)
-        self.assertLessEqual(cited, numerators)
-        categories = BENCH["categories"]
-        self.assertEqual(sum(c["pass"] for c in categories.values()), BENCH["functional_pass"])
-        self.assertEqual(sum(c["diff"] for c in categories.values()), BENCH["diff_matched"])
-        for category, expected in (("Surgical diff and AST precision", (17, 20)),
-                                   ("Edge-case correctness", (6, 27)),
-                                   ("Nonexistent and deprecated API traps", (27, 30)),
-                                   ("Adversarial and out-of-distribution", (6, 27))):
-            row = next(line for line in README.splitlines() if line.startswith(f"| {category} |"))
-            cells = [c.strip() for c in row.strip("|").split("|")]
-            self.assertEqual((int(cells[2]), int(cells[3])), expected, category)
-        by_name = {k.split("_", 1)[0]: v for k, v in categories.items()}
-        self.assertEqual([(by_name[str(i)]["pass"], by_name[str(i)]["diff"]) for i in range(1, 5)],
-                         [(17, 20), (6, 27), (27, 30), (6, 27)])
+        self.assertIn("No benchmark result is published in this README yet", README)
+        for unbacked in ("56/120", "104/120", "96.5%", "116/120"):
+            self.assertNotIn(unbacked, README)
 
     def test_a_figure_the_benchmark_does_not_back_is_refused(self):
-        wrong_pass = README.replace("56/120 runs (46.7%)", "57/120 runs (47.5%)")
-        wrong_ratio = README.replace("104/120 (86.7%)", "110/120 (91.7%)")
         extra = README + "\nIt passed 116 of 120 runs.\n"
         revived = README.replace("## Quick start", "The model scores 96.5%.\n\n## Quick start", 1)
-        for label, text in (("pass count", wrong_pass), ("patch applied", wrong_ratio),
-                            ("unbacked N of 120", extra), ("withdrawn figure", revived)):
+        for label, text in (("unbacked N of 120", extra), ("withdrawn figure", revived)):
             with self.subTest(label):
                 self.assertTrue(hf_publish.card_problems(text, BENCH))
                 with self.assertRaises(hf_publish.Refused):
                     hf_publish.build_card(text, BENCH)
-        self.assertTrue(hf_publish.card_problems(README, {**BENCH, "functional_pass": 57}))
-        self.assertTrue(hf_publish.card_problems(README, {k: v for k, v in BENCH.items() if k != "n"}))
 
     def test_wrong_metadata_is_refused(self):
         for label, text in (

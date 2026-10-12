@@ -60,7 +60,7 @@ Not evaluated: SWE-bench, Aider, Terminal-Bench, the Artificial Analysis indices
 ollama run wesleysimplicio/simplicio-27b --think=false
 ```
 
-If Ollama is not installed, get it from [ollama.com/download](https://ollama.com/download). The `latest` tag is built from the root [`Modelfile`](https://github.com/simpletibr/simplicio-27b/blob/main/Modelfile) and needs Ollama 0.30.0 or newer. The Modelfile uses the Q4_K_M GGUF and leaves out the base model's vision projector. The published tag's manifest lists a projector layer too, so the two do not match yet. Image input has not been evaluated. It sets:
+If Ollama is not installed, get it from [ollama.com/download](https://ollama.com/download). The `latest` tag is built from the root [`Modelfile`](https://github.com/simpletibr/simplicio-27b/blob/main/Modelfile) and needs Ollama 0.30.0 or newer. The Modelfile uses the Q4_K_M GGUF and leaves the base model's vision projector out on purpose: Simplicio is used for text only. The published tag's manifest lists a projector layer too, so the two do not match yet. Image input has not been evaluated. It sets:
 
 - `RENDERER qwen3.5` and `PARSER qwen3.5`: Ollama's built-in Qwen 3.5 prompt format. Tool calls come back in `message.tool_calls` and reasoning in `message.thinking`.
 - `num_ctx 40960`: a 40,960-token context, the same as vLLM ([`deploy/context.env`](https://github.com/simpletibr/simplicio-27b/blob/main/deploy/context.env)).

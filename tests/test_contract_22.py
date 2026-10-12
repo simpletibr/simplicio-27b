@@ -214,7 +214,7 @@ class DocumentedContractTest(unittest.TestCase):
         self.assertNotIn("combines two files", self.guide)
 
     def test_readme_explains_the_stop_difference_with_the_56_120_run(self) -> None:
-        self.assertIn("The tag stops only at `<|im_end|>`, while the 56/120 run also stopped at `</deliver>`", self.readme)
+        self.assertIn("The tag stops only at `<|im_end|>`; add `\"stop\": [\"</deliver>\"]`", self.readme)
         self.assertIn('"stop": ["</deliver>"]', self.readme)
 
     def test_training_stop_and_template_are_gone_from_docs(self) -> None:

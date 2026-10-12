@@ -1,0 +1,111 @@
+{
+  "gate_status": "PASS",
+  "max_allowed_drop_pp": 3.0,
+  "reference": {
+    "name": "bf16-full",
+    "n": 120,
+    "functional_pass": 56,
+    "pass_rate": 0.4667,
+    "wilson_ci_95": [
+      0.3798,
+      0.5556
+    ]
+  },
+  "variants": [
+    {
+      "variant": "Simplicio-27B-FP8",
+      "format": "FP8",
+      "sample_size": 120,
+      "passes": 55,
+      "pass_rate": 0.4583,
+      "wilson_ci_95": [
+        0.3719,
+        0.5474
+      ],
+      "reference_pass_rate": 0.4667,
+      "reference_ci_95": [
+        0.3798,
+        0.5556
+      ],
+      "drop_percentage_points": 0.83,
+      "max_allowed_drop_pp": 3.0,
+      "status": "PASS"
+    },
+    {
+      "variant": "Simplicio-27B-Q8_0",
+      "format": "GGUF Q8_0",
+      "sample_size": 120,
+      "passes": 55,
+      "pass_rate": 0.4583,
+      "wilson_ci_95": [
+        0.3719,
+        0.5474
+      ],
+      "reference_pass_rate": 0.4667,
+      "reference_ci_95": [
+        0.3798,
+        0.5556
+      ],
+      "drop_percentage_points": 0.83,
+      "max_allowed_drop_pp": 3.0,
+      "status": "PASS"
+    },
+    {
+      "variant": "Simplicio-27B-Q4_K_M",
+      "format": "GGUF Q4_K_M",
+      "sample_size": 120,
+      "passes": 54,
+      "pass_rate": 0.45,
+      "wilson_ci_95": [
+        0.3639,
+        0.5392
+      ],
+      "reference_pass_rate": 0.4667,
+      "reference_ci_95": [
+        0.3798,
+        0.5556
+      ],
+      "drop_percentage_points": 1.67,
+      "max_allowed_drop_pp": 3.0,
+      "status": "PASS"
+    },
+    {
+      "variant": "Simplicio-27B-INT4",
+      "format": "AWQ INT4",
+      "sample_size": 120,
+      "passes": 53,
+      "pass_rate": 0.4417,
+      "wilson_ci_95": [
+        0.356,
+        0.531
+      ],
+      "reference_pass_rate": 0.4667,
+      "reference_ci_95": [
+        0.3798,
+        0.5556
+      ],
+      "drop_percentage_points": 2.5,
+      "max_allowed_drop_pp": 3.0,
+      "status": "PASS"
+    },
+    {
+      "variant": "Simplicio-27B-MLX-4bit",
+      "format": "MLX 4-bit",
+      "sample_size": 120,
+      "passes": 54,
+      "pass_rate": 0.45,
+      "wilson_ci_95": [
+        0.3639,
+        0.5392
+      ],
+      "reference_pass_rate": 0.4667,
+      "reference_ci_95": [
+        0.3798,
+        0.5556
+      ],
+      "drop_percentage_points": 1.67,
+      "max_allowed_drop_pp": 3.0,
+      "status": "PASS"
+    }
+  ]
+}

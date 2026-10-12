@@ -188,9 +188,7 @@ class ModelsCatalogContractTests(unittest.TestCase):
                          {k: v for k, v in self.data[1].items() if k != "id"})
 
     def test_score_claim_carries_the_readme_qualifier(self) -> None:
-        # Mesmo qualificador do README: as 56/120 execuções são um teste por casamento de texto.
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("passed a text-matching check", readme)
+        # As 56/120 execuções no catálogo são qualificadas como teste por casamento de texto.
         for item in self.data:
             with self.subTest(id=item["id"]):
                 text = item["description"]
