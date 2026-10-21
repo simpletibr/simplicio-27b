@@ -198,12 +198,20 @@ MUTANTS: Tuple[Mutant, ...] = (
     Mutant('R41', RUN, 'if name in configured or (name not in KEEP_NAMES and CREDENTIAL_NAME.search(name)))', 'if name in configured)', 'only the two configured names are left out: OPENAI_API_KEY, AWS_* and the rest reach the children'),
     Mutant('R42', RUN, 'if name in configured or (name not in KEEP_NAMES and CREDENTIAL_NAME.search(name)))', 'if (name not in KEEP_NAMES and CREDENTIAL_NAME.search(name)))', 'a configured name that does not look like a credential (token_env: HUB_LOGIN) reaches the children'),
     Mutant('R43', RUN, '(name not in KEEP_NAMES and CREDENTIAL_NAME.search(name))', '(CREDENTIAL_NAME.search(name))', 'HF_HUB_DISABLE_IMPLICIT_TOKEN is dropped, so the child may read a token file again'),
-    Mutant('R44', RUN, 'r"|^(?:aws|azure)_"', 'r""', 'AWS_PROFILE and AZURE_TENANT_ID reach the children'),
-    Mutant('R45', RUN, '^(?:aws|azure)_", re.IGNORECASE)', '^(?:aws|azure)_")', 'db_password and other lower-case names reach the children'),
+    Mutant('R44', RUN, '^(?:aws|azure)_|', '', 'AWS_PROFILE and AZURE_TENANT_ID reach the children'),
+    Mutant('R45', RUN, '^mysql_pwd$", re.IGNORECASE)', '^mysql_pwd$")', 'db_password and other lower-case names reach the children'),
     Mutant('R46', RUN, 'bearer)(?:_|$)"', 'bearer)"', 'a name that only starts with a credential word (TOKENIZERS_PARALLELISM) is dropped'),
     Mutant('R47', RUN, 'r"(?:^|_)(?:api_?keys?', 'r"(?:api_?keys?', 'a name that only ends in a credential word (MONKEY_PATCH) is dropped'),
     Mutant('R48', RUN, '            self._env_noted = True\n', '            pass\n', 'the day log repeats the note before every step'),
     Mutant('R49', RUN, "({', '.join(left_out)})", "()", 'the day log says that variables were left out but not which'),
+    Mutant('R50', RUN, '|^git_config_|', '|^git_config_key_|', 'GIT_CONFIG_COUNT and GIT_CONFIG_VALUE_n reach the children (their git fails, the value can be an Authorization header)'),
+    Mutant('R51', RUN, '|^pgpass|^mysql_pwd$"', '|^mysql_pwd$"', 'PGPASS and PGPASSFILE reach the children'),
+    Mutant('R52', RUN, '|^mysql_pwd$"', '"', 'MYSQL_PWD reaches the children'),
+    Mutant('R53', RUN, 'r"|(?:token|secret|passw(?:or)?d)s?(?:_?\\d+)?$"', 'r""', 'a name with the credential word glued at the end (MYTOKEN, ROOTPASSWORD) reaches the children'),
+    Mutant('R54', RUN, 's?(?:_?\\d+)?$"', 's?$"', 'TOKEN2 and SLACKTOKEN_2 reach the children'),
+    Mutant('R55', RUN, 'passw(?:or)?d)s?(?:_?', 'passw(?:or)?d)(?:_?', 'MYTOKENS reaches the children'),
+    Mutant('R56', RUN, '|^mysql_pwd$"', '|pwd$"', 'PWD and OLDPWD, the working directory, are dropped'),
+    Mutant('R57', RUN, '|^git_config_|', '|^git_config|', 'GIT_CONFIGURED_BY, which is no credential, is dropped'),
 )
 
 
