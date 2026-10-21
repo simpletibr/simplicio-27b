@@ -40,7 +40,7 @@ def _safe_open():
     try:
         from safetensors import safe_open
     except ImportError as exc:  # pragma: no cover - message only
-        raise SoupError("safetensors is required (pip install -r decide/train/requirements.txt)") from exc
+        raise SoupError("safetensors is required: install the versions in decide/train/requirements.txt") from exc
     return safe_open
 
 

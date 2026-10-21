@@ -1,0 +1,12 @@
+# Versions decide/train and its tests ran with (2026-10-21, CPU, Python 3.13).  On a GPU machine `pip install -r` brings the
+# CUDA build of torch from PyPI (the tests ran on torch 2.14.0+cpu).  Not checked on a GPU: see the PR (UNVERIFIED).
+# The contract tests need none of them except pyarrow (the pure modules import nothing); the flow tests need torch, transformers,
+# safetensors and pyarrow, and peft for the LoRA ones.  ReferenceParity (optional) also imports Pillow.
+torch==2.14.0
+transformers==5.17.0
+safetensors==0.8.0
+peft==0.21.0
+accelerate==1.15.0
+pyarrow==26.0.0
+numpy==2.5.3
+PyYAML==6.0.3
