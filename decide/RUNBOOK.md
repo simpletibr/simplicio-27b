@@ -332,6 +332,7 @@ python -m decide.rental.run --profile econ_b200 --execute --workdir /workspace/d
 ```
 
 - Sem `--gt-report` (ou com um GT que não passou) o dia é **só-decisor**. Sem `--public-requests` a rodada pública é pulada.
+- **Hoje, não passe `--gt-report`.** Os traços do pensador entram no treino como o campo `reasoning`, e esse campo ainda não passa pela descontaminação por n-gramas (issue [#83](https://github.com/simpletibr/simplicio-27b/issues/83)); além disso o motor do kit ainda não chama `fold_reasoning`, então o modelo treinado com `--reasoning mixed` seria avaliado e servido sem o bloco `Raciocínio:` com que treinou. Rode o dia só-decisor até essas duas correções entrarem na `main` (seção 13).
 - O dia tem 11 fases: `preflight, fetch, targets, traces, targets_traces, train, soup, calibrate, g4, public_round, publish`. Cada uma é pulada se já terminou e suas saídas não mudaram. `--only` e `--until` rodam parte delas.
 - **Gates param o dia, não só avisam.** Cobertura de rótulos (F3) antes de qualquer hora de GPU; G4 (novo ≥ ponto de partida + 1,5 pontos do privado) antes da rodada pública e do envio. O G4 compara o novo com o ponto de partida **nas mesmas linhas** e imprime o intervalo de confiança do bootstrap pareado (`ci_includes_zero` é aviso, não condição).
 - Códigos de saída: `0` o dia terminou (ou o plano foi impresso); `1` erro (o estado diz onde; rode de novo); `2` uso ou configuração; `3` um gate parou o dia.
