@@ -114,6 +114,21 @@ def board_index(scores: Dict[str, Dict[str, float]]) -> Dict[str, Any]:
                        for engine, v in scores.items()]}
 
 
+def decontaminated(directory: Path) -> Path:
+    """Seal a folder of corpus parts the way ``decide.data.decontaminate`` leaves a clean corpus: ``manifest.json`` with its ``tool``
+    stamp and the name of its report, and ``decontamination.json`` with the same stamp.  A stand-in for tests that need a clean corpus
+    but not the screening (the end-to-end test uses the real tool)."""
+    from decide.data import schema as S
+
+    (Path(directory) / S.MANIFEST_NAME).unlink(missing_ok=True)       # a stand-in: it may stamp over a manifest a test left (build_corpus, a hand seal)
+    manifest = S.seal_directory(directory)
+    manifest.update({"tool": "decontaminate", "decontamination": "decontamination.json"})
+    S.write_manifest(Path(directory) / "decontamination.json", {"tool": "decontaminate", "schema_version": S.SCHEMA_VERSION, "rows_in": manifest["rows"],
+                                                               "rows_out": manifest["rows"], "rejected": 0})
+    S.write_manifest(Path(directory) / "manifest.json", manifest)
+    return Path(directory)
+
+
 # --------------------------------------------------------------------------- tokenizer stand-in (decide/train)
 
 class FakeTokenizer:
@@ -232,6 +247,8 @@ def make_tiny_checkpoint(directory: Path, tokenizer: "FakeTokenizer", seed: int 
     (directory / "joint_config.json").write_text(json.dumps(PROTOCOL, indent=2), encoding="utf-8")
     (directory / "tokenizer_config.json").write_text("{}", encoding="utf-8")
     (directory / "chat_template.jinja").write_text("{{ messages }}", encoding="utf-8")
+    (directory / "LICENSE").write_text("Apache License 2.0 (tiny stand-in for the licence text)\n", encoding="utf-8")
+    (directory / "NOTICE").write_text("tiny-checkpoint\n\nDerived from nothing, under Apache License 2.0.\n", encoding="utf-8")
     return directory
 
 
@@ -245,26 +262,29 @@ def make_targets_dataset(root: Path, *, train: int = 8, dev: int = 6, traces_for
     from decide.data import traces as TR
     from decide.train import build_targets as BT
 
-    rows, teacher_rows = [], []
+    rows, teacher_rows, requests = [], [], {}
     names = ["river", "stone", "market", "lantern", "copper", "violin", "harbor", "winter", "orchid", "signal", "paper", "engine", "garden", "bridge"]
     for i in range(train + dev):
         right = i % 3
         options = [names[(i + k) % len(names)] for k in range(3)]
         request = choice_request(f"Which one is the odd one number {i}?", options, state=f"The answer is {options[right]} for case {i}.", keys=["x", "y", "z"])
         example_id = f"toy:{i}"
+        requests[example_id] = request
         rows.append(S.corpus_row(example_id=example_id, source="toy", license="mit", split="train" if i < train else "dev", lang="en", request=request,
                                  gold={"q1": ["x", "y", "z"][right]}))
         probs = [0.1, 0.1, 0.1]
         probs[right] = 0.8
         teacher_rows.append({"example_id": example_id, "question_id": "q1", "teacher": "toy-teacher", "codes": ["A", "B", "C"], "probs": probs, "temperature": 1.0})
     S.write_corpus_part(root / "corpus" / "toy-0000.parquet", rows)
-    S.seal_directory(root / "corpus")
+    decontaminated(root / "corpus")
     S.write_teacher_part(root / "labels" / "toy-teacher" / "part-0000.parquet", teacher_rows)
+    S.seal_directory(root / "labels", kind="labels")
     argv = ["--corpus", str(root / "corpus"), "--labels", str(root / "labels"), "--out", str(root / "targets")]
     if traces_for:
         TR.write_trace_part(root / "traces" / "toy-thinker" / "part-0000.parquet", [
             TR.trace_row(example_id=f"toy:{i}", thinker="toy-thinker", reasoning=f"The state names option {i % 3}, so the answer is {['x', 'y', 'z'][i % 3]}.",
-                         tokens=12, finish_reason="stop") for i in traces_for])
+                         tokens=12, finish_reason="stop", request_sha256=S.request_digest(requests[f"toy:{i}"])) for i in traces_for])
+        S.seal_directory(root / "traces", kind="traces")
         argv += ["--traces", str(root / "traces")]
     import contextlib
     import io

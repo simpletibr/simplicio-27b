@@ -21,7 +21,7 @@ import unittest
 from pathlib import Path
 
 from decide_b_support import (
-    ROOT, FakeTokenizer, choice_request, have, needs_numpy, needs_pyarrow, needs_torch, noul_request, score_request,
+    ROOT, FakeTokenizer, choice_request, decontaminated, have, needs_numpy, needs_pyarrow, needs_torch, noul_request, score_request,
 )
 
 from decide.train import codes as CODES
@@ -1040,13 +1040,14 @@ class BuildTargetsContract(unittest.TestCase):
             gold = {"q1": None if i in (4, 6) else ["x", "y", "z"][i % 3]}
             rows.append(S.corpus_row(example_id=f"s:{i}", source="s", license="mit", split="dev" if i == 5 else "train", lang="en", request=req, gold=gold))
         S.write_corpus_part(self.root / "corpus" / "s-0000.parquet", rows)
-        S.seal_directory(self.root / "corpus")                       # as build_corpus / decontaminate leave it
+        decontaminated(self.root / "corpus")                         # as decontaminate leaves it
         self.write_teacher("t1", [(f"s:{i}", [0.6, 0.3, 0.1]) for i in range(5)], 1.3)
         self.write_teacher("t2", [(f"s:{i}", [0.2, 0.2, 0.6]) for i in (0, 1, 2, 3)], 1.0)
 
     def write_teacher(self, name: str, items, temperature: float, codes=("A", "B", "C")) -> None:
         rows = [{"example_id": e, "question_id": "q1", "teacher": name, "codes": list(codes), "probs": p, "temperature": temperature} for e, p in items]
         self.S.write_teacher_part(self.root / "labels" / name / "part-0000.parquet", rows)
+        self.S.seal_directory(self.root / "labels" / name, kind="labels")
 
     def build(self, labels=("t1",), *extra: str, out: str = "targets") -> dict:
         argv = ["--corpus", str(self.root / "corpus"), "--labels", *[str(self.root / "labels" / n) for n in labels],
@@ -1376,8 +1377,12 @@ class BuildTargetsContract(unittest.TestCase):
     def write_trace(self, thinker: str, items, part: str = "part-0000.parquet") -> None:
         from decide.data import traces as TR
 
-        rows = [TR.trace_row(example_id=e, thinker=thinker, reasoning=text, tokens=n, finish_reason=f) for e, text, n, f in items]
+        digests = {f"s:{i}": self.S.request_digest(choice_request(instructions=f"Question number {i}?", options=["a", "b", "c"], keys=["x", "y", "z"]))
+                   for i in range(7)}
+        rows = [TR.trace_row(example_id=e, thinker=thinker, reasoning=text, tokens=n, finish_reason=f, request_sha256=digests.get(e, "0" * 64))
+                for e, text, n, f in items]
         TR.write_trace_part(self.root / "traces" / thinker / part, rows)
+        self.S.seal_directory(self.root / "traces", kind="traces")
 
     def test_traces_are_joined_by_example(self) -> None:
         from decide.train import data as DT
@@ -1490,9 +1495,9 @@ class TracesContract(unittest.TestCase):
         self.root = Path(self.tmp.name)
 
     def test_columns_and_roundtrip(self) -> None:
-        self.assertEqual(self.TR.TRACE_COLUMNS, ("example_id", "thinker", "reasoning", "tokens", "finish_reason"))
-        rows = [self.TR.trace_row(example_id=f"s:{i}", thinker="Qwen3.8-27B", reasoning=f"think {i} \u00e9", tokens=10 + i, finish_reason="stop" if i % 2 else "length")
-                for i in range(3)]
+        self.assertEqual(self.TR.TRACE_COLUMNS, ("example_id", "thinker", "reasoning", "tokens", "finish_reason", "request_sha256"))
+        rows = [self.TR.trace_row(example_id=f"s:{i}", thinker="Qwen3.8-27B", reasoning=f"think {i} \u00e9", tokens=10 + i, finish_reason="stop" if i % 2 else "length",
+                                     request_sha256=f"{i:064x}") for i in range(3)]
         info = self.TR.write_trace_part(self.root / "traces" / "Qwen3.8-27B" / "part-0000.parquet", rows)
         self.assertEqual((info["name"], info["rows"]), ("part-0000.parquet", 3))
         self.assertEqual(len(info["sha256"]), 64)
@@ -1502,14 +1507,15 @@ class TracesContract(unittest.TestCase):
         self.assertFalse(list((self.root / "traces").rglob("*.tmp")), "parts are written atomically")
 
     def test_validation(self) -> None:
-        good = {"example_id": "s:0", "thinker": "t", "reasoning": "because", "tokens": 3, "finish_reason": "stop"}
+        good = {"example_id": "s:0", "thinker": "t", "reasoning": "because", "tokens": 3, "finish_reason": "stop", "request_sha256": "a" * 64}
         self.assertEqual(self.TR.validate_trace_row(good), [])
         for change in ({"example_id": ""}, {"thinker": " "}, {"reasoning": ""}, {"reasoning": "  \n"}, {"reasoning": None}, {"tokens": -1},
-                       {"tokens": True}, {"tokens": 1.5}, {"finish_reason": "eos"}, {"finish_reason": None}):
+                       {"tokens": True}, {"tokens": 1.5}, {"finish_reason": "eos"}, {"finish_reason": None}, {"request_sha256": ""},
+                       {"request_sha256": "xyz"}, {"request_sha256": "A" * 64}, {"request_sha256": None}):
             self.assertTrue(self.TR.validate_trace_row({**good, "oops": 1, **change}), str(change))
         self.assertTrue(self.TR.validate_trace_row({k: v for k, v in good.items() if k != "tokens"}))
         with self.assertRaises(self.S.SchemaError):
-            self.TR.trace_row(example_id="s:0", thinker="t", reasoning="", tokens=3, finish_reason="stop")
+            self.TR.trace_row(example_id="s:0", thinker="t", reasoning="", tokens=3, finish_reason="stop", request_sha256="a" * 64)
         with self.assertRaises(self.S.SchemaError):
             self.TR.write_trace_part(self.root / "bad.parquet", [{**good, "tokens": -5}])
 
