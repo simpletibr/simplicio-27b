@@ -553,6 +553,57 @@ class ProxyContract(unittest.TestCase):
         self.assertEqual(res["n"], 5)
         self.assertEqual(res["unmatched"], ["unknown-model"])
 
+    def named_board(self, n: int = 8, twin: bool = False) -> dict:
+        """A board whose display names differ from the engines (the real index.json: 208 models, unique engines and names)."""
+        models = []
+        for i in range(n):
+            engine, name = f"e{i}", f"Model {i}"
+            if twin and i in (1, 2):
+                name = "Twin"
+            models.append({"engine": engine, "name": name, "meta": {"kind": "full fine-tune"},
+                           "v03": {"v": 50.0 + 2 * i, "same_skills": 49.0 + 2.5 * i, "new_domains": 52.0 + 1.5 * i, "pub": 55.0 + i}})
+        return {"models": models}
+
+    def test_a_model_listed_by_engine_and_by_name_counts_once(self) -> None:
+        # review of PR #74: 3 models, each under its engine and its display name, gave n=6 and passed the 6-model bar
+        board = self.named_board(3)
+        scores = {}
+        for i in range(3):
+            scores[f"e{i}"] = scores[f"Model {i}"] = 0.30 + 0.05 * i
+        for min_models in (3, 6):
+            res = P.validate_against_board(scores, board, min_models=min_models)
+            self.assertFalse(res["passed"], min_models)
+            self.assertEqual(res["n"], 3)
+            self.assertEqual(res["models"], ["e0", "e1", "e2"])
+            self.assertEqual({e: sorted(keys) for e, keys in res["duplicates"].items()}, {f"e{i}": [f"Model {i}", f"e{i}"] for i in range(3)})
+            self.assertIn("more than one key", res["reason"])
+
+    def test_models_can_be_given_by_display_name(self) -> None:
+        res = P.validate_against_board({f"Model {i}": 0.30 + 0.03 * i for i in range(8)}, self.named_board(8), min_models=6)
+        self.assertTrue(res["passed"], res["reason"])
+        self.assertEqual((res["n"], res["models"], res["duplicates"]), (8, [f"e{i}" for i in range(8)], {}))
+
+    def test_an_ambiguous_display_name_matches_nothing(self) -> None:
+        board = self.named_board(8, twin=True)
+        scores = {f"e{i}": 0.30 + 0.03 * i for i in range(8)}
+        scores["Twin"] = 0.5
+        res = P.validate_against_board(scores, board, min_models=6)
+        self.assertEqual(res["ambiguous"], ["Twin"])
+        self.assertEqual(res["n"], 8)
+        self.assertNotIn("Twin", res["models"])
+
+    def test_the_engine_wins_over_a_display_name(self) -> None:
+        board = {"models": [{"engine": "a", "name": "b", "v03": {"v": 50.0}}, {"engine": "b", "name": "x", "v03": {"v": 60.0}}]}
+        self.assertEqual(sorted(P.board_models(board)), ["a", "b"])
+        res = P.validate_against_board({"b": 0.1, "a": 0.2}, board, min_models=2)
+        self.assertEqual((res["n"], res["models"], res["duplicates"]), (2, ["a", "b"], {}))
+
+    def test_board_models_are_keyed_by_engine_with_names_as_aliases(self) -> None:
+        board = self.named_board(3)
+        self.assertEqual(sorted(P.board_models(board)), ["e0", "e1", "e2"])
+        self.assertEqual(P.board_aliases(board), {"Model 0": ["e0"], "Model 1": ["e1"], "Model 2": ["e2"]})
+        self.assertEqual(P.board_aliases(self.named_board(3, twin=True))["Twin"], ["e1", "e2"])
+
     def test_assert_disjoint(self) -> None:
         P.assert_disjoint({"a", "b"}, {"c"})
         with self.assertRaises(P.LeakError):
