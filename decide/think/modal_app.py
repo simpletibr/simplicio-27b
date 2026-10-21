@@ -40,7 +40,9 @@ TIMEOUT_S = 12 * 3600
 MARGIN_S = 3600                                           # the thinker stops starting rows this long before the container is killed
 HF_CACHE, STATE = "/root/.cache/huggingface", "/state"
 PACK_PATH = "/tmp/pack.jsonl.gz"                         # not in a Volume: the pack holds benchmark text
-IGNORE = ["**/__pycache__", "**/*.pyc", "**/.DS_Store", "**/README.md"]
+# The pack and the results hold benchmark text and the model's reasoning about it (decide/think/.gitignore keeps them out of git): the image
+# must not carry them either if someone keeps them in this folder.  gt-sample-manifest.json, ids and hashes only, is what the container needs.
+IGNORE = ["**/__pycache__", "**/*.pyc", "**/.DS_Store", "**/README.md", "**/*.jsonl", "**/*.jsonl.gz", "**/pack*", "**/work", "**/report"]
 
 image = (modal.Image.debian_slim(python_version="3.12").pip_install(VLLM_PIN)
          .env({"PYTHONPATH": "/root", "PYTHONUNBUFFERED": "1", "HF_HUB_DISABLE_TELEMETRY": "1"})

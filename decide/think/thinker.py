@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import http.client
+import ipaddress
 import json
 import os
 import re
@@ -39,13 +40,13 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from . import common as C
-from .answers import THINK_CLOSE, extract, split_reasoning
+from .answers import THINK_CLOSE, extract_detailed, split_reasoning
 from .prompt import Option, Prompt, UnsupportedQuestion, build_prompt
 
 DEFAULT_MAX_TOKENS = 16_384
@@ -97,12 +98,20 @@ class Parsed:
     final: Optional[str]
     answers: Dict[str, Optional[str]]
     truncated: bool
+    no_close: bool = False                   # asked to think, stopped, and no closing tag nor separate reasoning: not read as an answer
+    read_by: Dict[str, Optional[str]] = field(default_factory=dict)      # qid -> how the answer was found (answers.extract_detailed)
 
 
-def interpret(gen: GenResult, options: Dict[str, List[Option]]) -> Parsed:
-    """Split the thinking from the reply and read the answers.  Thinking is never read as an answer."""
+def interpret(gen: GenResult, options: Dict[str, List[Option]], thinking: bool = False) -> Parsed:
+    """Split the thinking from the reply and read the answers.  Thinking is never read as an answer.
+
+    With `thinking` (the run asked for it) the template has opened `<think>` itself, so a reply that stopped on its
+    own has a closing tag or the server returned the reasoning apart.  One that has neither is thinking that never
+    ended, or an endpoint that did not think at all: its text is not scanned for an answer (`no_close`).
+    """
     content = gen.content if isinstance(gen.content, str) else ""
     truncated = gen.finish_reason == "length"
+    no_close = False
     if gen.reasoning is not None:                           # the server already split the thinking off
         reasoning = gen.reasoning
         _, final = split_reasoning(content)                 # a stray </think> inside the reply is still honored
@@ -110,22 +119,37 @@ def interpret(gen: GenResult, options: Dict[str, List[Option]]) -> Parsed:
         reasoning, final = split_reasoning(content)
         if truncated and THINK_CLOSE not in content:        # the template opens <think> itself: a cut reply is all thinking
             reasoning, final = content, None
+        elif thinking and not truncated and THINK_CLOSE not in content and not gen.reasoning_tokens and content.strip():
+            reasoning, final, no_close = content, None, True
     final = final or None
-    return Parsed(reasoning=reasoning, final=final, answers=extract(final, options), truncated=truncated)
+    detail = extract_detailed(final, options)
+    return Parsed(reasoning=reasoning, final=final, answers={q: key for q, (key, _how) in detail.items()}, truncated=truncated,
+                  no_close=no_close, read_by={q: how for q, (_key, how) in detail.items()})
+
+
+def thought_of(gen: GenResult, p: Parsed) -> bool:
+    """Did the model think on this row: reasoning text (apart or before the closing tag), or a reply of at least C.MIN_THINKING_TOKENS."""
+    tokens = max(int(gen.reasoning_tokens or 0), int(gen.completion_tokens or 0))
+    return tokens >= C.MIN_THINKING_TOKENS or (not p.no_close and bool(p.reasoning.strip()))
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def make_record(row: dict, prompt: Prompt, gen: GenResult, *, attempt: int, max_tokens: int, keep_reasoning: bool) -> dict:
+def make_record(row: dict, prompt: Prompt, gen: GenResult, *, attempt: int, max_tokens: int, keep_reasoning: bool = False,
+                thinking: bool = True, endpoint: Optional[str] = None) -> dict:
     base = {"kind": "row", "id": row["id"], "benchmark": int(row["benchmark"]), "attempt": attempt, "max_tokens": max_tokens, "time": now_iso()}
+    if endpoint:
+        base["endpoint"] = endpoint
     nothing = {qid: None for qid in prompt.options}
     if gen.error:
         return {**base, "status": "error" if gen.transient else "failed", "error": str(gen.error)[:500], "answers": nothing,
                 "truncated": False, "finish_reason": gen.finish_reason, "seconds": round(gen.seconds, 3)}
-    p = interpret(gen, prompt.options)
+    p = interpret(gen, prompt.options, thinking=thinking)
     rec = {**base, "status": "ok", "answers": p.answers, "finish_reason": gen.finish_reason, "truncated": p.truncated,
+           "thought": thought_of(gen, p), "no_close": p.no_close, "read_by": p.read_by,
+           "garbled": C.looks_garbled(p.reasoning) or C.looks_garbled(p.final),
            "tokens": {"prompt": gen.prompt_tokens, "completion": gen.completion_tokens, "reasoning": gen.reasoning_tokens},
            "seconds": round(gen.seconds, 3), "final": p.final[-FINAL_TAIL_CHARS:] if p.final else None}
     if keep_reasoning:
@@ -218,14 +242,21 @@ class ResultStore:
     def attempts(self) -> Dict[str, int]:
         return dict(Counter(r["id"] for r in self.records()))
 
+    def error_streaks(self) -> Dict[str, int]:
+        """id -> how many `error` records end its history (a success, a budget cut or a `failed` record starts the count over)."""
+        out: Dict[str, int] = {}
+        for r in self.records():
+            out[r["id"]] = out.get(r["id"], 0) + 1 if r.get("status") == "error" else 0
+        return {k: v for k, v in out.items() if v}
+
     def max_tokens_seen(self) -> int:
         return self._seen
 
-    def done_ids(self, max_tokens: int) -> Set[str]:
-        """Rows that need no more work under this budget."""
+    def done_ids(self, max_tokens: int, retry_failed: bool = False) -> Set[str]:
+        """Rows that need no more work under this budget (with `retry_failed`, a `failed` row is work again)."""
         out = set()
         for rid, rec in self.latest().items():
-            if rec.get("status") not in C.TERMINAL_STATUSES:
+            if rec.get("status") not in C.TERMINAL_STATUSES or (retry_failed and rec.get("status") == "failed"):
                 continue
             if rec.get("truncated") and int(rec.get("max_tokens") or 0) < max_tokens:
                 continue
@@ -244,6 +275,8 @@ class RunStats:
     errors: int = 0
     unparseable: int = 0
     truncated: int = 0
+    no_thinking: int = 0
+    no_close: int = 0
     completion_tokens: int = 0
     seconds: float = 0.0
     stopped: Optional[str] = None
@@ -257,11 +290,21 @@ def _fmt_duration(s: float) -> str:
 
 
 def run(rows: Sequence[dict], backend: Any, store: ResultStore, *, max_tokens: int, limit: Optional[int] = None,
-        time_budget_s: Optional[float] = None, benchmarks: Optional[Iterable[int]] = None, keep_reasoning: bool = True,
+        time_budget_s: Optional[float] = None, benchmarks: Optional[Iterable[int]] = None, keep_reasoning: bool = False,
         log: Callable[[str], None] = print, clock: Callable[[], float] = time.monotonic, stop: Optional[Callable[[], bool]] = None,
-        max_consecutive_errors: int = 8, seed: Optional[int] = None) -> RunStats:
-    """Run the pending rows (pack order) through the backend; every finished row is on disk before the next starts."""
-    done = store.done_ids(max_tokens)
+        max_consecutive_errors: int = 8, seed: Optional[int] = None, max_attempts: int = C.DEFAULT_MAX_ATTEMPTS,
+        retry_failed: bool = False) -> RunStats:
+    """Run the pending rows (pack order) through the backend; every finished row is on disk before the next starts.
+
+    A row whose attempts end in `error` is run again on the next call, but the `max_attempts`-th error in a row makes it
+    `failed` (it has `gave_up`): the comparison counts it as wrong instead of dropping it from both sides.  `retry_failed`
+    runs the `failed` rows again, with a fresh count.
+    """
+    done = store.done_ids(max_tokens, retry_failed=retry_failed)
+    thinking = (store.config.get("chat_template_kwargs") or {}).get("enable_thinking", True) is not False
+    endpoint = store.config.get("endpoint")
+    max_attempts = max(1, int(max_attempts))
+    streaks = store.error_streaks()
     keep = None if benchmarks is None else {int(b) for b in benchmarks}
     pending = [r for r in rows if r["id"] not in done and (keep is None or int(r["benchmark"]) in keep)]
     if limit is not None:
@@ -306,27 +349,41 @@ def run(rows: Sequence[dict], backend: Any, store: ResultStore, *, max_tokens: i
         else:
             gens = outcome
         for r, gen in zip(chunk, gens):
-            rec = make_record(r, prompts[r["id"]], gen, attempt=attempts.get(r["id"], 0) + 1, max_tokens=max_tokens, keep_reasoning=keep_reasoning)
+            rec = make_record(r, prompts[r["id"]], gen, attempt=attempts.get(r["id"], 0) + 1, max_tokens=max_tokens, keep_reasoning=keep_reasoning,
+                              thinking=thinking, endpoint=endpoint)
+            errored = rec["status"] == "error"
+            if errored:
+                streaks[r["id"]] = streaks.get(r["id"], 0) + 1
+                if streaks[r["id"]] >= max_attempts:
+                    rec.update(status="failed", gave_up=streaks[r["id"]],
+                               error=f"gave up after {streaks[r['id']]} attempts: {rec['error']}"[:500])
+            else:
+                streaks.pop(r["id"], None)
             store.append(rec)
             stats.done += 1
             stats.seconds += gen.seconds or 0.0
-            if rec["status"] == "error":
-                stats.errors += 1
+            if errored:
                 state["consecutive"] += 1
             else:
                 state["consecutive"] = 0
-                if rec["status"] == "failed":
-                    stats.failed += 1
-                else:
-                    stats.ok += 1
-                    stats.completion_tokens += int(gen.completion_tokens or 0)
-                    stats.truncated += bool(rec["truncated"])
-                    stats.unparseable += any(v is None for v in rec["answers"].values())
+            if rec["status"] == "error":
+                stats.errors += 1
+            elif rec["status"] == "failed":
+                stats.failed += 1
+            else:
+                stats.ok += 1
+                stats.completion_tokens += int(gen.completion_tokens or 0)
+                stats.truncated += bool(rec["truncated"])
+                stats.unparseable += any(v is None for v in rec["answers"].values())
+                stats.no_thinking += not rec["thought"]
+                stats.no_close += bool(rec["no_close"])
             elapsed = clock() - start
             eta = f" ETA {_fmt_duration(elapsed / stats.done * (stats.total - stats.done))}" if elapsed > 0 and stats.total > stats.done else ""
             rate = f" {stats.completion_tokens / elapsed:.1f} tok/s" if elapsed > 0 and stats.completion_tokens else ""
+            ok = rec["status"] == "ok"
             flags = "".join(f" {name}" for name, on in (("truncated", rec.get("truncated")),
-                                                       ("unparseable", rec["status"] == "ok" and any(v is None for v in rec["answers"].values()))) if on)
+                                                       ("unparseable", ok and any(v is None for v in rec["answers"].values())),
+                                                       ("no_thinking", ok and not rec["thought"]), ("no_close", ok and rec["no_close"])) if on)
             tok = (rec.get("tokens") or {}).get("completion")
             log(f"[think] {stats.done}/{stats.total} {rec['id']} {rec['status']}{flags}"
                 + (f" {tok} tok" if tok is not None else "") + f" {rec.get('seconds', 0):.0f}s |{rate}{eta}")
@@ -403,6 +460,38 @@ class _Transient(Exception):
     pass
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib re-sends the headers of a POST that gets a 301, 302 or 303, the key included, to whatever host the answer names."""
+
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        return None                                           # urllib then raises the HTTPError of the 3xx; nothing is sent anywhere else
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def open_no_redirect(req: Any, timeout: Optional[float] = None) -> Any:
+    """`urllib.request.urlopen` that never follows a redirect (the default opener of the OpenAI backend)."""
+    return _NO_REDIRECT_OPENER.open(req, timeout=timeout)
+
+
+def is_loopback_host(host: Optional[str]) -> bool:
+    host = (host or "").strip("[]").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _redirect_hint(e: urllib.error.HTTPError) -> str:
+    """Where a 3xx points, without its query (it can hold a credential), and why the kit does not go there."""
+    where = sanitize_url((e.headers.get("Location") if e.headers else None) or "") or "an unknown address"
+    return (f"the endpoint answered with a redirect to {where}; the kit does not follow redirects, because the API key would go along. "
+            "Use the final address as the base URL")
+
+
 def _text_of(content: Any) -> Optional[str]:
     if content is None or isinstance(content, str):
         return content
@@ -420,11 +509,20 @@ class OpenAIBackend:
                  max_tokens: int = DEFAULT_MAX_TOKENS, chat_template_kwargs: Optional[Dict[str, Any]] = None,
                  reasoning_effort: Optional[str] = None, extra_body: Optional[Dict[str, Any]] = None, standard_only: bool = False,
                  stream: bool = True, timeout: float = 3600.0, retries: int = 4, concurrency: int = 8, revision: Optional[str] = None,
-                 sleep: Callable[[float], None] = time.sleep, opener: Callable[..., Any] = urllib.request.urlopen,
+                 sleep: Callable[[float], None] = time.sleep, opener: Callable[..., Any] = open_no_redirect,
                  log: Callable[[str], None] = lambda s: None):
         self.base_url = base_url.rstrip("/")
         self.url = self.base_url + "/chat/completions"
         self.model, self.api_key = model, api_key
+        parts = urllib.parse.urlsplit(self.base_url)
+        if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+            raise BackendError(f"the base URL must start with http:// or https:// and name a host, not {sanitize_url(base_url)!r}")
+        if api_key and parts.scheme.lower() != "https" and not is_loopback_host(parts.hostname):
+            raise BackendError(f"refusing to send the API key in clear over http:// to {parts.hostname}: use https://, or open an SSH tunnel and point "
+                               "the base URL at http://127.0.0.1:<port>/v1")
+        bad = sorted(k for k in (extra_body or {}) if str(k).lower() in C.PROTOCOL_KEYS)
+        if bad:
+            raise BackendError(f"the extra body may not set protocol fields: {', '.join(bad)}")
         self.sampling = dict(C.THINKING_SAMPLING if sampling is None else sampling)
         self.max_tokens = max_tokens
         self.chat_template_kwargs = {"enable_thinking": True} if chat_template_kwargs is None else dict(chat_template_kwargs)
@@ -541,6 +639,8 @@ class OpenAIBackend:
                     text = ""
                 kind = classify_http_error(e.code, text)
                 last = f"HTTP {e.code}: {text[:300]}"
+                if 300 <= e.code < 400:
+                    raise BackendError(f"HTTP {e.code}: {_redirect_hint(e)}") from e
                 if kind == "fatal":
                     raise BackendError(f"{last} (check the base URL, the key, the model name and the parameters)") from e
                 if kind == "row":
@@ -568,6 +668,8 @@ class OpenAIBackend:
             with self.opener(req, timeout=min(self.timeout, 600)) as resp:
                 return self._read_stream(resp, time.monotonic()) if self.stream else self._read_json(resp.read(), time.monotonic())
         except urllib.error.HTTPError as e:
+            if 300 <= e.code < 400:
+                raise BackendError(f"preflight failed: HTTP {e.code}: {_redirect_hint(e)}") from e
             text = e.read().decode("utf-8", "replace")[:300] if hasattr(e, "read") else ""
             raise BackendError(f"preflight failed: HTTP {e.code}: {text}") from e
         except (urllib.error.URLError, OSError, http.client.HTTPException, _Transient) as e:
@@ -651,7 +753,8 @@ class TransformersBackend:
         except torch.cuda.OutOfMemoryError as e:
             torch.cuda.empty_cache()
             if len(items) == 1:
-                return [GenResult(error=f"CUDA out of memory with one sequence and a budget of {self.max_tokens} tokens: {str(e)[:120]}", transient=True)]
+                # One sequence that does not fit will not fit the second time: the row is terminal (`failed`), counted as wrong, and the report says so.
+                return [GenResult(error=f"CUDA out of memory with one sequence and a budget of {self.max_tokens} tokens: {str(e)[:120]}", transient=False)]
             self.log(f"[think] out of memory with a batch of {len(items)}; splitting it")
             half = len(items) // 2
             return self.generate(items[:half]) + self.generate(items[half:])
@@ -725,6 +828,15 @@ def refuse_secrets(obj: Any, what: str, path: str = "") -> None:
                          "not in an option: this JSON is written to the results file and to the report.")
 
 
+def refuse_protocol_keys(obj: Dict[str, Any], what: str) -> None:
+    """The fields of the protocol have their own options; letting a JSON option set them would leave the header and the report saying the protocol ran."""
+    bad = sorted(k for k in obj if str(k).lower() in C.PROTOCOL_KEYS)
+    if bad:
+        raise SystemExit(f"{what}: {', '.join(f'`{k}`' for k in bad)} is part of the protocol and has its own option "
+                         "(--thinking, --max-tokens, --temperature and the other sampling flags, --seed, --reasoning-effort). "
+                         f"{what} is for the fields only your provider knows.")
+
+
 def _json_arg(text: Optional[str], what: str) -> Dict[str, Any]:
     if not text:
         return {}
@@ -735,7 +847,18 @@ def _json_arg(text: Optional[str], what: str) -> Dict[str, Any]:
     if not isinstance(obj, dict):
         raise SystemExit(f"{what} must be a JSON object")
     refuse_secrets(obj, what)
+    refuse_protocol_keys(obj, what)
     return obj
+
+
+def _positive_int(text: str) -> int:
+    try:
+        n = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return n
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -751,7 +874,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--time-budget-s", type=float, help="stop starting new rows after this many seconds (a Kaggle session is 9-12 h)")
     ap.add_argument("--limit", type=int, help="run at most this many pending rows (use 3 first to time the run)")
     ap.add_argument("--benchmarks", help="comma-separated catalog ids to run (default: all in the pack)")
-    ap.add_argument("--no-reasoning", action="store_true", help="do not store the thinking text in the results")
+    ap.add_argument("--keep-reasoning", action="store_true", help="store the thinking text in the results (default: not stored; the verdict does not read it, and it is "
+                                                                  "evaluation data that must never reach a training corpus)")
+    ap.add_argument("--no-reasoning", action="store_true", help="the default now; accepted so that older commands keep working")
+    ap.add_argument("--max-attempts", type=_positive_int, default=C.DEFAULT_MAX_ATTEMPTS,
+                    help="a row that ends in a transient error this many times in a row becomes `failed` and counts as wrong (default %(default)s)")
+    ap.add_argument("--retry-failed", action="store_true", help="run the rows that are `failed` again, with a fresh count of attempts")
     ap.add_argument("--seed", type=int, help="sampling seed (a stable seed per row is derived from it)")
     ap.add_argument("--overwrite", action="store_true", help="start the results file over instead of resuming")
     ap.add_argument("--thinking", choices=("on", "off"), default="on", help="off = same model without thinking (a control)")
@@ -826,9 +954,17 @@ def summarize(stats: RunStats, store: ResultStore, *, thinking: bool = True) -> 
     latest = store.latest()
     by = Counter(r.get("status") for r in latest.values())
     trunc = sum(bool(r.get("truncated")) for r in latest.values())
+    gave_up = sum(bool(r.get("gave_up")) for r in latest.values())
+    failed = f"{by.get('failed', 0)} failed" + (f" ({gave_up} given up after repeated errors)" if gave_up else "")
     text = (f"[think] this run: {stats.done}/{stats.total} rows ({stats.ok} ok, {stats.failed} failed, {stats.errors} error), "
             f"{stats.completion_tokens} tokens, stopped: {stats.stopped or 'all pending rows done'}\n"
-            f"[think] file now: {len(latest)} rows ({by.get('ok', 0)} ok, {by.get('failed', 0)} failed, {by.get('error', 0)} to retry), {trunc} cut by the budget")
+            f"[think] file now: {len(latest)} rows ({by.get('ok', 0)} ok, {failed}, {by.get('error', 0)} to retry), {trunc} cut by the budget")
+    if thinking and stats.no_thinking:
+        text += (f"\n[think] WARNING: {stats.no_thinking} of {stats.ok} replies show no thinking (no reasoning apart, no closing tag, "
+                 f"under {C.MIN_THINKING_TOKENS} tokens). If most do, the endpoint ignored the request for thinking and the run is not the GT protocol.")
+    if thinking and stats.no_close:
+        text += (f"\n[think] WARNING: {stats.no_close} of {stats.ok} replies stopped without closing the thinking; "
+                 "they are not read as answers and count as errors.")
     if thinking and stats.ok and stats.completion_tokens / stats.ok < C.MIN_THINKING_TOKENS:
         text += (f"\n[think] WARNING: {stats.completion_tokens / stats.ok:.0f} tokens per reply on average: the model barely thought. "
                  "Check that the endpoint has thinking on (README, Backends); a run like this is not the GT protocol.")
@@ -870,11 +1006,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             previous[sig] = signal.signal(sig, on_signal)
         except ValueError:                                     # not the main thread: keep the default
             pass
-    log(f"[think] {len(rows)} rows in the pack; {len(store.done_ids(args.max_tokens))} done; backend {args.backend}, model {args.model}, budget {args.max_tokens} tokens")
+    log(f"[think] {len(rows)} rows in the pack; {len(store.done_ids(args.max_tokens, retry_failed=args.retry_failed))} done; backend {args.backend}, model {args.model}, budget {args.max_tokens} tokens")
     try:
         stats = run(rows, backend, store, max_tokens=args.max_tokens, limit=args.limit, time_budget_s=args.time_budget_s,
-                    benchmarks=[int(b) for b in args.benchmarks.split(",") if b] if args.benchmarks else None, keep_reasoning=not args.no_reasoning,
-                    log=log, stop=stop_flag.is_set, max_consecutive_errors=args.max_consecutive_errors, seed=args.seed)
+                    benchmarks=[int(b) for b in args.benchmarks.split(",") if b] if args.benchmarks else None,
+                    keep_reasoning=args.keep_reasoning and not args.no_reasoning, log=log, stop=stop_flag.is_set,
+                    max_consecutive_errors=args.max_consecutive_errors, seed=args.seed, max_attempts=args.max_attempts, retry_failed=args.retry_failed)
     except BackendError as e:
         log(f"[think] {e}")
         return 2

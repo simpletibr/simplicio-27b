@@ -23,6 +23,14 @@ thinker and the reference resampled on the same rows (paired).  Picking the best
 same rows favors the reference, which is the cautious side for a gate; `ci_reselected` repeats the
 interval picking the best model again inside every resample, for the reader who wants it stricter.
 
+The last line, `GT VERDICT: ...`, says PASS or FAIL only for a run that earns it: every row of the pack scored (a row
+that could not be answered after the allowed attempts is `failed` and counts as wrong; one with a transient error is not
+scored and makes the run PARTIAL), the registered comparison (bootstrap, seed, target, all the decision models, the pack
+of the manifest), the registered thinker (pinned checkpoint, thinking on, the model card's sampling, replies measured)
+and a thinker seen thinking.  Otherwise the status is INCONCLUSIVE (thinking not detected, nothing to compare), PARTIAL
+(rows missing: the delta and the interval are provisional, and the rows that failed to run are not drawn at random) or
+EXPLORATORY (outside the registered protocol), in this order, with the outcome the rule would give kept as `outcome`.
+
 CLI:  python -m decide.think.compare --pack pack.jsonl.gz --thinker results.jsonl --out DIR
 """
 from __future__ import annotations
@@ -39,9 +47,12 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import common as C
 
+DEFAULT_MANIFEST = Path(__file__).with_name("gt-sample-manifest.json")
 THINKER = "thinker"
 TERMINAL_STATUSES = C.TERMINAL_STATUSES      # anything else (`error`) is transient: the row is retried on resume
-REPORT_FORMAT = "think-gt-report/1"
+REPORT_FORMAT = "think-gt-report/2"
+MIN_THOUGHT_SHARE = 0.5                      # thinking must show in at least this share of the rows that answered
+MAX_NO_USAGE_SHARE = 0.5                     # and the tokens of more than this share of them must have been counted
 
 
 class PackError(ValueError):
@@ -366,20 +377,7 @@ def _summary(values: Sequence[float]) -> Dict[str, Optional[float]]:
             "p80": xs[min(len(xs) - 1, math.ceil(len(xs) * 0.8) - 1)], "max": xs[-1]}
 
 
-def looks_garbled(text: Optional[str], *, window: int = 2000, min_chars: int = 200) -> bool:
-    """Noise, not language: in the first `window` characters, one character is over 40% of them or letters and digits are under 40%.
-
-    On a T4 the model runs in fp16, which can overflow and make it emit a run of one token.  Such a row is
-    not a wrong answer of the model, and a FAIL made of them says nothing about it.  Too short to judge is False.
-    """
-    if not text:
-        return False
-    chunk = "".join(text[:window].split())
-    if len(chunk) < min_chars:
-        return False
-    most = max(chunk.count(ch) for ch in set(chunk))
-    readable = sum(ch.isalnum() for ch in chunk)
-    return most / len(chunk) > 0.4 or readable / len(chunk) < 0.4
+looks_garbled = C.looks_garbled      # lives in common.py: the thinker judges each row when it writes it
 
 
 def _is_unparseable(rec: dict) -> bool:
@@ -389,16 +387,28 @@ def _is_unparseable(rec: dict) -> bool:
     return not answers or any(v is None for v in answers.values())
 
 
+def _read_by_fallback(rec: dict) -> bool:
+    return any(how not in (None, "marker") for how in (rec.get("read_by") or {}).values())
+
+
 def thinker_stats(s: Scored, benchmarks: Optional[Sequence[int]] = None) -> Dict[str, Any]:
     recs = [r for b in (benchmarks or s.benchmarks) for r in s.records[b]]
+    answered = [r for r in recs if r.get("status", "ok") == "ok"]
     tokens = [r["tokens"]["completion"] for r in recs if isinstance(r.get("tokens"), dict) and r["tokens"].get("completion") is not None]
     seconds = [r["seconds"] for r in recs if isinstance(r.get("seconds"), (int, float))]
     return {
         "rows": len(recs),
+        "ok": len(answered),
         "failed": sum(r.get("status", "ok") == "failed" for r in recs),
+        "gave_up": sum(bool(r.get("gave_up")) for r in recs),
         "unparseable": sum(_is_unparseable(r) for r in recs),
         "truncated": sum(bool(r.get("truncated")) for r in recs),
-        "garbled": sum(looks_garbled(r.get("reasoning")) or looks_garbled(r.get("final")) for r in recs),
+        "garbled": sum(bool(r["garbled"]) if "garbled" in r else looks_garbled(r.get("reasoning")) or looks_garbled(r.get("final")) for r in recs),
+        "thought": sum(r.get("thought") is True for r in answered),
+        "no_close": sum(bool(r.get("no_close")) for r in answered),
+        "read_by_fallback": sum(_read_by_fallback(r) for r in answered),
+        "usage_missing": sum(not (isinstance(r.get("tokens"), dict) and r["tokens"].get("completion") is not None) for r in answered),
+        "endpoints": sorted({r["endpoint"] for r in recs if r.get("endpoint")}),
         "completion_tokens": _summary(tokens),
         "seconds": _summary(seconds),
     }
@@ -429,28 +439,98 @@ def _discordant(s: Scored, reference: str) -> Dict[str, int]:
     return out
 
 
+def protocol_keys_in(cfg: Optional[Dict[str, Any]]) -> List[str]:
+    """The protocol fields that the extra body of a results header set (an older file; the CLI refuses them now)."""
+    return sorted(k for k in ((cfg or {}).get("extra_body") or {}) if str(k).lower() in C.PROTOCOL_KEYS)
+
+
+def thinking_requested(cfg: Optional[Dict[str, Any]]) -> bool:
+    """A results file without a header is read as a thinking run."""
+    return ((cfg or {}).get("chat_template_kwargs") or {}).get("enable_thinking", True) is not False
+
+
+def thinker_deviations(cfg: Optional[Dict[str, Any]]) -> List[str]:
+    """Where the thinker's own configuration is not the registered one."""
+    if not cfg:
+        return ["thinker_config_unknown"]
+    out = []
+    thinking = thinking_requested(cfg)
+    if not thinking:
+        out.append("thinking_off")
+    model, rev = cfg.get("model"), cfg.get("revision")
+    if (model, rev) not in set(C.PINNED_REVISIONS.items()):
+        out.append("revision_not_declared" if model in C.PINNED_REVISIONS and not rev else "model_not_pinned")
+    if cfg.get("standard_only"):
+        out.append("standard_only")
+    if thinking and cfg.get("sampling") is not None and dict(cfg["sampling"]) != dict(C.THINKING_SAMPLING):
+        out.append("sampling_not_registered")
+    if cfg.get("reasoning_effort") not in (None, "xhigh"):
+        out.append("reasoning_effort")
+    if protocol_keys_in(cfg):
+        out.append("extra_body_overrides_protocol")
+    return out
+
+
+def exploratory_reasons(cfg: Optional[Dict[str, Any]], st: Dict[str, Any], *, B: int, seed: int, min_delta: float,
+                        models: Optional[Sequence[str]], present: Sequence[str], pack_issues: Sequence[str]) -> List[str]:
+    out = []
+    if B != C.BOOTSTRAP_B:
+        out.append("bootstrap_b")
+    if seed != C.SEED:
+        out.append("seed")
+    if round(min_delta, 9) != C.GT_MIN_DELTA_PTS:
+        out.append("min_delta")
+    if models is not None and set(models) != set(present):
+        out.append("models_subset")
+    out += [x for x in pack_issues if x not in out]
+    out += thinker_deviations(cfg)
+    if st["ok"] and st["usage_missing"] > MAX_NO_USAGE_SHARE * st["ok"]:
+        out.append("usage_missing")
+    return out
+
+
+def inconclusive_reasons(cfg: Optional[Dict[str, Any]], st: Dict[str, Any]) -> List[str]:
+    """A thinker that was not seen thinking is not the thing the gate measures, whatever the numbers say."""
+    if not thinking_requested(cfg):
+        return []
+    if st["rows"] and not st["ok"]:
+        return ["no_replies"]
+    if st["ok"] and st["thought"] < MIN_THOUGHT_SHARE * st["ok"]:
+        return ["thinking_not_detected"]
+    return []
+
+
 def build_report(pack_rows: Iterable[dict], records: Iterable[dict], *, header: Optional[dict] = None,
                  B: int = C.BOOTSTRAP_B, seed: int = C.SEED, min_delta: float = C.GT_MIN_DELTA_PTS,
-                 models: Optional[Sequence[str]] = None, pack_sha256: Optional[str] = None) -> Dict[str, Any]:
+                 models: Optional[Sequence[str]] = None, pack_sha256: Optional[str] = None,
+                 pack_issues: Sequence[str] = ()) -> Dict[str, Any]:
+    """Score everything and decide.  `pack_issues` are the reasons the caller found to doubt the pack (main() checks it against the manifest)."""
+    pack_rows = list(pack_rows)
     s = score_pack(pack_rows, records, models=models)
     ref = pick_reference(s)
+    cfg = (header or {}).get("config")
     report: Dict[str, Any] = {
         "format": REPORT_FORMAT,
         "config": {"bootstrap_b": B, "seed": seed, "ci_level": C.CI_LEVEL, "min_delta_pts": min_delta,
                    "unit": "macro average over benchmarks; paired bootstrap over rows resampled inside each benchmark"},
         "pack": {"rows": s.pack_rows, "content_sha256": pack_sha256},
-        "thinker": {"config": (header or {}).get("config"), "config_fingerprint": (header or {}).get("config_fingerprint")},
+        "thinker": {"config": cfg, "config_fingerprint": (header or {}).get("config_fingerprint")},
         "coverage": {"rows_in_pack": s.pack_rows, "rows_scored": s.rows_scored(), "complete": s.complete, "missing": len(s.missing),
                      "errors": len(s.errors), "foreign_ids": len(s.foreign), "missing_ids": s.missing[:50], "error_ids": s.errors[:50]},
         "reference": ref,
         "models": s.models,
         "choice_mismatch": s.choice_mismatch,
     }
+    incomplete = None if s.complete else {"missing": len(s.missing), "errors": len(s.errors)}
+    st = thinker_stats(s)
+    present = sorted(set.intersection(*(set(r.get("decisions", {})) for r in pack_rows))) if pack_rows else []
+    exploratory = exploratory_reasons(cfg, st, B=B, seed=seed, min_delta=min_delta, models=models, present=present, pack_issues=pack_issues)
     if not s.benchmarks or ref is None:
         reason = "no_scored_rows" if not s.benchmarks else "no_decision_models"
-        report["verdict"] = {"status": "INCONCLUSIVE", "reasons": [reason], "can_still_pass": False, "delta_pts": None, "ci": None,
-                             "ci_reselected": None, "reference": ref, "min_delta_pts": min_delta}
-        report["benchmarks"], report["systems"], report["deltas"], report["thinker_stats"] = {}, {}, {}, thinker_stats(s)
+        report["verdict"] = {"status": "INCONCLUSIVE", "reasons": [reason], "outcome": None, "outcome_reasons": [], "can_still_pass": False,
+                             "delta_pts": None, "ci": None, "ci_reselected": None, "reference": ref, "min_delta_pts": min_delta,
+                             "incomplete": incomplete, "exploratory": exploratory, "inconclusive": [reason]}
+        report["benchmarks"], report["systems"], report["deltas"], report["thinker_stats"] = {}, {}, {}, st
         report["latency"], report["notice"] = None, C.EVAL_ONLY_NOTICE
         return report
     rep = bootstrap(s.hits, B=B, seed=seed)
@@ -473,11 +553,21 @@ def build_report(pack_rows: Iterable[dict], records: Iterable[dict], *, header: 
     macros = {m: rep.macro(m) for m in s.models}
     thinker_series = rep.macro(THINKER)
     reselected = [100.0 * (thinker_series[r] - max(macros[m][r] for m in s.models)) for r in range(B)]
-    report["verdict"] = {**decide(delta, lo, hi, min_delta=min_delta), "delta_pts": delta, "ci": [lo, hi],
-                         "ci_reselected": list(percentile_ci(reselected)), "reference": ref, "min_delta_pts": min_delta,
-                         "thinker_macro_acc": s.macro_acc(THINKER), "reference_macro_acc": s.macro_acc(ref)}
+    rule = decide(delta, lo, hi, min_delta=min_delta)
+    inconclusive = inconclusive_reasons(cfg, st)
+    verdict = {**rule, "outcome": rule["status"], "outcome_reasons": rule["reasons"], "delta_pts": delta, "ci": [lo, hi],
+               "ci_reselected": list(percentile_ci(reselected)), "reference": ref, "min_delta_pts": min_delta,
+               "thinker_macro_acc": s.macro_acc(THINKER), "reference_macro_acc": s.macro_acc(ref),
+               "incomplete": incomplete, "exploratory": exploratory, "inconclusive": inconclusive}
+    if inconclusive:
+        verdict.update(status="INCONCLUSIVE", reasons=inconclusive)
+    elif incomplete:
+        verdict.update(status="PARTIAL", reasons=(["rows_not_run"] if incomplete["missing"] else []) + (["rows_with_transient_error"] if incomplete["errors"] else []))
+    elif exploratory:
+        verdict.update(status="EXPLORATORY", reasons=exploratory)
+    report["verdict"] = verdict
     report["discordant"] = _discordant(s, ref)
-    report["thinker_stats"] = thinker_stats(s)
+    report["thinker_stats"] = st
     report["latency"] = latency_slack(report["thinker_stats"])
     report["gate_curve"] = gate_curve(s, ref)
     if report["latency"] is not None:
@@ -487,23 +577,56 @@ def build_report(pack_rows: Iterable[dict], records: Iterable[dict], *, header: 
     return report
 
 
+OFFICIAL = ("PASS", "FAIL")
+
+
+def _why_inconclusive(report: Dict[str, Any]) -> str:
+    v, st = report["verdict"], report["thinker_stats"]
+    return {"no_scored_rows": "no thinker row scored yet",
+            "no_decision_models": "the pack has no decision model",
+            "no_replies": "no scored row got a reply from the thinker",
+            "thinking_not_detected": (f"thinking not detected: {st['thought']} of {st['ok']} rows that answered show thinking (reasoning apart, a closing tag "
+                                      f"or {C.MIN_THINKING_TOKENS}+ tokens), so the endpoint probably ignored the request for it")}.get(v["reasons"][0], v["reasons"][0])
+
+
 def verdict_line(report: Dict[str, Any]) -> str:
+    """The one line that `hosted` and the Modal app show.  PASS and FAIL only for a run that earned them."""
     v, cov = report["verdict"], report["coverage"]
     scope = f"{cov['rows_scored']} of {cov['rows_in_pack']} rows"
-    if v["status"] == "INCONCLUSIVE":
-        why = {"no_scored_rows": "no thinker row scored yet", "no_decision_models": "the pack has no decision model"}.get(v["reasons"][0], v["reasons"][0])
-        return f"GT VERDICT: INCONCLUSIVE | {why} ({scope})"
+    status = v["status"]
+    if v.get("delta_pts") is None:
+        head = f"GT VERDICT: {status} | {_why_inconclusive(report)} ({scope})"
+        return head + _also(v, status)
     level = int(round(100 * report["config"]["ci_level"]))
     lo, hi = v["ci"]
-    head = f"GT VERDICT: {v['status']}" + (f" ({', '.join(v['reasons'])})" if v["reasons"] else "")
-    parts = [head,
-             f"thinker {_pct(v['thinker_macro_acc'])} vs {v['reference']} {_pct(v['reference_macro_acc'])} (best decision model, macro over {len(report['benchmarks'])} benchmarks)",
-             f"delta {_pts(v['delta_pts'])} pts, {level}% CI [{_pts(lo)}, {_pts(hi)}]",
-             f"rule: delta >= {_pts(v['min_delta_pts'])} and CI low > 0"]
-    if v["status"] == "FAIL" and v["can_still_pass"]:
-        parts.append(f"the CI still holds {_pts(v['min_delta_pts'])}: more rows could pass")
-    parts.append(f"{scope}" + ("" if cov["complete"] else f", PARTIAL: {cov['missing']} not run, {cov['errors']} with a transient error"))
-    return " | ".join(parts)
+    numbers = [f"thinker {_pct(v['thinker_macro_acc'])} vs {v['reference']} {_pct(v['reference_macro_acc'])} (best decision model, macro over {len(report['benchmarks'])} benchmarks)",
+               f"delta {_pts(v['delta_pts'])} pts, {level}% CI [{_pts(lo)}, {_pts(hi)}]"]
+    rule = f"rule: delta >= {_pts(v['min_delta_pts'])} and CI low > 0"
+    if status in OFFICIAL:
+        head = f"GT VERDICT: {status}" + (f" ({', '.join(v['reasons'])})" if v["reasons"] else "")
+        parts = [head, *numbers, rule]
+        if status == "FAIL" and v["can_still_pass"]:
+            parts.append(f"the CI still holds {_pts(v['min_delta_pts'])}: more rows could pass")
+        parts.append(scope)
+        return " | ".join(parts)
+    inc = v.get("incomplete")
+    parts = [f"GT VERDICT: {status} ({', '.join(v['reasons'])})"]
+    if status == "INCONCLUSIVE":
+        parts.append(_why_inconclusive(report))
+    parts += [f"provisional, not a verdict: the rule reads {v['outcome']} on the rows scored", *numbers]
+    parts.append(scope + (f": {inc['missing']} not run, {inc['errors']} with a transient error" if inc else ""))
+    return " | ".join(parts) + _also(v, status)
+
+
+def _also(v: Dict[str, Any], status: str) -> str:
+    """What else is wrong with the run, for the statuses that rank below the one printed."""
+    more = []
+    if v.get("incomplete") and status != "PARTIAL":
+        inc = v["incomplete"]
+        more.append(f"PARTIAL ({inc['missing']} not run, {inc['errors']} with a transient error)")
+    if v.get("exploratory") and status != "EXPLORATORY":
+        more.append(f"EXPLORATORY ({', '.join(v['exploratory'])})")
+    return (" | also " + "; ".join(more)) if more else ""
 
 
 # ----------------------------------------------------------------------------------- markdown
@@ -532,11 +655,54 @@ def _thinker_lines(cfg: Optional[Dict[str, Any]]) -> List[str]:
     return out
 
 
+WHY = {
+    "rows_not_run": "{missing} linhas sem resultado: nao rodaram ainda",
+    "rows_with_transient_error": "{errors} linhas terminaram em erro transitorio: rode de novo com os mesmos argumentos (apos {attempts} tentativas a linha vira falha e conta como erro do modelo)",
+    "bootstrap_b": "o numero de reamostragens do bootstrap nao e o registrado ({registered})",
+    "seed": "a semente do bootstrap nao e a registrada ({seed})",
+    "min_delta": "o alvo em pontos nao e o registrado (+{target})",
+    "models_subset": "o thinker foi comparado com um subconjunto dos modelos de decisao, nao com todos",
+    "pack_mismatch_ignored": "os resultados vieram de outro pacote e --ignore-pack-mismatch foi usado",
+    "pack_not_manifest": "o pacote nao confere com o manifesto registrado",
+    "manifest_not_checked": "o manifesto registrado nao foi encontrado para conferir o pacote",
+    "thinker_config_unknown": "os resultados nao trazem cabecalho: a configuracao do thinker e desconhecida",
+    "thinking_off": "thinking desligado: isto e um controle, nao o gate",
+    "model_not_pinned": "modelo ou revisao diferente dos pares fixados",
+    "revision_not_declared": "a revisao do checkpoint nao foi declarada (--revision): nao ha como saber o que o servidor roda",
+    "standard_only": "--standard-only: top_k, min_p, repetition_penalty e chat_template_kwargs nao foram enviados, entao a amostragem nao e a do cartao do modelo",
+    "sampling_not_registered": "a amostragem nao e a do cartao do modelo",
+    "reasoning_effort": "o esforco de raciocinio nao e o padrao do modelo",
+    "extra_body_overrides_protocol": "o corpo extra do pedido definiu campos do protocolo",
+    "usage_missing": "mais da metade das respostas veio sem contagem de tokens: nao da para medir o pensamento nem o custo",
+    "thinking_not_detected": "menos da metade das linhas mostra pensamento: o endpoint provavelmente ignorou o pedido de thinking",
+    "no_replies": "nenhuma linha pontuada teve resposta do thinker",
+    "no_scored_rows": "nenhuma linha do thinker foi pontuada ainda",
+    "no_decision_models": "o pacote nao tem modelo de decisao",
+}
+
+
+def _why_lines(report: Dict[str, Any]) -> List[str]:
+    v, cov = report["verdict"], report["coverage"]
+    if v["status"] in OFFICIAL:
+        return []
+    fill = {"missing": cov["missing"], "errors": cov["errors"], "attempts": C.DEFAULT_MAX_ATTEMPTS, "registered": C.BOOTSTRAP_B, "seed": C.SEED,
+            "target": f"{C.GT_MIN_DELTA_PTS:g}"}
+    codes = list(v["reasons"]) + [c for c in (v.get("exploratory") or []) if c not in v["reasons"]]
+    if v.get("incomplete") and "rows_not_run" not in codes and "rows_with_transient_error" not in codes:
+        codes += (["rows_not_run"] if v["incomplete"]["missing"] else []) + (["rows_with_transient_error"] if v["incomplete"]["errors"] else [])
+    out = [f"**Isto NAO e o veredito do gate** (status {v['status']}). "
+           + ("O delta e o IC abaixo valem so para as linhas pontuadas e sao provisorios." if v.get("delta_pts") is not None else ""), ""]
+    out += [f"- `{c}`: " + WHY.get(c, c).format(**fill) for c in codes]
+    if v.get("outcome"):
+        out.append(f"- a regra (delta >= +{v['min_delta_pts']:g} e piso do IC > 0) daria {v['outcome']} nestas linhas, nestas condicoes.")
+    return out + [""]
+
+
 def render_markdown(report: Dict[str, Any]) -> str:
     out = ["# Gate GT (F2b): pensar vs decidir em um passe", "", verdict_line(report), ""]
     v, cfg, cov = report["verdict"], report["config"], report["coverage"]
-    if v["status"] == "INCONCLUSIVE":
-        out.append("Nenhuma linha do thinker foi pontuada ainda.")
+    out += _why_lines(report)
+    if v.get("delta_pts") is None:
         return "\n".join(out) + "\n"
     systems = [THINKER, *report["models"]]
     ref = report["reference"]
@@ -591,6 +757,22 @@ def render_markdown(report: Dict[str, Any]) -> str:
     if thinking_on and st["rows"] and isinstance(ct.get("median"), (int, float)) and ct["median"] < C.MIN_THINKING_TOKENS:
         out.append(f"- AVISO: a mediana e de {ct['median']:g} tokens por linha: o modelo quase nao pensou (o endpoint ignorou o pedido de thinking?). "
                    "Isto nao e o gate GT; ligue o thinking no endpoint e rode de novo com outro `--out` (README, \"Backends\").")
+    if st.get("ok") and st["thought"] < st["ok"]:
+        out.append(f"- AVISO: {st['ok'] - st['thought']} de {st['ok']} linhas nao mostram pensamento (nem texto de raciocinio, nem o fecho do bloco, nem {C.MIN_THINKING_TOKENS} tokens); "
+                   "contam como respostas do thinker, mas nao se sabe se ele pensou nelas.")
+    if st.get("usage_missing"):
+        out.append(f"- AVISO: {st['usage_missing']} de {st['ok']} linhas sem contagem de tokens (a resposta do endpoint nao trouxe `usage`); o custo e a mediana de tokens nao dizem tudo.")
+    if st.get("no_close"):
+        out.append(f"- AVISO: {st['no_close']} linhas pararam sem fechar o pensamento (sem `</think>` nem raciocinio a parte): nao foram lidas como resposta e contam como erro.")
+    if st.get("read_by_fallback"):
+        out.append(f"- AVISO: {st['read_by_fallback']} linhas foram lidas sem a linha ANSWER pedida (`resposta e`, `\\boxed` ou o ultimo rotulo solto); confira o leitor se forem muitas.")
+    if st.get("gave_up"):
+        out.append(f"- AVISO: {st['gave_up']} linhas desistidas apos varias tentativas com erro; contam como erro do thinker (nao saem da comparacao).")
+    if len(st.get("endpoints") or []) > 1:
+        out.append(f"- AVISO: as linhas vieram de {len(st['endpoints'])} endpoints ({', '.join(st['endpoints'])}). Agregadores podem mandar cada linha a um upstream ou a uma quantizacao diferente; "
+                   "o resultado mistura servidores, e o cabecalho mostra so a configuracao do primeiro.")
+    if (((report.get("thinker") or {}).get("config") or {}).get("standard_only")):
+        out.append("- AVISO: `--standard-only` tirou top_k, min_p, repetition_penalty e chat_template_kwargs do pedido: a amostragem nao e a do cartao do modelo, e o pensamento depende do campo do provedor.")
     if st.get("garbled"):
         out.append(f"- AVISO: {st['garbled']} linhas com saida ilegivel (ruido, nao linguagem). Na T4 a causa provavel e o fp16 estourando (UNVERIFIED); "
                    "essas linhas nao dizem nada sobre o modelo, e um FAIL feito delas nao e um veredito (README, \"Se a saida for ruido\").")
@@ -620,8 +802,30 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--seed", type=int, default=C.SEED)
     ap.add_argument("--min-delta", type=float, default=C.GT_MIN_DELTA_PTS, help="points the thinker must win by (default %(default)s)")
     ap.add_argument("--models", help="comma-separated decision models to compare against (default: all in the pack)")
-    ap.add_argument("--ignore-pack-mismatch", action="store_true", help="accept results made from another pack (ids must still match)")
+    ap.add_argument("--ignore-pack-mismatch", action="store_true", help="accept results made from another pack (ids must still match); the verdict is then EXPLORATORY")
+    ap.add_argument("--manifest", default=str(DEFAULT_MANIFEST),
+                    help="the sample manifest the pack must match for the verdict to count (default: the committed gt-sample-manifest.json)")
     return ap
+
+
+def pack_issues_of(pack: Any, header: Optional[dict], pack_sha: str, args: argparse.Namespace) -> List[str]:
+    """Reasons to doubt that this pack is the registered sample, with the details on stderr."""
+    from .sample import verify
+    issues: List[str] = []
+    if header and header.get("pack_content_sha256") and header["pack_content_sha256"] != pack_sha:
+        if not args.ignore_pack_mismatch:
+            raise PackError("the results were made from another pack (content sha256 differs); rebuild the pack with the same manifest or pass --ignore-pack-mismatch")
+        issues.append("pack_mismatch_ignored")
+    if not Path(args.manifest).is_file():
+        print(f"[compare] manifest {args.manifest} not found: the pack cannot be checked against the registered sample", file=sys.stderr)
+        issues.append("manifest_not_checked")
+        return issues
+    problems = verify(args.manifest, pack)
+    if problems:
+        for p in problems[:10]:
+            print(f"[compare] manifest: {p}", file=sys.stderr)
+        issues.append("pack_not_manifest")
+    return issues
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -631,10 +835,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         header, records = load_thinker(args.thinker)
         from .sample import pack_content_sha256
         pack_sha = pack_content_sha256(args.pack)
-        if header and header.get("pack_content_sha256") and header["pack_content_sha256"] != pack_sha and not args.ignore_pack_mismatch:
-            raise PackError("the results were made from another pack (content sha256 differs); rebuild the pack with the same manifest or pass --ignore-pack-mismatch")
+        issues = pack_issues_of(args.pack, header, pack_sha, args)
         report = build_report(rows, records, header=header, B=args.bootstrap, seed=args.seed, min_delta=args.min_delta,
-                              models=[m for m in (args.models or "").split(",") if m] or None, pack_sha256=pack_sha)
+                              models=[m for m in (args.models or "").split(",") if m] or None, pack_sha256=pack_sha, pack_issues=issues)
     except (PackError, ValueError, OSError) as e:
         print(f"[compare] {e}", file=sys.stderr)
         return 2

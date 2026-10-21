@@ -20,6 +20,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -301,8 +302,16 @@ class FlowBase(unittest.TestCase):
         return Path(d.name) / name
 
     def thinker(self, server, out, *extra, env=None):
-        argv = ["--pack", str(self.pack), "--out", str(out), "--base-url", server.url, "--max-tokens", "400", "--concurrency", "3", *extra]
+        argv = ["--pack", str(self.pack), "--out", str(out), "--base-url", server.url, "--max-tokens", "400", "--concurrency", "3",
+                "--revision", C.QWEN_REVISION, *extra]
         return run_cli(T, argv, env={"OPENAI_API_KEY": SECRET, **(env or {})})
+
+    def compare(self, thinker, *extra, out=None, manifest=True):
+        """compare.py as the gate runs it: the manifest of this synthetic sample stands for the committed one."""
+        argv = ["--pack", str(self.pack), "--thinker", str(thinker), *(["--manifest", str(self.manifest)] if manifest else []), *extra]
+        if out is not None:
+            argv += ["--out", str(out)]
+        return run_cli(K, argv)
 
     def expected_hits(self, bench):
         return sum(1 for r in self.rows if r["benchmark"] == bench and re.search(r"MODE\[(\w+)\]", r["state"]).group(1) == "right")
@@ -434,7 +443,12 @@ class ThinkerFlow(FlowBase):
             if mode in ("garbage", "cut"):
                 self.assertTrue(all(v is None for v in rec["answers"].values()))
             self.assertEqual(rec["truncated"], mode == "cut")
-            self.assertTrue(rec["reasoning"])
+            self.assertNotIn("reasoning", rec, "the thinking text is evaluation data the verdict does not need: it is not stored unless asked")
+            self.assertIs(rec["thought"], True)
+            self.assertEqual((rec["no_close"], rec["garbled"]), (False, False))
+            if mode == "right":
+                self.assertEqual(set(rec["read_by"].values()), {"marker"})
+            self.assertEqual(rec["endpoint"], T.sanitize_url(srv.url))
         self.assertTrue(all(r["auth"] == f"Bearer {SECRET}" for r in srv.requests))
         self.assertTrue(all(r["ua"] and "Python-urllib" not in r["ua"] for r in srv.requests))
         first = next(r for r in srv.requests if "MODE[" in r["body"]["messages"][0]["content"])["body"]
@@ -448,9 +462,14 @@ class ThinkerFlow(FlowBase):
         self.assertEqual(code, 0, text)
         self.assertIn("WARNING: 12 tokens per reply on average: the model barely thought", text)
         rep = self.root / "terse-report"
-        code, md = run_cli(K, ["--pack", str(self.pack), "--thinker", str(out), "--out", str(rep), "--bootstrap", "200"])
+        code, md = self.compare(out, out=rep)
         self.assertEqual(code, 0, md)
         self.assertIn("AVISO: a mediana e de 12 tokens por linha: o modelo quase nao pensou", md)
+        last = md.strip().splitlines()[-1]
+        self.assertTrue(last.startswith("GT VERDICT: INCONCLUSIVE"), last)         # the line `hosted` and the Modal app show is the one that says it
+        self.assertIn("thinking not detected", last)
+        self.assertEqual(json.loads((rep / "report.json").read_text())["verdict"]["reasons"], ["thinking_not_detected"])
+        self.assertTrue(all(r["thought"] is False and r["no_close"] is True for r in T.ResultStore.read(out)[1]), "the bare answer line is not read: no closing tag")
 
     def test_a_thinking_endpoint_and_a_thinking_off_control_get_no_such_warning(self) -> None:
         out = self.results_path()
@@ -458,15 +477,19 @@ class ThinkerFlow(FlowBase):
             code, text = self.thinker(srv, out, "--limit", "4")
         self.assertEqual(code, 0, text)
         self.assertNotIn("barely thought", text)
-        code, md = run_cli(K, ["--pack", str(self.pack), "--thinker", str(out), "--bootstrap", "200"])
+        code, md = self.compare(out)
         self.assertNotIn("quase nao pensou", md)
+        self.assertNotIn("thinking not detected", md)
         control = self.results_path("off.jsonl")
         with FakeServer(behavior=terse) as srv:
             code, text = self.thinker(srv, control, "--limit", "4", "--thinking", "off")
         self.assertEqual(code, 0, text)
         self.assertNotIn("barely thought", text, "a control without thinking is supposed to be terse")
-        code, md = run_cli(K, ["--pack", str(self.pack), "--thinker", str(control), "--bootstrap", "200"])
+        code, md = self.compare(control)
         self.assertNotIn("quase nao pensou", md)
+        last = md.strip().splitlines()[-1]
+        self.assertTrue(last.startswith("GT VERDICT: PARTIAL") and "thinking_off" in last, last)            # a control is read whole, and it is not the gate
+        self.assertNotIn("INCONCLUSIVE", last)
 
     def test_the_key_and_the_questions_never_reach_the_log_or_the_file(self) -> None:
         out = self.results_path()
@@ -535,6 +558,64 @@ class ThinkerFlow(FlowBase):
         self.assertEqual(sorted(latest), sorted(r["id"] for r in self.rows))
         self.assertTrue(all(r["status"] == "ok" for r in latest.values()))
         self.assertEqual({r["attempt"] for r in latest.values() if r["id"] in {x["id"] for x in recs}}, {2})
+
+    def test_the_thinking_text_is_stored_only_with_keep_reasoning(self) -> None:
+        out, kept = self.results_path(), self.results_path("kept.jsonl")
+        with FakeServer() as srv:
+            self.assertEqual(self.thinker(srv, out, "--limit", "2")[0], 0)
+            self.assertEqual(self.thinker(srv, kept, "--limit", "2", "--keep-reasoning")[0], 0)
+            self.assertEqual(self.thinker(srv, self.results_path("old.jsonl"), "--limit", "1", "--no-reasoning")[0], 0, "the old flag is still accepted")
+        self.assertTrue(all("reasoning" not in r for r in T.ResultStore.read(out)[1]))
+        self.assertTrue(all(r["reasoning"] for r in T.ResultStore.read(kept)[1]))
+
+    def test_a_row_that_keeps_failing_is_given_up_after_max_attempts_and_counts_as_wrong(self) -> None:
+        out = self.results_path()
+        target = self.rows[0]["id"]
+
+        def behavior(body, count):
+            if f"SYNTH {target}." in body["messages"][0]["content"]:
+                return {"status": 503, "text": "overloaded"}
+            return scripted(body, count)
+        with FakeServer(behavior) as srv:
+            for k in (1, 2):
+                code, text = self.thinker(srv, out, "--retries", "0", "--max-attempts", "3", "--limit", "3", "--concurrency", "1")
+                self.assertEqual(code, 0, text)
+                self.assertEqual(T.ResultStore(out, {}, {}, 0).latest()[target]["status"], "error", k)
+            code, text = self.thinker(srv, out, "--retries", "0", "--max-attempts", "3", "--limit", "3", "--concurrency", "1")
+            self.assertEqual(code, 0, text)
+            self.assertIn("1 failed", text)
+            last = T.ResultStore(out, {}, {}, 0).latest()[target]
+            self.assertEqual((last["status"], last["gave_up"]), ("failed", 3))
+            self.assertEqual(self.thinker(srv, out, "--retries", "0")[0], 0)                           # the rest of the pack goes on
+            code, text = self.compare(out)
+        report = text.strip().splitlines()[-1]
+        self.assertTrue(report.startswith("GT VERDICT: FAIL") or report.startswith("GT VERDICT: PASS"), report)        # complete: nothing was dropped
+        scored = K.score_pack(self.rows, T.ResultStore.read(out)[1])
+        self.assertEqual(scored.complete, True)
+        self.assertEqual(scored.hits["thinker"][self.rows[0]["benchmark"]][0], 0)
+        self.assertIn("1 linhas desistidas", text)
+
+    def test_retry_failed_and_the_attempt_limit_are_options(self) -> None:
+        out = self.results_path()
+        target = self.rows[0]["id"]
+        down = {"on": True}
+
+        def behavior(body, count):
+            if down["on"] and f"SYNTH {target}." in body["messages"][0]["content"]:
+                return {"status": 503, "text": "overloaded"}
+            return scripted(body, count)
+        with FakeServer(behavior) as srv:
+            self.assertEqual(self.thinker(srv, out, "--retries", "0", "--max-attempts", "1", "--limit", "2")[0], 0)
+            self.assertEqual(T.ResultStore(out, {}, {}, 0).latest()[target]["status"], "failed")
+            down["on"] = False
+            self.assertEqual(self.thinker(srv, out, "--limit", "2")[0], 0)
+            self.assertEqual(T.ResultStore(out, {}, {}, 0).latest()[target]["status"], "failed", "failed rows are not run again unless asked")
+            self.assertEqual(self.thinker(srv, out, "--limit", "2", "--retry-failed")[0], 0)
+        self.assertEqual(T.ResultStore(out, {}, {}, 0).latest()[target]["status"], "ok")
+        for bad in ("0", "-1", "x"):
+            with self.assertRaises(SystemExit):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    T.build_parser().parse_args(["--pack", "p", "--out", "o", "--max-attempts", bad])
 
     def test_a_429_with_retry_after_is_retried(self) -> None:
         out = self.results_path()
@@ -630,18 +711,133 @@ class ThinkerFlow(FlowBase):
         self.assertEqual(srv.count, 0)
 
 
+class Sink:
+    """A server that records every request it gets, of any method, with the headers that matter."""
+
+    def __init__(self):
+        self.seen = []
+
+    def __enter__(self):
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def handle_any(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
+                outer.seen.append({"method": self.command, "path": self.path, "auth": self.headers.get("Authorization")})
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+            do_GET = do_POST = handle_any
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}/v1/chat/completions"
+        return self
+
+    def __exit__(self, *exc):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(5)
+        return False
+
+
+class Redirector:
+    """An endpoint that answers every request with `code` and a Location that points at `target`."""
+
+    def __init__(self, code, target):
+        self.code, self.target = code, target
+
+    def __enter__(self):
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def handle_any(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
+                self.send_response(outer.code)
+                self.send_header("Location", outer.target)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            do_GET = do_POST = handle_any
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}/v1"
+        return self
+
+    def __exit__(self, *exc):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(5)
+        return False
+
+
+class KeyLeakFlow(FlowBase):
+    """Review of #78, blocker 3: urllib re-sends Authorization to the host a 301/302/303 names.  Two real servers on two ports."""
+
+    CODES = (301, 302, 303, 307, 308)
+
+    def test_the_harness_sees_a_leak_when_the_default_opener_is_used(self) -> None:
+        import urllib.request
+        for code in (301, 302, 303):
+            with Sink() as sink, Redirector(code, "PLACEHOLDER") as redirect:
+                redirect.target = sink.url
+                req = urllib.request.Request(redirect.url + "/chat/completions", data=b"{}", method="POST",
+                                             headers={"Authorization": f"Bearer {SECRET}", "Content-Type": "application/json"})
+                with contextlib.suppress(Exception), urllib.request.urlopen(req, timeout=5):
+                    pass
+                self.assertEqual([x["auth"] for x in sink.seen], [f"Bearer {SECRET}"], f"control for {code}: the sink must be able to see a leak")
+
+    def test_the_key_goes_nowhere_the_endpoint_redirects_to(self) -> None:
+        for code in self.CODES:
+            with Sink() as sink, Redirector(code, "PLACEHOLDER") as redirect:
+                redirect.target = sink.url
+                backend = T.OpenAIBackend(base_url=redirect.url, model="m", api_key=SECRET, stream=False, retries=0, sleep=lambda s: None)
+                with self.assertRaises(T.BackendError, msg=code) as cm:
+                    backend.generate([T.Item("a", "p")])
+                self.assertIn("redirect", str(cm.exception))
+                with self.assertRaises(T.BackendError, msg=code):
+                    backend.preflight()
+                self.assertEqual(sink.seen, [], f"{code}: the second server got a request")
+
+    def test_the_cli_stops_at_the_preflight_and_writes_no_row(self) -> None:
+        out = self.results_path()
+        with Sink() as sink, Redirector(302, "PLACEHOLDER") as redirect:
+            redirect.target = sink.url
+            code, text = run_cli(T, ["--pack", str(self.pack), "--out", str(out), "--base-url", redirect.url, "--max-tokens", "400"],
+                                 env={"OPENAI_API_KEY": SECRET})
+            self.assertEqual(sink.seen, [])
+        self.assertEqual(code, 2, text)
+        self.assertIn("redirect", text)
+        self.assertNotIn(SECRET, text)
+        self.assertEqual(T.ResultStore.read(out)[1], [])
+
+
 class CompareFlow(FlowBase):
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
         cls.res = cls.root / "thinker.jsonl"
         with FakeServer() as srv:
-            code, text = run_cli(T, ["--pack", str(cls.pack), "--out", str(cls.res), "--base-url", srv.url, "--max-tokens", "400", "--concurrency", "3"])
+            code, text = run_cli(T, ["--pack", str(cls.pack), "--out", str(cls.res), "--base-url", srv.url, "--max-tokens", "400", "--concurrency", "3",
+                                     "--revision", C.QWEN_REVISION])
         assert code == 0, text
 
     def test_report_numbers_match_a_plain_count(self) -> None:
         out = self.root / "report"
-        code, text = run_cli(K, ["--pack", str(self.pack), "--thinker", str(self.res), "--out", str(out), "--bootstrap", "300"])
+        code, text = self.compare(self.res, out=out)
         self.assertEqual(code, 0, text)
         rep = json.loads((out / "report.json").read_text())
         self.assertEqual(rep["format"], K.REPORT_FORMAT)
@@ -667,6 +863,7 @@ class CompareFlow(FlowBase):
             self.assertEqual(row["chance"], C.chance_of(b))
         self.assertIn(rep["reference"], MODELS)
         self.assertEqual(rep["verdict"]["status"], "FAIL")             # the scripted thinker is right on about 70% of the rows: not 10 points above m_good
+        self.assertEqual((rep["config"]["bootstrap_b"], rep["verdict"]["exploratory"]), (C.BOOTSTRAP_B, []))
         md = (out / "report.md").read_text()
         self.assertIn("GT VERDICT:", md)
         self.assertIn("GPQA Diamond", md)
@@ -679,12 +876,15 @@ class CompareFlow(FlowBase):
             for rec in [header, *recs[:12]]:
                 f.write(json.dumps(rec) + "\n")
         out = self.root / "report_partial"
-        code, text = run_cli(K, ["--pack", str(self.pack), "--thinker", str(part), "--out", str(out), "--bootstrap", "100"])
+        code, text = self.compare(part, out=out)
         self.assertEqual(code, 0, text)
         rep = json.loads((out / "report.json").read_text())
         self.assertFalse(rep["coverage"]["complete"])
         self.assertEqual(rep["coverage"]["rows_scored"], 12)
-        self.assertIn("PARTIAL", text)
+        self.assertEqual(rep["verdict"]["status"], "PARTIAL")
+        last = text.strip().splitlines()[-1]
+        self.assertTrue(last.startswith("GT VERDICT: PARTIAL"), last)
+        self.assertNotIn("GT VERDICT: PASS", text)
         self.assertEqual(sum(b["n"] for b in rep["benchmarks"].values()), 12)
 
     def test_results_made_from_another_pack_are_refused(self) -> None:
@@ -709,12 +909,75 @@ class CompareFlow(FlowBase):
             for rec in recs:
                 rec["answers"] = {q: rows[rec["id"]]["gold"][q][0] for q in rows[rec["id"]]["questions"]}
                 f.write(json.dumps(rec) + "\n")
-        code, text = run_cli(K, ["--pack", str(self.pack), "--thinker", str(win), "--bootstrap", "500"])
+        code, text = self.compare(win)
         self.assertEqual(code, 0, text)
-        self.assertIn("GT VERDICT: PASS", text)
-        # And copy the best model's own picks: delta 0, so no pass.
+        self.assertEqual(text.strip().splitlines()[-1][:16], "GT VERDICT: PASS", text)
         rep = K.build_report(self.rows, [], B=10)
         self.assertEqual(rep["verdict"]["status"], "INCONCLUSIVE")
+
+    def test_the_same_win_is_exploratory_the_moment_the_comparison_is_changed(self) -> None:
+        rows = {r["id"]: r for r in self.rows}
+        header, recs = T.ResultStore.read(self.res)
+        win = self.root / "win2.jsonl"
+        with open(win, "w", encoding="utf-8") as f:
+            f.write(json.dumps(header) + "\n")
+            for rec in recs:
+                rec["answers"] = {q: rows[rec["id"]]["gold"][q][0] for q in rows[rec["id"]]["questions"]}
+                f.write(json.dumps(rec) + "\n")
+        cases = {"bootstrap_b": ["--bootstrap", "500"], "seed": ["--seed", "1"], "min_delta": ["--min-delta", "5"], "models_subset": ["--models", "m_good,m_mid"]}
+        for code_name, extra in cases.items():
+            code, text = self.compare(win, *extra)
+            last = text.strip().splitlines()[-1]
+            self.assertEqual(code, 0, text)
+            self.assertTrue(last.startswith("GT VERDICT: EXPLORATORY") and code_name in last, last)
+            self.assertNotIn("GT VERDICT: PASS", text)
+        code, text = self.compare(win, "--models", ",".join(sorted(MODELS)))
+        self.assertTrue(text.strip().splitlines()[-1].startswith("GT VERDICT: PASS"), "naming all the models is the registered comparison")
+
+    def test_a_pack_that_is_not_the_manifests_is_exploratory_and_the_committed_manifest_is_the_default(self) -> None:
+        other = self.root / "other_manifest"
+        S.build(self.suite, self.results, other, per_benchmark=2, benchmarks=(25, 58))
+        code, text = self.compare(self.res, "--manifest", str(other / "manifest.json"))
+        self.assertEqual(code, 0, text)
+        last = text.strip().splitlines()[-1]
+        self.assertTrue(last.startswith("GT VERDICT: EXPLORATORY") and "pack_not_manifest" in last, last)
+        self.assertIn("manifest:", text)
+        code, text = self.compare(self.res, manifest=False)                           # no --manifest: the committed one, and this sample is synthetic
+        self.assertIn("pack_not_manifest", text.strip().splitlines()[-1])
+        code, text = self.compare(self.res, "--manifest", str(self.root / "nope.json"))
+        self.assertIn("manifest_not_checked", text.strip().splitlines()[-1])
+
+    def test_ignoring_a_pack_mismatch_is_exploratory(self) -> None:
+        other = self.root / "other_pack2"
+        S.build(self.suite, self.results, other, per_benchmark=2, benchmarks=(25, 58))
+        code, text = run_cli(K, ["--pack", str(other / "pack.jsonl.gz"), "--thinker", str(self.res), "--manifest", str(other / "manifest.json"), "--ignore-pack-mismatch"])
+        self.assertEqual(code, 0, text)
+        last = text.strip().splitlines()[-1]
+        self.assertTrue(last.startswith("GT VERDICT: EXPLORATORY") and "pack_mismatch_ignored" in last, last)
+
+    def test_hosted_hands_its_manifest_to_the_comparison(self) -> None:
+        seen = []
+        real = K.main
+        with mock.patch.object(K, "main", side_effect=lambda argv=None: seen.append(list(argv)) or real(argv)):
+            from decide.think import hosted as H
+            with FakeServer() as srv:
+                class Up:
+                    url = srv.url
+
+                    def alive(self):
+                        return True
+
+                    def stop(self):
+                        pass
+
+                    def tail(self):
+                        return ""
+                work = self.root / "hosted-manifest"
+                with contextlib.redirect_stdout(io.StringIO()):
+                    H.run_gate(pack=str(self.pack), work=str(work), manifest=str(self.manifest), start_server=lambda w: Up(), wait=lambda *a, **k: True,
+                               limit=2, log=lambda s: None, concurrency=1)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][seen[0].index("--manifest") + 1], str(self.manifest))
 
 
 @unittest.skipUnless(all(importlib.util.find_spec(m) for m in ("torch", "transformers", "tokenizers")), "torch, transformers and tokenizers are needed")
@@ -827,7 +1090,7 @@ class TinyTransformersFlow(unittest.TestCase):
         p = T.interpret(g, P.build_prompt({"state": "s", "questions": {"q": {"type": "choice", "criteria": {"A": "a", "B": "b"}}}}).options)
         self.assertEqual((p.answers, p.truncated), ({"q": None}, True))
 
-    def test_out_of_memory_splits_the_batch_and_a_single_oom_is_a_retryable_error(self) -> None:
+    def test_out_of_memory_splits_the_batch_and_a_single_oom_is_terminal(self) -> None:
         import torch
         b = self.backend(batch_size=4)
         real = b._generate
@@ -848,7 +1111,7 @@ class TinyTransformersFlow(unittest.TestCase):
             raise torch.cuda.OutOfMemoryError("CUDA out of memory (test)")
         b._generate = always
         g = b.generate(self.items(1))[0]
-        self.assertTrue(g.transient)
+        self.assertFalse(g.transient, "one sequence that does not fit will not fit the second time either: the row is terminal")
         self.assertIn("out of memory", g.error)
 
     def test_runner_end_to_end_with_resume_on_the_tiny_model(self) -> None:
@@ -929,23 +1192,9 @@ class TinyHybridFlow(unittest.TestCase):
 
 # ------------------------------------------------------------------------------------------- notebooks
 
-GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_TERMINAL_PROMPT": "0"}
-# What `git rev-parse --local-env-vars` lists: the variables that name a repository, its index or its config.
-LOCAL_GIT_VARS = ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY",
-                  "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS",
-                  "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR", "GIT_NAMESPACE")
-
-
 def git_env() -> dict:
-    """The environment for a git command that must touch only the throwaway repository it is aimed at.
-
-    `git push` runs the pre-push hook, so `make check`, so these tests, with GIT_DIR set to the repository being pushed when that is a
-    linked worktree.  A git command that inherits it ignores `-C` and works on THAT repository: it once committed this file's fixtures to
-    the branch being pushed and wrote user.name into the shared .git/config.  The variables that name a repository are dropped and the
-    user's own git config is not read."""
-    env = {k: v for k, v in os.environ.items() if k not in LOCAL_GIT_VARS and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
-    env.update(GIT_ENV)
-    return env
+    """The environment for a git command that must touch only the throwaway repository it is aimed at (decide.think.common.clean_git_env)."""
+    return C.clean_git_env()
 
 
 class NotebookFlow(FlowBase):
@@ -1083,7 +1332,7 @@ class NotebookFlow(FlowBase):
             calls.append(("run", cmd, kw))
 
         ns = dict(MODE="local-vllm", MODEL=C.QWEN_FP8_MODEL, REVISION="", WORK=str(work), sys=sys, os=os,
-                  subprocess=type("SP", (), {"run": staticmethod(fake_run), "Popen": FakePopen, "STDOUT": -2}), REV="")
+                  subprocess=type("SP", (), {"run": staticmethod(fake_run), "Popen": FakePopen, "STDOUT": -2}), REV="", q=shlex.quote)
         with mock.patch.object(serve_module, "wait_ready", return_value=True) as ready, contextlib.redirect_stdout(io.StringIO()):
             self.run_cell("api", 'if MODE == "local-vllm":', ns)
         install = next(c for c in calls if c[0] == "run")[1]
@@ -1506,6 +1755,16 @@ class ModalAppFlow(FlowBase):
         self.assertTrue((source / "gt-sample-manifest.json").is_file(), "the container needs the manifest")
         self.assertIn("**/__pycache__", ignore)
         self.assertEqual(rec["entrypoints"], ["main"])
+
+    def test_the_image_leaves_out_what_the_folder_keeps_out_of_git(self) -> None:
+        """The pack and the results hold benchmark text; `decide/think/.gitignore` names them and the image must not carry them either."""
+        module, _ = self.load()
+        private = [line.strip() for line in (ROOT / "decide" / "think" / ".gitignore").read_text(encoding="utf-8").splitlines()
+                   if line.strip() and not line.startswith("#")]
+        self.assertGreaterEqual(len(private), 5)
+        for line in private:
+            self.assertIn("**/" + line.rstrip("/"), module.IGNORE, f"{line} is private (.gitignore) but would be copied into the image")
+        self.assertNotIn("**/*.json", module.IGNORE, "the container needs gt-sample-manifest.json")
 
     def test_the_gpu_comes_from_the_environment(self) -> None:
         _, rec = self.load(gpu="A100-80GB")

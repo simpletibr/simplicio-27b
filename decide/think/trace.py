@@ -34,17 +34,40 @@ training corpus (ADR 0004, item 6).
 """
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
-from typing import Any, Dict, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, FrozenSet, Optional, Tuple
 
 MARKER = "Raciocínio:"
 DEFAULT_MAX_CHARS = 8000
 MODES = ("reasoning", "final", "both")
+GT_MANIFEST = Path(__file__).with_name("gt-sample-manifest.json")
+_GT_IDS: Dict[Path, FrozenSet[str]] = {}
 
 
 class TraceError(ValueError):
     """The state already has a block, or the text cannot be turned into one."""
+
+
+class EvaluationDataError(TraceError):
+    """The request is one of the gate's sample: its traces are evaluation data and never go into a corpus (ADR 0004, item 6)."""
+
+
+def gt_sample_ids(manifest: Optional[Path] = None) -> FrozenSet[str]:
+    """The run ids of the sample in a manifest (default: the committed gt-sample-manifest.json)."""
+    path = Path(manifest) if manifest else GT_MANIFEST
+    if path not in _GT_IDS:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        _GT_IDS[path] = frozenset(rid for b in (data.get("benchmarks") or {}).values() for rid in b.get("run_ids", []))
+    return _GT_IDS[path]
+
+
+def _refuse_eval_data(source_id: Optional[str]) -> None:
+    if source_id is not None and source_id in gt_sample_ids():
+        raise EvaluationDataError(f"{source_id} is a request of the gate's sample: a trace made on it is evaluation data and must never enter "
+                                  "a training corpus (ADR 0004, item 6)")
 
 
 def _is_marker(line: str) -> bool:
@@ -100,11 +123,13 @@ def render_trace(reasoning: Optional[str] = None, final: Optional[str] = None, *
     return clip("\n\n".join(p for p in parts if p), max_chars)
 
 
-def attach_trace(state: str, trace: Optional[str]) -> str:
-    """`state` followed by the block.  An empty trace adds nothing.  Refuses a state that already has a block."""
+def attach_trace(state: str, trace: Optional[str], *, source_id: Optional[str] = None) -> str:
+    """`state` followed by the block.  An empty trace adds nothing.  Refuses a state that already has a block, and, when the
+    request is named by `source_id`, one of the gate's sample (evaluation data)."""
     body = _clean(trace)
     if not body.strip():
         return state
+    _refuse_eval_data(source_id)
     if has_trace(state):
         raise TraceError("the state already has a Raciocínio: block; split_trace() it first")
     head = state.rstrip()
@@ -125,8 +150,10 @@ def from_record(rec: Dict[str, Any], *, mode: str = "reasoning", max_chars: int 
     """The trace of one results row of thinker.py, or None when the row cannot give one.
 
     Not usable: a row that is not `ok`, one whose budget ran out (no conclusion) unless `allow_truncated`,
-    and one without the requested text (a run with --no-reasoning keeps only the final answer).
+    and one without the requested text (a run without --keep-reasoning keeps only the final answer).  A row of the gate's
+    sample (its id is in gt-sample-manifest.json) is refused with `EvaluationDataError`: it is evaluation data.
     """
+    _refuse_eval_data(rec.get("id"))
     if rec.get("status") != "ok" or (rec.get("truncated") and not allow_truncated):
         return None
     return render_trace(rec.get("reasoning"), rec.get("final"), mode=mode, max_chars=max_chars) or None

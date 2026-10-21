@@ -10,9 +10,11 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import shutil
+import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 NB_DIR = ROOT / "notebooks" / "decide"
@@ -83,13 +85,19 @@ def parameters(key: str, **overrides: Any) -> Dict[str, Any]:
     return {k: v for k, v in namespace.items() if not k.startswith("__")}
 
 
+QUOTED = re.compile(r"q\(\s*([A-Za-z_]\w*)\s*\)")
+
+
 def interpolate(command: str, namespace: Dict[str, Any]) -> str:
-    """IPython's rule for `!cmd {name}`; the notebooks only use plain variable names."""
+    """IPython's rule for `!cmd {expr}`; the notebooks use a plain variable name or `q(name)`, the `shlex.quote` the first cell imports as `q`."""
     def sub(m: "re.Match[str]") -> str:
-        name = m.group(1).strip()
-        if not name.isidentifier():
-            raise ValueError(f"not a plain variable name: {{{m.group(1)}}}")
-        return str(namespace[name])
+        expr = m.group(1).strip()
+        quoted = QUOTED.fullmatch(expr)
+        if quoted:
+            return shlex.quote(str(namespace[quoted.group(1)]))
+        if not expr.isidentifier():
+            raise ValueError(f"not a variable name or q(name): {{{m.group(1)}}}")
+        return str(namespace[expr])
     return INTERPOLATION.sub(sub, command)
 
 
@@ -123,3 +131,24 @@ def python_source(key: str) -> str:
 def pinned_sha(key: str) -> str:
     m = re.search(r'^SIMPLICIO_SHA\s*=\s*"([^"]*)"', code_cells(key)[0], re.M)
     return m.group(1) if m else ""
+
+
+def pin_state(root: Path, sha: str, env: Optional[Dict[str, str]] = None) -> Tuple[str, str]:
+    """Is the commit the notebooks pin in the history of the checkout at `root`?  (kind, what to do).
+
+    kind is `ok`, `not_git` (a source archive: nothing to compare with), `missing` (the object is not in this clone: a shallow
+    clone, or never fetched) or `not_ancestor` (the object is here but HEAD does not contain it: the PR was squashed, or the
+    branch moved on without it).  The last two are failures, not skips: the guard against a drifting pin must not go quiet."""
+    def git(*args: str) -> "subprocess.CompletedProcess[str]":
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, env=env)
+    if shutil.which("git") is None or git("rev-parse", "--git-dir").returncode != 0:
+        return "not_git", "not a git checkout"
+    if git("cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
+        shallow = git("rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+        return "missing", (f"the commit {sha} that the notebooks pin is not in this clone" + (" (it is a shallow clone)" if shallow else "")
+                           + f". Get it with `git fetch --unshallow`, or `git fetch origin {sha}`, and run the tests again.")
+    if git("merge-base", "--is-ancestor", sha, "HEAD").returncode != 0:
+        return "not_ancestor", (f"the commit {sha} that the notebooks pin is not an ancestor of HEAD: the code the notebooks download is not in the "
+                                "history of this branch. Merge the pull request with a merge commit (not a squash), or point SIMPLICIO_SHA in both notebooks "
+                                "at a commit that is in the history of the default branch.")
+    return "ok", ""

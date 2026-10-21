@@ -123,9 +123,14 @@ def candidate_of(row: dict) -> Optional[Candidate]:
                      track=str(e.get("track", "")), payload_sha256=str(e.get("payload_sha256", "")))
 
 
+ACCEPTED_BENCHMARKS = (31, 50)         # the catalog ids where the kit reads `scoring.accepted` (decision_index/scoring/index.py); elsewhere only `expected` counts
+
+
 def gold_sets(row: dict) -> Dict[str, List[str]]:
-    """qid -> accepted keys.  A one-question row with `scoring.accepted` (ChessBench ties) accepts all of them, as the kit does."""
+    """qid -> accepted keys.  A one-question row of ChessBench (31) or catalog id 50 with `scoring.accepted` accepts all of them, as the kit does."""
     accepted = (row.get("scoring") or {}).get("accepted")
+    if int((row.get("_evaluation") or {}).get("catalog_id", -1)) not in ACCEPTED_BENCHMARKS:
+        accepted = None
     questions = row["questions"]
     out: Dict[str, List[str]] = {}
     for qid in questions:

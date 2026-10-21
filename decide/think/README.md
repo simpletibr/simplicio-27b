@@ -27,7 +27,8 @@ de conhecimento e raciocínio, 40 por prova). Issue #75, épico #64, [ADR 0004](
    estimar o total.
 4. **Rodada inteira.** Tire o limite. É retomável: rode de novo com os mesmos argumentos e ele continua de onde parou.
 5. **Veredito.** A última linha impressa é `GT VERDICT: ...`. O relatório completo fica em `report/report.md` e
-   `report/report.json`.
+   `report/report.json`. **Só `PASS` e `FAIL` são o veredito do gate.** `PARTIAL`, `EXPLORATORY` e `INCONCLUSIVE` querem dizer
+   que a rodada não é o gate registrado; o número que vem junto é provisório e a linha diz por quê (veja "Como ler o relatório").
 
 Os três comandos que tudo isso envolve (os notebooks, `hosted` e a Modal só os encadeiam):
 
@@ -47,13 +48,40 @@ python -m decide.think.compare --pack pack.jsonl.gz --thinker work/results.jsonl
   cada prova**, pensador e decisor nas mesmas linhas. `ci_reselected` repete a conta escolhendo o melhor decisor de novo a cada
   reamostragem (mais exigente).
 - **PASS** se delta >= +10,0 **e** piso do IC > 0. **FAIL** caso contrário, com o motivo (`delta_below_min`,
-  `ci_low_not_above_zero`). `can_still_pass` aparece quando o topo do IC ainda alcança +10. **PARTIAL** quando faltam linhas.
+  `ci_low_not_above_zero`). `can_still_pass` aparece quando o topo do IC ainda alcança +10.
+- **PASS e FAIL só saem de uma rodada que é o gate registrado.** Isso quer dizer: as 400 linhas pontuadas
+  (`coverage.complete`), o pacote igual ao do manifesto, o par modelo/revisão fixado, a amostragem do cartão do modelo
+  (sem `--standard-only`), thinking ligado **e visto**, 10.000 reamostras com a semente registrada, alvo de +10,0 e todos os 8
+  decisores na comparação. Quando alguma dessas coisas falha, o status é outro, na ordem de precedência desta tabela, e o
+  `report.json` guarda em `outcome` o que a regra diria (um número provisório, não um veredito):
+
+  | status | quando |
+  |---|---|
+  | **INCONCLUSIVE** | o thinking não foi detectado na maioria das linhas que responderam (`thinking_not_detected`), nenhuma linha respondeu (`no_replies`), nada foi pontuado (`no_scored_rows`), ou o pacote não tem decisor (`no_decision_models`) |
+  | **PARTIAL** | faltam linhas (`rows_not_run`) ou há linhas com erro transitório (`rows_with_transient_error`) |
+  | **EXPLORATORY** | a rodada está completa, mas fora do protocolo: `bootstrap_b`, `seed`, `min_delta`, `models_subset`, `pack_not_manifest`, `manifest_not_checked`, `pack_mismatch_ignored`, `thinker_config_unknown`, `thinking_off`, `model_not_pinned`, `revision_not_declared`, `standard_only`, `sampling_not_registered`, `reasoning_effort`, `extra_body_overrides_protocol`, `usage_missing` |
+  | **PASS** / **FAIL** | nenhum dos anteriores |
+
+  Quando mais de um vale, a linha final mostra o de cima e acrescenta `also PARTIAL (...)` ou `also EXPLORATORY (...)`.
+- **Thinking visto.** Para cada linha que respondeu, o `thinker` grava se o modelo pensou: raciocínio devolvido à parte, texto
+  antes do `</think>`, ou pelo menos 100 tokens gerados. Se menos da metade das linhas mostra isso, o endpoint provavelmente
+  ignorou o pedido de thinking e o status é INCONCLUSIVE (`thinking_not_detected`), mesmo que a conta dê +10. Se mais da
+  metade das respostas veio sem `usage` (contagem de tokens), o status é EXPLORATORY (`usage_missing`).
 - **Como cada lado responde.** O decisor responde com o argmax das probabilidades publicadas (primeiro máximo na ordem das
   opções). Uma linha só conta como acerto se **todas** as perguntas dela estão certas (SATA-Bench é exato, como no kit); no
   ChessBench vale qualquer lance do conjunto de empates. O pensador responde com a última linha `ANSWER <pergunta>: <rótulo>`
-  **depois** do último `</think>`. Resposta ilegível, orçamento de tokens esgotado ou falha terminal conta como **erro** e é
-  contada no relatório. Linha com erro transitório (rede, falta de memória) conta como **ausente**, não como errada: é
-  listada e o veredito sai `PARTIAL` até a próxima rodada refazê-la.
+  **depois** do último `</think>`. Vale a **última** linha `ANSWER` da pergunta: se o rótulo dela não é uma opção, a pergunta
+  fica sem resposta, e o leitor não volta a uma linha anterior. Só se a pergunta não tem nenhuma linha `ANSWER` o leitor tenta
+  `resposta é X`, `\boxed{X}` e, numa pergunta única, o último rótulo solto; o relatório conta as linhas lidas assim. Uma
+  saída que parou (`stop`) sem `</think>` e sem raciocínio à parte **não é lida**: o template do Qwen3.8 já abre o `<think>`,
+  então o texto inteiro é pensamento ou o endpoint não pensou (`no_close`, contada como erro).
+- **Erro do modelo, ausente e erro transitório.** Resposta ilegível, orçamento de tokens esgotado e falha terminal contam
+  como **erro** do pensador: a linha continua na comparação, errada. Falha terminal é: a linha esgotou as tentativas (3
+  erros seguidos, `--max-attempts`; vale para rede, 5xx e tempo esgotado), o servidor ficou sem memória com um pedido só,
+  ou o backend disse que a linha não tem como ser respondida; no arquivo ela é `failed` (com `gave_up` quando foi por
+  tentativas) e é listada no relatório. Linha **sem resultado** é ausente; linha com erro transitório ainda dentro das
+  tentativas também não entra. Enquanto houver uma ou outra o status é PARTIAL, nunca PASS nem FAIL: rode de novo com os
+  mesmos argumentos. `--retry-failed` refaz as `failed` com a contagem zerada.
 - A habilidade corrigida pelo acaso (`skill`, a fórmula do kit) é impressa por prova, mas o veredito é em acurácia.
 
 ### O que a amostra já diz antes de rodar o pensador (medido nas 400 linhas reais)
@@ -82,8 +110,14 @@ com probabilidade 0,8 fica em 73,0 de macro e o relatório dá `FAIL (delta_belo
 [-3,0, +8,5]. Isso é um ensaio da ferramenta, **não um resultado sobre o Qwen**. Nele a meia-largura do IC foi de uns 5,8
 pontos, então com 400 linhas o critério que manda é o +10; o piso acima de 0 vem junto quando o delta passa de uns 6.
 
-Contra os modelos Apache (d3, d3-turbo, Amos) use `--models d3,d3-turbo,amos` no `compare`: o veredito oficial do GT é contra
-o melhor dos 8, mesmo que ele tenha licença não comercial (StartLux e Lychee são CC BY-NC, ADR 0004).
+Contra os modelos Apache (d3, d3-turbo, Amos) use `--models d3,d3-turbo,amos` no `compare`. Isso é uma consulta
+**EXPLORATORY** (`models_subset`), não o gate: o veredito oficial do GT é contra o melhor dos 8, mesmo que ele tenha
+licença não comercial (StartLux e Lychee são CC BY-NC, ADR 0004).
+
+**Quem entra na referência.** Os 8 decisores da tabela "Reconstruir o pacote": os que têm resultados por linha públicos. O
+mammoth-1 (#1 do board, gated no Hub) e o pplx-decider-v1.2 (#2 e ponto de partida do plano, sem dataset de resultados por
+linha) **não entram**: sem resultado por linha não há como pontuá-los nas mesmas 400 linhas (ADR 0004, Fase 0A). Se um deles
+for melhor que o startlux-27b nestas linhas, o +10 está medido contra uma referência mais fraca do que o topo do board.
 
 ## Amostra e pacote
 
@@ -103,7 +137,9 @@ o melhor dos 8, mesmo que ele tenha licença não comercial (StartLux e Lychee s
   nem para um notebook com saída. O `.gitignore` desta pasta ignora `*.jsonl`, `*.jsonl.gz`, `pack*/`, `work/` e `report/`,
   mas guarde o pacote fora do clone.
 - **Relatório** (`report.md`, `report.json`): só contagens, acurácias e ids de linha, sem texto de prova; pode ir para a
-  issue. `results.jsonl` **não**: tem o raciocínio do modelo sobre as provas.
+  issue. `results.jsonl` **não**: guarda o fim da resposta do modelo sobre as provas. O texto do raciocínio **não é gravado**
+  por padrão (o veredito não o lê, e ele é o dado mais sensível); `--keep-reasoning` o grava, e só vale a pena para estudar
+  o modelo, nunca para o corpus de treino (veja "Dados de avaliação, nunca de treino").
 
 ### Reconstruir o pacote
 
@@ -161,7 +197,7 @@ qual par rodou e avisa se não for um dos dois.
 | backend | pesos | o que foi verificado aqui | o que **não** foi |
 |---|---|---|---|
 | transformers + NF4 (Kaggle T4 x2) | bf16 baixado (51,7 GiB), 4 bits na carga | o executor, o lote, a divisão do lote por falta de memória e a retomada, com modelos aleatórios minúsculos na CPU (um Qwen2 e a classe híbrida do Qwen3.5); os comandos do notebook contra os parsers reais | rodar numa T4; que as versões se resolvem com o torch do Kaggle; que o modelo cabe em 2 x 15 GiB; velocidade; que o fp16 não estoura |
-| endpoint OpenAI-compatível | do provedor | o cliente contra um servidor HTTP falso (JSON, SSE, 400, 401, 429 com `Retry-After`, 5xx, `reasoning_content` e `reasoning`) | qualquer provedor de verdade |
+| endpoint OpenAI-compatível | do provedor | o cliente contra servidores HTTP falsos (JSON, SSE, 400, 401, 429 com `Retry-After`, 5xx, `reasoning_content` e `reasoning`; redirecionamento entre dois servidores locais, onde a chave não chega ao segundo) | qualquer provedor de verdade |
 | vLLM em GPU de 80 GB ou mais (`hosted`) | FP8, 28,7 GiB | o fluxo subir, esperar, pensar, comparar e parar o servidor, com um processo falso; os flags de `vllm serve` contra a lista de flags lida **do código-fonte** do vLLM 0.31.0 | subir o vLLM de verdade |
 | Modal (`modal_app.py`) | FP8, 28,7 GiB | o app importa e registra `gate` e `main` com o cliente `modal==1.6.2`; `gate` roda o `hosted` num volume, com um cliente falso | rodar na Modal: imagem, GPU, custo |
 
@@ -174,6 +210,10 @@ qual par rodou e avisa se não for um dos dois.
    (`SIMPLICIO_SHA`), confere a GPU, o disco e o pacote antes de gastar GPU, e termina no `GT VERDICT`.
 4. Se a sessão acabar, use **Save Version**, adicione a saída como Input e aponte `RESUME_FROM` para o `results.jsonl` dela: o
    notebook o copia (só se ainda não houver um) e continua. O orçamento de tokens só pode **subir** entre rodadas.
+5. **`/kaggle/working` é a saída da versão salva.** O `results.jsonl` e o `report/` ficam em `WORK`, dentro dela, e a saída de um
+   notebook **público** é pública. Mantenha o notebook e o dataset do pacote **privados**. O `results.jsonl` não tem o texto do
+   raciocínio, mas tem o fim de cada resposta. Se não quiser nada guardado, ponha `WORK` em `/kaggle/temp/think-gt`: some no
+   fim da sessão e a retomada se perde.
 
 Por que não vLLM aqui. Lendo o código-fonte do vLLM 0.31.0 (não executado): ele não registra quantização bitsandbytes, a
 plataforma CUDA dele recusa bf16 abaixo da capacidade 8.0 (a T4 é 7.5) e o checkpoint FP8 (28,7 GiB) não cabe em 2 x 15 GiB.
@@ -193,8 +233,12 @@ lento e **não testado**). O dtype entra no protocolo e no cabeçalho dos result
 ### Endpoint OpenAI-compatível: `notebooks/decide/think_gt_api.ipynb`, `MODE = "endpoint"`
 
 Precisa de `BASE_URL`, do id do modelo que o endpoint conhece (`MODEL`) e da chave como segredo do Colab ou do Kaggle, ou na
-variável de ambiente `KEY_NAME`. A chave nunca é impressa, nunca vai na linha de comando e não é escrita nos resultados. Num
-terminal, leia-a sem deixar no histórico:
+variável de ambiente `KEY_NAME`. A chave nunca é impressa, nunca vai na linha de comando e não é escrita nos resultados.
+**Ela só viaja por `https://` ou para o próprio computador** (`localhost`, `127.0.0.1`, `::1`): com `http://` para outro host o
+`thinker` recusa (`refusing to send the API key in clear`); para um servidor seu em outra máquina, abra um túnel SSH e use
+`http://127.0.0.1:<porta>/v1`. O cliente também **não segue redirecionamentos** (um redirecionamento, 3xx, vira erro com a dica de
+usar a URL final), porque o `urllib` repetiria o POST, com a chave, no host de destino. Num terminal, leia a chave sem deixar no
+histórico:
 
 ```
 read -rs THINK_API_KEY && export THINK_API_KEY
@@ -208,9 +252,18 @@ python -m decide.think.thinker --backend openai --base-url https://SEU-ENDPOINT/
   tokens de cada linha, o fim do `thinker` avisa (`WARNING: ... the model barely thought`) quando a média fica abaixo de 100
   e o relatório avisa (`AVISO: a mediana é de ... tokens por linha`). Uma rodada assim não é o gate.
 - Se o endpoint responder HTTP 400 a `top_k`, `min_p`, `repetition_penalty` ou `chat_template_kwargs`, use `--standard-only` e
-  ligue o thinking pelo campo do próprio provedor em `--extra-body '{"campo": valor}'`. **Não ponha chave em `--extra-body`**: o
-  JSON vai para o cabeçalho dos resultados e para o relatório. O `thinker` recusa chaves com cara de segredo, mas é só uma rede
-  de segurança.
+  ligue o thinking pelo campo do próprio provedor em `--extra-body '{"campo": valor}'`. A amostragem deixa de ser a do cartão
+  do modelo, então o veredito sai **EXPLORATORY** (`standard_only`): é indício, não o gate. **Não ponha chave em
+  `--extra-body`**: o JSON vai para o cabeçalho dos resultados e para o relatório. O `thinker` recusa chaves com cara de
+  segredo, mas é só uma rede de segurança. E ele recusa os **campos do protocolo** em `--extra-body` (`temperature`, `top_p`,
+  `top_k`, `min_p`, `max_tokens`, `seed`, `stream`, `chat_template_kwargs`, `reasoning_effort`, `messages`, `model`...): o
+  gate fixa esses valores, e o corpo extra só serve para o campo de thinking do provedor.
+- **`--revision` conta.** Sem ele o relatório diz `revision_not_declared` e o status é EXPLORATORY: o kit não tem como saber o
+  que o servidor roda. Preencha só se o endpoint serve esse commit.
+- **Agregadores e quantização.** Um agregador (OpenRouter e parecidos) pode mandar cada requisição a um upstream diferente,
+  com outra quantização e outro modo de thinking. Isso o kit não vê. Cada linha grava o endpoint de onde veio; se o arquivo
+  mistura endpoints o relatório avisa, e o cabeçalho mostra só a configuração do primeiro. Prefira um provedor que diga qual
+  checkpoint serve e em que precisão, e use o mesmo `--out` com o mesmo endpoint do início ao fim.
 - **Custo** = tokens de saída da amostra inteira x preço por token. Os tokens por linha só aparecem na sonda. Não há preço
   nenhum estimado aqui.
 
@@ -247,8 +300,10 @@ modal run -m decide.think.modal_app --pack pack.jsonl.gz
 modal volume get simplicio-think-gt-state gt/results.jsonl .
 ```
 
-Rode **em modo módulo, a partir da raiz do repositório** (em modo script o contêiner não acha o pacote `decide`). O pacote é
-conferido contra o manifesto **na sua máquina, antes de alugar qualquer coisa**. O checkpoint FP8 é baixado uma vez para um Volume
+Rode **em modo módulo, a partir da raiz do repositório** (em modo script o contêiner não acha o pacote `decide`). A imagem não
+leva `*.jsonl`, `*.jsonl.gz`, `pack*`, `work/` nem `report/` de `decide/think/` (a lista `IGNORE` do app), então um pacote
+guardado ali não sobe para a imagem; ele vai pelo comando, como `--pack`. O pacote é conferido contra o manifesto **na sua
+máquina, antes de alugar qualquer coisa**. O checkpoint FP8 é baixado uma vez para um Volume
 e reaproveitado; os resultados são gravados no Volume a cada minuto, então um contêiner que a Modal troque retoma de onde
 parou. A GPU padrão é H100; troque com `SIMPLICIO_THINK_GPU=A100-80GB modal run ...`. O pensador para de começar linhas 1 hora
 antes do limite de 12 h do contêiner. O app **nunca rodou na Modal** (**UNVERIFIED**): trate a primeira execução, com
@@ -281,11 +336,22 @@ horas. Só a sonda diz.
 
 ## Como ler o relatório
 
-A última linha impressa é `GT VERDICT: PASS|FAIL|INCONCLUSIVE (motivos) | thinker X% vs <referência> Y% | delta +D pts, 95% CI
-[a, b] | rule: delta >= +10.0 and CI low > 0 | N of 400 rows` (resumida aqui: depois do par de acurácias vem
-`(best decision model, macro over 10 benchmarks)`, e um FAIL que ainda pode virar PASS acrescenta `the CI still holds +10.0:
-more rows could pass`; sem linha nenhuma pontuada a linha é só `GT VERDICT: INCONCLUSIVE | <motivo> (0 of 400 rows)`; se
-faltar linha, a contagem final ganha `, PARTIAL: ...`). O `report.md` tem, em ordem:
+A última linha impressa tem uma de três formas (o mesmo texto vai para o `report.md`, e `report.json` guarda o status em
+`verdict.status`, o que a regra diria em `verdict.outcome` e as listas `verdict.reasons`, `verdict.exploratory`,
+`verdict.inconclusive` e `verdict.incomplete`):
+
+- **Veredito do gate**, só `PASS` ou `FAIL`: `GT VERDICT: PASS|FAIL (motivos) | thinker X% vs <referência> Y% (best decision
+  model, macro over 10 benchmarks) | delta +D pts, 95% CI [a, b] | rule: delta >= +10.0 and CI low > 0 | 400 of 400 rows`; um
+  FAIL que ainda pode virar PASS acrescenta `the CI still holds +10.0: more rows could pass`.
+- **Provisório**: `GT VERDICT: PARTIAL|EXPLORATORY|INCONCLUSIVE (códigos) | provisional, not a verdict: the rule reads
+  PASS|FAIL on the rows scored | thinker ... | delta ... | N of 400 rows: M not run, K with a transient error`, com ` | also
+  PARTIAL (...)` ou ` | also EXPLORATORY (...)` no fim quando há outra coisa errada. Os códigos são os da tabela de status em "A
+  regra do gate"; o `report.md` explica cada um logo abaixo da linha. Ninguém deve citar o delta de uma linha assim como o
+  resultado do gate.
+- **Sem número**: `GT VERDICT: INCONCLUSIVE | <motivo> (0 of 400 rows)`, quando nada foi pontuado, ninguém respondeu, ou o
+  thinking não foi visto (`thinking not detected: X of Y rows that answered show thinking`).
+
+O `report.md` tem, em ordem:
 
 1. `Thinker: ...`, qual modelo, revisão, backend, quantização, orçamento e se o thinking estava ligado, com `AVISO` quando a
    rodada não é o gate (outro modelo ou revisão, quantizado, thinking desligado).
@@ -299,7 +365,10 @@ faltar linha, a contagem final ganha `, PARTIAL: ...`). O `report.md` tem, em or
    folga abaixo.
 5. **Custo e falhas do thinker.** Linhas, ilegíveis, orçamento esgotado, falhas; tokens e segundos (total, mediana, p80, máximo).
    Avisos: mais de 10% das linhas bateram no orçamento (o FAIL pode ser do orçamento, não do modelo: refaça com `--max-tokens`
-   maior, só as cortadas são refeitas), saída ilegível, mediana de tokens baixa demais, execução parcial.
+   maior, só as cortadas são refeitas), saída ilegível, mediana de tokens baixa demais, linhas sem sinal de pensamento, linhas
+   sem `usage`, linhas que pararam sem fechar o `</think>` (`no_close`), linhas lidas sem a linha `ANSWER` pedida (fallback),
+   linhas desistidas depois das tentativas (`gave_up`), `--standard-only`, mais de um endpoint no mesmo arquivo, execução
+   parcial. O `thinker` imprime os avisos de pensamento e de `no_close` no fim da própria rodada.
 6. **Folga de latência.** A regra do kit é latência média, mediana e p80 de até 1.000 ms por requisição numa RTX PRO 6000, uma
    requisição por vez (ADR 0004, fato 4). Se o pensador atende uma fração f das requisições com tempo médio t, a média passa de
    1.000 ms quando f > 1.000 ms / t (ignorando o tempo do decisor). Como a média entra na regra, uma fração pequena com raciocínio
@@ -309,12 +378,14 @@ O que fazer com cada veredito:
 
 | veredito | o que significa | próximo passo |
 |---|---|---|
-| **PASS** com thinking ligado e o par modelo/revisão fixado | o pensador entra no plano (ADR 0004, decisão 4) | guarde `report.md` e `report.json`, abra a issue da fase seguinte (o híbrido, abaixo) |
+| **PASS** com thinking ligado e o par modelo/revisão fixado, rodada completa | o pensador entra no plano (ADR 0004, decisão 4) | guarde `report.md` e `report.json`, abra a issue da fase seguinte (o híbrido, abaixo) |
 | **PASS** em 4 bits | vale, o teste é de um lado só | idem |
 | **FAIL** com `can still pass` | o IC ainda comporta +10 | veja os avisos (orçamento, ruído, thinking desligado) e refaça o que eles pedem; mais linhas exigem outro pacote e outra issue |
 | **FAIL** sem isso, em bf16/FP8 | o pensador não paga | ADR 0004: a F3 só faz autodestilação, o F6 treina o decisor sem bloco de raciocínio e o plano segue só-decisor |
 | **FAIL** em 4 bits | não prova nada sobre bf16/FP8 | confirme por endpoint, `hosted` ou Modal |
-| **PARTIAL** | faltam linhas | rode de novo para terminar; o veredito parcial só mostra a direção |
+| **PARTIAL** | faltam linhas, ou há linhas com erro transitório | rode de novo com os mesmos argumentos para terminar; o número mostra só a direção e não é veredito |
+| **EXPLORATORY** | rodada completa, mas fora do protocolo registrado (`standard_only`, `revision_not_declared`, subconjunto de modelos, pacote que não é o do manifesto...) | corrija o que o código diz (por exemplo `--revision`) e rode de novo com outro `--out`, ou trate o número como indício |
+| **INCONCLUSIVE** | o pensador não foi visto pensando (`thinking_not_detected`), ou ninguém respondeu | o endpoint ignorou o pedido de thinking: ligue-o (veja "Backends") e rode de novo com outro `--out` |
 
 O que o veredito **não** diz: (a) o bootstrap reamostra linhas, não a aleatoriedade da geração (temperatura 1,0): duas rodadas
 podem dar números diferentes; (b) escolher o melhor de 8 decisores nas mesmas linhas favorece a referência, o que é o lado
@@ -349,7 +420,9 @@ Isto é um esboço do que o PASS destrava, não parte do gate.
   `state`. O módulo `trace.py` é o lado do pensador: `from_record(linha)` tira o texto de uma linha do `results.jsonl`
   (`mode` `reasoning`, `final` ou `both`), limpa, neutraliza linhas que seriam lidas como o marcador e, se passar do limite,
   mantém o **fim** (onde está a conclusão) atrás de um aviso de quantos caracteres saíram; `attach_trace` e `split_trace`
-  escrevem e lêem a forma dobrada. Onde o `trace.py` e o SCHEMA.md divergirem, vale o SCHEMA.md. O SCHEMA.md **mantém** um
+  escrevem e lêem a forma dobrada. O `from_record` e o `attach_trace` (com `source_id`) **recusam** (`EvaluationDataError`) os ids do
+  `gt-sample-manifest.json`: um traço feito sobre uma linha do GT é dado de avaliação. Os resultados do GT também já não
+  gravam o raciocínio por padrão (`--keep-reasoning` o liga). Onde o `trace.py` e o SCHEMA.md divergirem, vale o SCHEMA.md. O SCHEMA.md **mantém** um
   raciocínio cortado pelo orçamento (`finish_reason: length`); o `from_record` o recusa por padrão, então passe
   `allow_truncated=True` ao gravar traços do corpus. Para gerar traços do corpus de treino da F2 falta um leitor de corpus
   que este kit não tem: ele lê só o pacote do GT.
@@ -375,14 +448,19 @@ python3 -m unittest tests.test_contract_75 tests.test_flow_75
 python -m decide.think.mutation_check
 ```
 
-- `tests/test_contract_75.py`: os contratos do pensador, da comparação, do bootstrap, do veredito, da retomada, do `serve`, do
-  `hosted`, do app da Modal, dos dois notebooks (os comandos das células são lidos com os parsers de verdade) e deste README.
+- `tests/test_contract_75.py`: os contratos do pensador, da comparação, do bootstrap, do veredito e dos status, da retomada, da
+  chave (sem redirecionamento, sem `http://` para fora), do `serve`, do `hosted`, do app da Modal, dos dois notebooks (os
+  comandos das células são lidos com os parsers de verdade, e os valores entram nas linhas `!` entre aspas) e deste README.
+  Também exige que todo `notebooks/decide/*.ipynb` seja citado por algum README, e que o commit fixado nos notebooks
+  seja ancestral do `HEAD`.
 - `tests/test_flow_75.py`: o fluxo ponta a ponta contra um servidor HTTP falso, um Qwen2 aleatório de 2 camadas (precisa de
   `torch`, `transformers` e `tokenizers`; sem eles esses testes são pulados), as células dos notebooks executadas com
   dublês e o app da Modal com um `modal` falso (e com o cliente de verdade, se estiver instalado).
 - **Mutação.** `python -m decide.think.mutation_check` planta um bug de uma linha numa **cópia** do kit (leitura da resposta,
-  bootstrap, veredito, pontuação, retomada, amostra, `serve`, `hosted`, relatório, notebooks, README) e exige que algum teste
-  falhe. Um mutante que ninguém percebe é um teste que falta e faz o comando sair com 1. Imprime `N of N mutants killed`.
+  bootstrap, veredito, status, pontuação, retomada, amostra, cliente e chave, `serve`, `hosted`, relatório, notebooks, README) e
+  exige que algum teste falhe. Um mutante que ninguém percebe é um teste que falta e faz o comando sair com 1. Imprime `N of N
+  mutants killed`. Os testes da cópia rodam sem as variáveis `GIT_DIR`, `GIT_WORK_TREE` e parentes, para que um hook de
+  `git push` num worktree ligado não leve os testes a escrever no repositório de verdade.
 - **Linhas reais.** O pacote de 400 linhas foi reconstruído a partir dos 8 resultados públicos e confere com o manifesto; o
   prompt e a leitura da resposta fecham o ciclo nas 400 (a resposta de um modelo perfeito, escrita no formato pedido, volta com
   as chaves do ouro, 0 falhas); o `compare` roda sobre elas (resultado do ensaio acima).
@@ -401,6 +479,11 @@ Marcado **UNVERIFIED** acima; em um lugar só:
 6. O custo em dinheiro de qualquer backend e a latência no board (RTX PRO 6000, uma requisição por vez).
 7. O formato do bloco `Raciocínio:` contra o SCHEMA.md da issue #69 (lido, não executado) e a conta de memória do híbrido.
 8. A comparação do cartão do modelo (GPQA 89,2, HLE 30,8) com o board (52,0 a 61,7 e 15,8 a 19,4): ambientes diferentes.
+9. Como um provedor de verdade responde a `stream_options.include_usage`, a redirecionamentos e a `chat_template_kwargs`: o
+   cliente foi testado contra servidores locais falsos (inclusive dois, para o redirecionamento), nunca contra um provedor.
+10. Que a lista `IGNORE` da Modal funcione com o `add_local_dir` de verdade: só o app com um `modal` falso foi rodado.
+11. Que o limiar de pensamento (100 tokens) e a metade das linhas separem um endpoint que pensa de um que não pensa: são
+    limites escolhidos aqui, não medidos num modelo real.
 
 ## Arquivos
 
@@ -409,14 +492,20 @@ Marcado **UNVERIFIED** acima; em um lugar só:
 | `gt-sample-manifest.json` | o manifesto da amostra (ids e hashes, sem texto) |
 | `common.py` | constantes (semente, fixações, regra do gate, acaso por prova) e utilitários de JSONL |
 | `sample.py` | sorteio determinístico, pacote e manifesto; `sample build` e `sample verify` |
-| `prompt.py`, `answers.py` | o que o pensador recebe e como a resposta dele é lida (rótulos A-Z; só depois do último `</think>`) |
-| `thinker.py` | o executor: backends `openai` e `transformers`, retomada por linha, orçamento, erros |
-| `compare.py` | acurácia, habilidade, bootstrap pareado, veredito e relatório |
+| `prompt.py`, `answers.py` | o que o pensador recebe e como a resposta dele é lida (rótulos A-Z; só depois do último `</think>`; a última linha `ANSWER` decide) |
+| `thinker.py` | o executor: backends `openai` e `transformers`, retomada por linha, orçamento, tentativas, erros, e a chave que não sai por `http://` nem por redirecionamento |
+| `compare.py` | acurácia, habilidade, bootstrap pareado, status (`PASS`/`FAIL`/`PARTIAL`/`EXPLORATORY`/`INCONCLUSIVE`) e relatório |
 | `serve.py`, `hosted.py`, `modal_app.py` | `vllm serve` fixado, o fluxo inteiro numa GPU grande e o app da Modal (o único que importa `modal`) |
-| `trace.py` | o bloco `Raciocínio:` (lado do pensador) |
+| `trace.py` | o bloco `Raciocínio:` (lado do pensador); recusa os ids do GT |
 | `mutation_check.py` | o teste de mutação |
 | `../../notebooks/decide/think_gt_kaggle.ipynb`, `../../notebooks/decide/think_gt_api.ipynb` | os dois notebooks |
 
 Os notebooks ficam em `notebooks/decide/` porque o README da raiz (que o teste `tests/test_contract_30.py` exige que cite
-todo `notebooks/*.ipynb`) não é deste diretório; o `tests/test_flow_30.py` aceita `notebooks/decide/<nome>.ipynb`. Depois do
-merge, troque `SIMPLICIO_SHA` nos dois notebooks pelo commit de merge em `main`.
+todo `notebooks/*.ipynb`, só do primeiro nível) não é deste diretório; o `tests/test_flow_30.py` aceita
+`notebooks/decide/<nome>.ipynb`, e este README cita os dois (`tests/test_contract_75.py` confere).
+
+**O pin dos notebooks.** Os notebooks baixam o código do commit `SIMPLICIO_SHA`, nunca de `main`. Para esse commit continuar
+em `main`, o PR tem que ser mesclado com **merge commit** (não squash): o commit fixado entra no histórico e o pin vale como
+está. Se for squash, abra logo em seguida um PR de uma linha trocando `SIMPLICIO_SHA` nos dois notebooks pelo commit do
+squash em `main`. Em qualquer caso, o teste `test_the_pinned_commit_holds_the_code_these_tests_cover` **falha** (não pula) num clone
+que não tem esse commit; ele diz como buscá-lo (`git fetch --unshallow`, ou `git fetch origin <sha>`).

@@ -145,7 +145,8 @@ def run_gate(*, pack: str, work: str, manifest: Optional[str] = str(DEFAULT_MANI
             argv += ["--time-budget-s", str(time_budget_s)]
         code = thinker.main(argv + list(thinker_extra))
         if code in (0, 3) and results.is_file():
-            report_code = compare.main(["--pack", pack, "--thinker", str(results), "--out", str(folder / "report"), *compare_extra])
+            report_code = compare.main(["--pack", pack, "--thinker", str(results), "--out", str(folder / "report"),
+                                       *(["--manifest", manifest] if manifest else []), *compare_extra])
             return code or report_code
         return code
     finally:

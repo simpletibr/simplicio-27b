@@ -23,6 +23,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -204,8 +205,42 @@ class ExtractContract(unittest.TestCase):
 
     def test_last_valid_marker_wins(self) -> None:
         self.assertEqual(self.one("ANSWER q1: A\nOn reflection that is wrong.\nANSWER q1: D"), "D")
-        self.assertEqual(self.one("ANSWER q1: B\nANSWER q1: ???"), "B")           # trailing noise does not erase the last valid one
-        self.assertEqual(self.one("ANSWER q1: B\nANSWER q1: Z"), "B")             # Z is not a label
+        self.assertEqual(self.one("ANSWER q1: A\nANSWER q1: B\nANSWER q1: C"), "C")
+
+    def test_the_last_marker_decides_even_when_it_is_not_a_valid_option(self) -> None:
+        # A model that changes its mind to something unreadable has not answered: reading the earlier line would be a guess.
+        self.assertIsNone(self.one("ANSWER q1: B\nANSWER q1: ???"))
+        self.assertIsNone(self.one("ANSWER q1: B\nANSWER q1: Z"))                 # Z is not a label of a 4-option question
+        self.assertIsNone(self.one("ANSWER q1: B\nANSWER q1: E"))
+
+    def test_a_marker_that_is_present_but_invalid_does_not_fall_back_to_a_bare_label(self) -> None:
+        yn = {"q": P.option_list({"no": "No", "yes": "Yes"})}
+        self.assertIsNone(A.extract("There is no causal link between them.\nANSWER q: maybe", yn)["q"])
+        self.assertIsNone(self.one("Options A and B are out.\nANSWER q1: none of them"))
+        self.assertEqual(A.extract("There is no causal link between them.", yn)["q"], "no")       # without a marker the last bare label is still the last resort
+
+    def test_a_marker_with_the_value_on_the_next_line(self) -> None:
+        self.assertEqual(self.one("ANSWER q1:\n**B**"), "B")
+        self.assertEqual(self.one("ANSWER q1:\n\n  (C)\n"), "C")
+        self.assertIsNone(self.one("ANSWER q1:\n"))
+
+    def test_a_question_line_with_the_value_on_the_next_line(self) -> None:
+        o = {f"option_{i}": P.option_list({"no": "No", "yes": "Yes"}) for i in range(2)}
+        self.assertEqual(A.extract("ANSWER option_0: yes\n- option_1:\nno", o), {"option_0": "yes", "option_1": "no"})
+        self.assertEqual(A.extract("ANSWER option_0: yes\n- option_1:\n\n  **no**", o)["option_1"], "no")
+        self.assertIsNone(A.extract("ANSWER option_0: yes\n- option_1:", o)["option_1"])
+
+    def test_how_each_answer_was_found(self) -> None:
+        d = A.extract_detailed
+        self.assertEqual(d("ANSWER q1: B", self.ABCD), {"q1": ("B", "marker")})
+        self.assertEqual(d("The answer is C.", self.ABCD), {"q1": ("C", "generic")})
+        self.assertEqual(d("so \\boxed{D}", self.ABCD), {"q1": ("D", "boxed")})
+        self.assertEqual(d("B", self.ABCD), {"q1": ("B", "bare")})
+        self.assertEqual(d("I cannot decide.", self.ABCD), {"q1": (None, None)})
+        self.assertEqual(d("ANSWER q1: Z", self.ABCD), {"q1": (None, "marker")})
+        self.assertEqual(d("", self.ABCD), {"q1": (None, None)})
+        o = {f"option_{i}": P.option_list({"no": "No", "yes": "Yes"}) for i in range(2)}
+        self.assertEqual(d("ANSWER option_0: yes\n- option_1: no", o), {"option_0": ("yes", "marker"), "option_1": ("no", "line")})
 
     def test_without_the_question_id_a_single_question_still_parses(self) -> None:
         for text in ("ANSWER: C", "Answer: C", "The answer is C.", "The correct answer is **C**", "Final answer - (C)",
@@ -417,6 +452,12 @@ class SampleContract(unittest.TestCase):
                          expected={"o0": "no", "o1": "yes"}, scoring={"accepted": ["zzz"]})
         self.assertEqual(S.gold_sets(multi), {"o0": ["no"], "o1": ["yes"]})      # `accepted` only widens one-question rows
 
+    def test_scoring_accepted_widens_the_gold_only_of_the_benchmarks_where_the_kit_applies_it(self) -> None:
+        self.assertEqual(S.ACCEPTED_BENCHMARKS, (31, 50))
+        scoring = {"type": "chess_reference_value", "accepted": ["a1a2", "b1b2"]}
+        for cid, expected in ((31, ["a1a2", "b1b2"]), (50, ["a1a2", "b1b2"]), (25, ["a1a2"]), (58, ["a1a2"]), (30, ["a1a2"])):
+            self.assertEqual(S.gold_sets(self.row(cid=cid, scoring=scoring, expected={"q": "a1a2"})), {"q": expected}, cid)
+
     def test_decision_from_answers_keeps_probabilities_and_the_reported_choice(self) -> None:
         qs = {"q": {"type": "choice", "criteria": {"A": "a", "B": "b"}}}
         ok = {"q": {"type": "choice", "choice": "B", "probabilities": {"A": 0.25, "B": 0.75}, "confidence": 0.5}}
@@ -446,8 +487,23 @@ def prow(bench, i, gold="A", keys=("A", "B", "C", "D"), picks=None, accepted=Non
 def trec(row, pick, status="ok", **extra):
     rec = {"kind": "row", "id": row["id"], "benchmark": row["benchmark"], "status": status,
            "answers": {q: pick for q in row["questions"]}, "tokens": {"completion": 10}, "seconds": 1.0}
+    if status == "ok":
+        rec["thought"] = True
     rec.update(extra)
     return rec
+
+
+def official_header(**over):
+    """The header of a results file made with the registered protocol: the pinned checkpoint, thinking on, the model card's sampling."""
+    return {"kind": "header", "format": C.RESULT_FORMAT, "config": fake_config(**{"model": C.QWEN_MODEL, "revision": C.QWEN_REVISION, **over}), "config_fingerprint": "f"}
+
+
+def official(rows, recs, **kw):
+    """build_report as the gate runs it: the registered bootstrap, seed and target, and the header of a registered run."""
+    kw.setdefault("header", official_header())
+    kw.setdefault("B", C.BOOTSTRAP_B)
+    kw.setdefault("seed", C.SEED)
+    return K.build_report(rows, recs, **kw)
 
 
 def scenario(spec):
@@ -744,7 +800,7 @@ class ReportContract(unittest.TestCase):
         return scenario({25: items})
 
     def test_a_clear_win_passes_with_the_reference_named(self) -> None:
-        rep = K.build_report(*self.passing(), B=300, seed=C.SEED)
+        rep = official(*self.passing())
         self.assertEqual(rep["verdict"]["status"], "PASS")
         self.assertEqual(rep["reference"], "m1")
         self.assertAlmostEqual(rep["verdict"]["delta_pts"], 40.0)
@@ -758,7 +814,7 @@ class ReportContract(unittest.TestCase):
     def test_a_tie_with_the_best_model_fails_and_says_so(self) -> None:
         rows, _ = self.passing()
         recs = [trec(r, "A" if i % 2 == 0 else "B") for i, r in enumerate(rows)]      # thinker == m1
-        rep = K.build_report(rows, recs, B=200, seed=C.SEED)
+        rep = official(rows, recs)
         self.assertEqual(rep["verdict"]["status"], "FAIL")
         self.assertIn("delta_below_min", rep["verdict"]["reasons"])
         self.assertAlmostEqual(rep["verdict"]["delta_pts"], 0.0)
@@ -766,19 +822,19 @@ class ReportContract(unittest.TestCase):
 
     def test_partial_runs_are_labeled(self) -> None:
         rows, recs = self.passing()
-        rep = K.build_report(rows, recs[:30], B=200, seed=C.SEED)
+        rep = official(rows, recs[:30])
         self.assertFalse(rep["coverage"]["complete"])
         self.assertEqual((rep["coverage"]["rows_scored"], rep["coverage"]["rows_in_pack"]), (30, 40))
         self.assertIn("PARTIAL", K.verdict_line(rep))
 
     def test_no_scored_row_is_inconclusive_not_a_crash(self) -> None:
         rows, _ = self.passing()
-        rep = K.build_report(rows, [], B=50, seed=1)
+        rep = official(rows, [])
         self.assertEqual(rep["verdict"]["status"], "INCONCLUSIVE")
         self.assertTrue(K.verdict_line(rep).startswith("GT VERDICT: INCONCLUSIVE"))
 
     def test_report_holds_every_system_and_benchmark(self) -> None:
-        rep = K.build_report(*self.passing(), B=100, seed=C.SEED)
+        rep = official(*self.passing())
         self.assertEqual(sorted(rep["systems"]), ["m1", "m2", "thinker"])
         b = rep["benchmarks"]["25"]
         self.assertEqual((b["name"], b["n"], b["chance"]), ("GPQA Diamond", 40, 0.25))
@@ -790,16 +846,346 @@ class ReportContract(unittest.TestCase):
         self.assertEqual(rep["discordant"], {"thinker_only": 18, "reference_only": 2, "both": 18, "neither": 2})
 
     def test_the_resampled_reference_ci_is_never_tighter_at_the_floor(self) -> None:
-        rep = K.build_report(*self.passing(), B=300, seed=C.SEED)
+        rep = official(*self.passing())
         self.assertLessEqual(rep["verdict"]["ci_reselected"][0], rep["verdict"]["ci"][0] + 1e-9)
 
     def test_markdown_is_deterministic_and_carries_the_verdict(self) -> None:
-        rep = K.build_report(*self.passing(), B=100, seed=C.SEED)
+        rep = official(*self.passing())
         md = K.render_markdown(rep)
         self.assertEqual(md, K.render_markdown(rep))
         self.assertIn(K.verdict_line(rep), md)
         self.assertIn("GPQA Diamond", md)
         self.assertIn("m2", md)
+
+
+class VerdictStatusContract(unittest.TestCase):
+    """Only a complete run of the registered protocol, with a thinker that was seen thinking, prints PASS or FAIL
+    (review of #78, blockers 1 and 2).  Anything else says what it is, in the report and on the last line."""
+
+    TEN = [b for b in C.DEFAULT_BENCHMARKS if b != 45]              # the ten benchmarks of the gate (HLE is gated out)
+
+    def full(self, hit=lambda b, i: True, ref=lambda b, i: i % 2 == 0, per=40, benches=None):
+        spec = {b: [(hit(b, i), {"m1": ref(b, i), "m2": i % 4 == 0}) for i in range(per)] for b in (benches or self.TEN)}
+        return scenario(spec)
+
+    def assert_not_official(self, rep, status):
+        v = rep["verdict"]
+        self.assertEqual(v["status"], status)
+        line = K.verdict_line(rep)
+        self.assertTrue(line.startswith(f"GT VERDICT: {status}"), line)
+        self.assertNotIn("GT VERDICT: PASS", line)
+        self.assertNotIn("GT VERDICT: FAIL", line)
+        self.assertIn(line, K.render_markdown(rep))
+        return line
+
+    # -- blocker 1: the two probes of the review
+    def test_the_probe_of_three_rows_is_partial_not_pass(self) -> None:
+        rows, recs = self.full()
+        rep = official(rows, [recs[1], recs[41], recs[81]])                # one row per benchmark, each one the reference misses
+        line = self.assert_not_official(rep, "PARTIAL")
+        v = rep["verdict"]
+        self.assertEqual(v["outcome"], "PASS", "the provisional delta and CI are still there to read")
+        self.assertGreater(v["delta_pts"], 10.0)
+        self.assertEqual(len(v["ci"]), 2)
+        self.assertIn("3 of 400 rows", line)
+        self.assertIn("397 not run", line)
+        self.assertIn("provisional", line)
+        self.assertFalse(rep["coverage"]["complete"])
+
+    def test_transient_errors_on_the_hardest_rows_cannot_turn_a_fail_into_a_pass(self) -> None:
+        # 4 benchmarks x 40 rows, per benchmark: both right on 21, only the thinker on 6, only the reference on 3, neither on 10.
+        # Thinker 27/40, reference 24/40: +7.5, FAIL.  Drop the 10 rows neither gets right (a transient error on them) and the same run reads +10.0.
+        def build(status):
+            spec = {b: [(True, {"m1": True})] * 21 + [(True, {"m1": False})] * 6 + [(False, {"m1": True})] * 3 + [(False, {"m1": False})] * 10
+                    for b in (25, 28, 31, 57)}
+            rows, recs = scenario(spec)
+            for r, rec in zip(rows, recs):
+                if r["gold"]["q"] == ["A"] and rec["answers"]["q"] != "A" and r["decisions"]["m1"]["q"]["choice"] != "A":
+                    rec["status"] = status
+            return rows, recs
+        rows, recs = build("ok")
+        honest = official(rows, recs)
+        self.assertEqual((honest["verdict"]["status"], round(honest["verdict"]["delta_pts"], 6)), ("FAIL", 7.5))
+        rows, recs = build("error")
+        self.assertEqual(len([r for r in recs if r["status"] == "error"]), 40)
+        rep = official(rows, recs)
+        self.assertEqual(rep["verdict"]["status"], "PARTIAL")
+        self.assertEqual(rep["verdict"]["outcome"], "PASS", "this is the bias: on the rows that finished the delta reads +10")
+        self.assertAlmostEqual(rep["verdict"]["delta_pts"], 10.0)
+        self.assertGreater(rep["verdict"]["ci"][0], 0.0)
+        self.assertIn("40 with a transient error", self.assert_not_official(rep, "PARTIAL"))
+        rows, recs = build("failed")                                   # a row that was given up is a wrong answer: nothing is dropped
+        rep = official(rows, recs)
+        self.assertEqual((rep["verdict"]["status"], round(rep["verdict"]["delta_pts"], 6)), ("FAIL", 7.5))
+        self.assertTrue(rep["coverage"]["complete"])
+
+    def test_a_partial_run_that_is_also_outside_the_protocol_says_both(self) -> None:
+        rows, recs = self.full(benches=[25, 28])
+        rep = official(rows, recs[:30], B=500)
+        line = self.assert_not_official(rep, "PARTIAL")
+        self.assertEqual(rep["verdict"]["exploratory"], ["bootstrap_b"])
+        self.assertIn("bootstrap_b", line)
+
+    def test_a_complete_registered_run_keeps_the_plain_verdict_line(self) -> None:
+        rows, recs = self.full(benches=[25, 28])
+        rep = official(rows, recs)
+        self.assertIn(rep["verdict"]["status"], ("PASS", "FAIL"))
+        self.assertEqual(rep["verdict"]["outcome"], rep["verdict"]["status"])
+        self.assertEqual((rep["verdict"]["exploratory"], rep["verdict"]["inconclusive"], rep["verdict"]["incomplete"]), ([], [], None))
+        line = K.verdict_line(rep)
+        self.assertTrue(line.startswith(f"GT VERDICT: {rep['verdict']['status']}"))
+        for word in ("PARTIAL", "EXPLORATORY", "provisional"):
+            self.assertNotIn(word, line)
+
+    # -- blocker 1: a run outside the registered protocol
+    def test_every_change_to_the_registered_comparison_is_exploratory_and_named(self) -> None:
+        rows, recs = self.full(benches=[25, 28])
+        cases = {"bootstrap_b": {"B": 500}, "seed": {"seed": 7}, "min_delta": {"min_delta": 5.0}, "models_subset": {"models": ["m1"]},
+                 "pack_mismatch_ignored": {"pack_issues": ["pack_mismatch_ignored"]}, "pack_not_manifest": {"pack_issues": ["pack_not_manifest"]},
+                 "manifest_not_checked": {"pack_issues": ["manifest_not_checked"]}}
+        for code, kw in cases.items():
+            rep = official(rows, recs, **kw)
+            line = self.assert_not_official(rep, "EXPLORATORY")
+            self.assertEqual(rep["verdict"]["reasons"], [code], code)
+            self.assertIn(code, line)
+            self.assertIn(rep["verdict"]["outcome"], ("PASS", "FAIL"), code)
+            self.assertTrue(rep["verdict"]["exploratory"] == [code], code)
+
+    def test_naming_every_model_is_not_a_subset(self) -> None:
+        rows, recs = self.full(benches=[25])
+        self.assertIn(official(rows, recs, models=["m2", "m1"])["verdict"]["status"], ("PASS", "FAIL"))
+
+    def test_the_thinker_side_of_the_protocol_is_checked_from_the_header(self) -> None:
+        rows, recs = self.full(benches=[25, 28])
+        cases = {
+            "thinker_config_unknown": {"header": None},
+            "thinking_off": {"header": official_header(chat_template_kwargs={"enable_thinking": False})},
+            "model_not_pinned": {"header": official_header(model="other/model")},
+            "revision_not_declared": {"header": official_header(revision=None)},
+            "standard_only": {"header": official_header(standard_only=True)},
+            "sampling_not_registered": {"header": official_header(sampling={**C.THINKING_SAMPLING, "temperature": 0.6})},
+            "reasoning_effort": {"header": official_header(reasoning_effort="low")},
+            "extra_body_overrides_protocol": {"header": official_header(extra_body={"temperature": 0})},
+        }
+        for code, kw in cases.items():
+            rep = official(rows, recs, **kw)
+            self.assert_not_official(rep, "EXPLORATORY")
+            self.assertEqual(rep["verdict"]["reasons"], [code], code)
+        for ok in ({"header": official_header(model=C.QWEN_FP8_MODEL, revision=C.QWEN_FP8_REVISION)},
+                   {"header": official_header(quantization="nf4-fp16", backend="transformers")},        # one-sided, but a registered run
+                   {"header": official_header(reasoning_effort="xhigh")},
+                   {"header": official_header(extra_body={"provider": {"order": ["a"]}})}):
+            self.assertIn(official(rows, recs, **ok)["verdict"]["status"], ("PASS", "FAIL"), ok)
+
+    def test_a_reply_without_usage_cannot_be_measured_and_the_run_is_exploratory(self) -> None:
+        rows, recs = self.full(benches=[25, 28])
+        for rec in recs:
+            rec["tokens"] = {"completion": None}
+        rep = official(rows, recs)
+        self.assert_not_official(rep, "EXPLORATORY")
+        self.assertEqual(rep["verdict"]["reasons"], ["usage_missing"])
+        self.assertEqual(rep["thinker_stats"]["usage_missing"], 80)
+        self.assertIn("usage", K.render_markdown(rep))
+        for rec in recs[:50]:                                                          # a few rows without usage are noise
+            rec["tokens"] = {"completion": 10}
+        self.assertIn(official(rows, recs)["verdict"]["status"], ("PASS", "FAIL"))
+        for rec in recs[:40]:                                                          # 40 of 80 without usage: exactly half still counts
+            rec["tokens"] = {"completion": None}
+        for rec in recs[40:]:
+            rec["tokens"] = {"completion": 10}
+        self.assertIn(official(rows, recs)["verdict"]["status"], ("PASS", "FAIL"), "exactly half of the replies without usage")
+        recs[40]["tokens"] = {"completion": None}
+        self.assertEqual(official(rows, recs)["verdict"]["reasons"], ["usage_missing"], "one more than half")
+
+    # -- blocker 2: a thinker that was not seen thinking
+    def test_a_thinker_that_did_not_think_is_inconclusive_and_the_line_says_why(self) -> None:
+        rows, recs = self.full(benches=[25, 28])
+        for rec in recs:
+            rec["thought"] = False
+        rep = official(rows, recs)
+        line = self.assert_not_official(rep, "INCONCLUSIVE")
+        self.assertEqual(rep["verdict"]["reasons"], ["thinking_not_detected"])
+        self.assertEqual(rep["verdict"]["inconclusive"], ["thinking_not_detected"])
+        self.assertIn("thinking not detected", line)
+        self.assertIn("0 of 80", line)
+        self.assertEqual(rep["thinker_stats"]["thought"], 0)
+        self.assertEqual(rep["verdict"]["outcome"], "PASS", "the numbers are still there to read")
+
+    def test_thinking_must_show_in_at_least_half_of_the_rows_that_answered(self) -> None:
+        rows, recs = self.full(benches=[25])
+        for k, rec in enumerate(recs):
+            rec["thought"] = k < 20
+        self.assertIn(official(rows, recs)["verdict"]["status"], ("PASS", "FAIL"))
+        recs[19]["thought"] = False
+        self.assertEqual(official(rows, recs)["verdict"]["status"], "INCONCLUSIVE")
+
+    def test_a_run_in_which_nobody_answered_is_inconclusive_not_a_zero(self) -> None:
+        rows, recs = self.full(benches=[25])
+        for rec in recs:
+            rec["status"], rec["answers"] = "failed", {}
+            rec.pop("thought")
+        rep = official(rows, recs)
+        self.assert_not_official(rep, "INCONCLUSIVE")
+        self.assertEqual(rep["verdict"]["reasons"], ["no_replies"])
+        self.assertIn("no scored row got a reply", K.verdict_line(rep))
+
+    def test_a_results_file_without_a_header_is_read_as_a_thinking_run_so_a_thinker_never_seen_thinking_is_inconclusive(self) -> None:
+        rows, recs = self.full(benches=[25])
+        for rec in recs:
+            rec["thought"] = False
+        rep = official(rows, recs, header=None)
+        self.assertEqual(rep["verdict"]["status"], "INCONCLUSIVE")
+        self.assertEqual(rep["verdict"]["reasons"], ["thinking_not_detected"])
+        self.assertEqual(rep["verdict"]["exploratory"], ["thinker_config_unknown"])
+
+    def test_a_row_without_the_flag_does_not_count_as_thinking(self) -> None:
+        rows, recs = self.full(benches=[25])
+        for rec in recs:
+            del rec["thought"]
+        self.assertEqual(official(rows, recs)["verdict"]["reasons"], ["thinking_not_detected"])
+
+    def test_rows_that_did_not_answer_are_not_rows_that_did_not_think(self) -> None:
+        rows, recs = self.full(benches=[25])
+        for rec in recs[:30]:
+            rec["status"], rec["answers"] = "failed", {}
+            rec.pop("thought")
+        rep = official(rows, recs)
+        self.assertIn(rep["verdict"]["status"], ("PASS", "FAIL"))
+        self.assertEqual((rep["thinker_stats"]["ok"], rep["thinker_stats"]["thought"]), (10, 10))
+
+    def test_a_thinking_off_control_is_exploratory_not_inconclusive(self) -> None:
+        rows, recs = self.full(benches=[25])
+        for rec in recs:
+            rec["thought"] = False
+        rep = official(rows, recs, header=official_header(chat_template_kwargs={"enable_thinking": False}))
+        self.assertEqual((rep["verdict"]["status"], rep["verdict"]["reasons"]), ("EXPLORATORY", ["thinking_off"]))
+
+    def test_inconclusive_beats_partial_beats_exploratory(self) -> None:
+        rows, recs = self.full(benches=[25, 28])
+        for rec in recs:
+            rec["thought"] = False
+        rep = official(rows, recs[:30], B=500)
+        self.assertEqual(rep["verdict"]["status"], "INCONCLUSIVE")
+        self.assertEqual(rep["verdict"]["incomplete"], {"missing": 50, "errors": 0})
+        self.assertEqual(rep["verdict"]["exploratory"], ["bootstrap_b"])
+        line = K.verdict_line(rep)
+        self.assertIn("PARTIAL", line)
+        self.assertIn("bootstrap_b", line)
+
+    def test_no_decision_model_and_no_scored_row_stay_inconclusive_with_their_old_reasons(self) -> None:
+        rows, recs = self.full(benches=[25])
+        self.assertEqual(official(rows, [])["verdict"]["reasons"], ["no_scored_rows"])
+        for r in rows:
+            r["decisions"] = {}
+        self.assertEqual(official(rows, recs)["verdict"]["reasons"], ["no_decision_models"])
+
+
+class ReportWarningsContract(unittest.TestCase):
+    """What the report must keep saying: the markdown is what people read, and `hosted` and the Modal app only show the last line."""
+
+    def two(self):
+        return scenario({b: [(i % 3 != 0, {"m1": i % 2 == 0}) for i in range(40)] for b in (25, 28)})
+
+    def md(self, mutate=lambda recs: None, **kw):
+        rows, recs = self.two()
+        mutate(recs)
+        rep = official(rows, recs, **kw)
+        return rep, K.render_markdown(rep)
+
+    def test_a_run_that_is_not_the_gate_says_so_under_the_verdict_line_and_names_each_reason(self) -> None:
+        rep, md = self.md(B=500)
+        self.assertIn("NAO e o veredito do gate", md)
+        self.assertIn("bootstrap_b", md)
+        rep, md = self.md(lambda recs: recs.pop())
+        self.assertIn("NAO e o veredito do gate", md)
+        self.assertIn("1 linhas sem resultado", md)
+        self.assertIn("PARTIAL", md)
+
+    def test_a_run_of_the_registered_protocol_does_not_say_it(self) -> None:
+        _, md = self.md()
+        self.assertNotIn("NAO e o veredito", md)
+
+    def test_an_inconclusive_run_still_shows_its_numbers(self) -> None:
+        def no_thought(recs):
+            for r in recs:
+                r["thought"] = False
+        rep, md = self.md(no_thought)
+        self.assertEqual(rep["verdict"]["status"], "INCONCLUSIVE")
+        self.assertIn("Acuracia por benchmark", md)
+        self.assertIn("thinking_not_detected", md)
+        self.assertIn("nao mostram pensamento", md)
+
+    def test_rows_that_did_not_show_thinking_are_counted_even_when_most_did(self) -> None:
+        def some(recs):
+            for r in recs[:10]:
+                r["thought"] = False
+        rep, md = self.md(some)
+        self.assertIn(rep["verdict"]["status"], ("PASS", "FAIL"))
+        self.assertIn("AVISO: 10 de 80 linhas nao mostram pensamento", md)
+        def one(recs):
+            recs[0]["thought"] = False
+        self.assertIn("AVISO: 1 de 80 linhas nao mostram pensamento", self.md(one)[1])
+        self.assertNotIn("nao mostram pensamento", self.md()[1])
+
+    def test_standard_only_and_missing_usage_are_in_the_report(self) -> None:
+        rep, md = self.md(header=official_header(standard_only=True))
+        self.assertIn("- AVISO: `--standard-only` tirou top_k, min_p, repetition_penalty e chat_template_kwargs do pedido", md)
+        self.assertIn("`standard_only`: --standard-only", md, "and the reason code is explained under the verdict line")
+        self.assertEqual(rep["verdict"]["reasons"], ["standard_only"])
+
+        def no_usage(recs):
+            for r in recs:
+                r["tokens"] = {"completion": None}
+        rep, md = self.md(no_usage)
+        self.assertIn("AVISO: 80 de 80 linhas sem contagem de tokens", md)
+        self.assertIn("usage_missing", md)
+
+    def test_rows_that_stopped_without_closing_the_thinking_are_counted(self) -> None:
+        def cut(recs):
+            for r in recs[:4]:
+                r["no_close"] = True
+                r["answers"] = {"q": None}
+        _, md = self.md(cut)
+        self.assertIn("AVISO: 4 linhas pararam sem fechar o pensamento", md)
+
+    def test_rows_read_by_a_fallback_are_counted(self) -> None:
+        def fall(recs):
+            for k, r in enumerate(recs):
+                r["read_by"] = {"q": "generic" if k < 7 else "marker"}
+        rep, md = self.md(fall)
+        self.assertEqual(rep["thinker_stats"]["read_by_fallback"], 7)
+        self.assertIn("7 linhas foram lidas sem a linha ANSWER", md)
+        for how, counted in (("marker", 0), (None, 0), ("line", 1), ("generic", 1), ("boxed", 1), ("bare", 1)):
+            with self.subTest(how=how):
+                def one(recs, how=how):
+                    for r in recs:
+                        r["read_by"] = {"q": "marker"}
+                    recs[0]["read_by"] = {"q": how}
+                self.assertEqual(self.md(one)[0]["thinker_stats"]["read_by_fallback"], counted)
+
+    def test_rows_given_up_are_counted_as_errors_of_the_model(self) -> None:
+        def give_up(recs):
+            for r in recs[:3]:
+                r.update(status="failed", gave_up=3, answers={})
+        rep, md = self.md(give_up)
+        self.assertEqual(rep["thinker_stats"]["gave_up"], 3)
+        self.assertEqual(rep["thinker_stats"]["failed"], 3)
+        self.assertIn("3 linhas desistidas", md)
+
+    def test_a_file_that_went_through_two_endpoints_says_so(self) -> None:
+        def mixed(recs):
+            for k, r in enumerate(recs):
+                r["endpoint"] = "https://a.example/v1" if k < 40 else "https://b.example/v1"
+        rep, md = self.md(mixed)
+        self.assertEqual(rep["thinker_stats"]["endpoints"], ["https://a.example/v1", "https://b.example/v1"])
+        self.assertIn("AVISO: as linhas vieram de 2 endpoints", md)
+        self.assertIn("https://b.example/v1", md)
+        self.assertIn("quantizacao", md)
+
+        def one(recs):
+            for r in recs:
+                r["endpoint"] = "https://a.example/v1"
+        self.assertNotIn("endpoints", self.md(one)[1])
 
 
 def q_options(row):
@@ -819,8 +1205,8 @@ class InterpretContract(unittest.TestCase):
         self.row = prow(25, 0)
         self.options = q_options(self.row)
 
-    def parsed(self, **gen):
-        return T.interpret(T.GenResult(**gen), self.options)
+    def parsed(self, thinking=False, **gen):
+        return T.interpret(T.GenResult(**gen), self.options, thinking=thinking)
 
     def test_reasoning_split_by_the_server_and_a_reply_with_the_answer(self) -> None:
         p = self.parsed(reasoning="maybe C, no, B", content="ANSWER q: B", finish_reason="stop")
@@ -845,6 +1231,24 @@ class InterpretContract(unittest.TestCase):
     def test_a_service_that_hides_the_reasoning_returns_just_the_reply(self) -> None:
         p = self.parsed(content="ANSWER q: C", finish_reason="stop")
         self.assertEqual((p.answers, p.truncated), ({"q": "C"}, False))
+
+    def test_a_thinking_run_does_not_read_a_stop_without_a_closing_tag_as_an_answer(self) -> None:
+        # The template opens <think> itself: a reply that stopped with no </think> and no reasoning field is thinking that never ended
+        # (or an endpoint that ignored the request for it), and its text must not be scanned for an answer.
+        text = "Maybe the answer is B... or no, C.\nANSWER q: B"
+        p = self.parsed(thinking=True, content=text, finish_reason="stop")
+        self.assertEqual((p.answers, p.final, p.no_close), ({"q": None}, None, True))
+        for kw in ({"reasoning": "server side thinking"}, {"reasoning_tokens": 300}):
+            p = self.parsed(thinking=True, content="ANSWER q: B", finish_reason="stop", **kw)
+            self.assertEqual((p.answers, p.no_close), ({"q": "B"}, False), kw)
+        p = self.parsed(thinking=True, content="t\n</think>\nANSWER q: B", finish_reason="stop")
+        self.assertEqual((p.answers, p.no_close), ({"q": "B"}, False))
+        p = self.parsed(thinking=False, content=text, finish_reason="stop")                  # a control without thinking is read whole
+        self.assertEqual((p.answers, p.no_close), ({"q": "B"}, False))
+
+    def test_a_cut_reply_is_truncated_not_no_close(self) -> None:
+        p = self.parsed(thinking=True, content="so the answer is B", finish_reason="length")
+        self.assertEqual((p.truncated, p.no_close), (True, False))
 
     def test_cut_inside_the_reply_after_the_thinking_still_reads_a_written_answer(self) -> None:
         p = self.parsed(content="reasoning</think>\n\nANSWER q: A\nbecause the", finish_reason="length")
@@ -890,6 +1294,50 @@ class RecordContract(unittest.TestCase):
     def test_truncated_record(self) -> None:
         r = self.record(T.GenResult(content="hmm", finish_reason="length", completion_tokens=1000))
         self.assertEqual((r["status"], r["truncated"], r["answers"]), ("ok", True, {"q": None}))
+
+    def test_whether_the_model_thought_is_measured_on_every_row(self) -> None:
+        cases = [
+            (T.GenResult(reasoning="long thinking", content="ANSWER q: B", finish_reason="stop"), True),              # the server split it off
+            (T.GenResult(content="so B...\n</think>\nANSWER q: B", finish_reason="stop"), True),                      # inline, closed
+            (T.GenResult(content="ANSWER q: B", finish_reason="stop", completion_tokens=6), False),                    # answered at once
+            (T.GenResult(content="ANSWER q: B", finish_reason="stop", completion_tokens=99), False),                   # one token below the bar
+            (T.GenResult(content="ANSWER q: B", finish_reason="stop", completion_tokens=C.MIN_THINKING_TOKENS), True),
+            (T.GenResult(content="ANSWER q: B", finish_reason="stop", reasoning_tokens=300), True),                    # the server hides the text, not the count
+            (T.GenResult(content="</think>\nANSWER q: B", finish_reason="stop", completion_tokens=8), False),          # a closing tag with nothing before it
+            (T.GenResult(content="ANSWER q: B", finish_reason="stop"), False),                                         # no usage, no text: nothing shows thinking
+            (T.GenResult(content="still thinking about it", finish_reason="length", completion_tokens=1000), True),
+        ]
+        for gen, expected in cases:
+            self.assertIs(self.record(gen)["thought"], expected, gen)
+
+    def test_a_stop_without_a_closing_tag_is_unreadable_and_recorded_as_such(self) -> None:
+        r = self.record(T.GenResult(content="B probably.\nANSWER q: B", finish_reason="stop", completion_tokens=8))
+        self.assertEqual((r["answers"], r["no_close"], r["thought"]), ({"q": None}, True, False))
+        r = self.record(T.GenResult(content="x\n</think>\nANSWER q: B", finish_reason="stop"))
+        self.assertEqual((r["answers"], r["no_close"]), ({"q": "B"}, False))
+        r = self.record(T.GenResult(content="B probably.\nANSWER q: B", finish_reason="stop"), thinking=False)       # a control without thinking is read whole
+        self.assertEqual((r["answers"], r["no_close"]), ({"q": "B"}, False))
+
+    def test_how_each_answer_was_found_is_recorded(self) -> None:
+        r = self.record(T.GenResult(content="t</think>\nANSWER q: B", finish_reason="stop"))
+        self.assertEqual(r["read_by"], {"q": "marker"})
+        r = self.record(T.GenResult(content="t</think>\nThe answer is C", finish_reason="stop"))
+        self.assertEqual((r["answers"], r["read_by"]), ({"q": "C"}, {"q": "generic"}))
+        r = self.record(T.GenResult(content="t</think>\nno idea", finish_reason="stop"))
+        self.assertEqual((r["answers"], r["read_by"]), ({"q": None}, {"q": None}))
+
+    def test_garbled_output_is_judged_when_the_row_is_written_so_it_survives_dropping_the_reasoning(self) -> None:
+        r = self.record(T.GenResult(reasoning="!" * 3000, content="ANSWER q: B", finish_reason="stop"), keep_reasoning=False)
+        self.assertNotIn("reasoning", r)
+        self.assertIs(r["garbled"], True)
+        r = self.record(T.GenResult(reasoning="the options differ in the second clause " * 20, content="ANSWER q: B", finish_reason="stop"), keep_reasoning=False)
+        self.assertIs(r["garbled"], False)
+
+    def test_the_endpoint_that_answered_is_on_the_row(self) -> None:
+        gen = T.GenResult(content="t</think>\nANSWER q: B", finish_reason="stop")
+        self.assertEqual(self.record(gen, endpoint="https://a.example/v1")["endpoint"], "https://a.example/v1")
+        self.assertNotIn("endpoint", self.record(gen))
+        self.assertEqual(self.record(T.GenResult(error="HTTP 503"), endpoint="https://a.example/v1")["endpoint"], "https://a.example/v1")
 
     def test_transient_error_is_status_error_and_a_row_error_is_failed(self) -> None:
         e = self.record(T.GenResult(error="HTTP 503", transient=True))
@@ -990,6 +1438,35 @@ class StoreContract(unittest.TestCase):
         s.append(self.rec(0, status="ok"))
         self.assertEqual(s.latest()["25:0"]["status"], "ok")
         self.assertEqual(s.done_ids(1000), {"25:0"})
+
+    def test_only_the_errors_at_the_end_of_a_row_history_count_towards_giving_it_up(self) -> None:
+        s = self.open()
+        for status in ("error", "error"):
+            s.append(self.rec(0, status=status))
+        s.append(self.rec(1, status="error"))
+        self.assertEqual(s.error_streaks(), {"25:0": 2, "25:1": 1})
+        s.append(self.rec(0, status="ok"))                                  # a success starts the count over
+        s.append(self.rec(0, status="error"))
+        s.append(self.rec(1, status="failed"))                              # and so does a `failed` record
+        s.append(self.rec(1, status="error"))
+        self.assertEqual(s.error_streaks(), {"25:0": 1, "25:1": 1})
+        s.append(self.rec(2, status="ok"))
+        self.assertNotIn("25:2", s.error_streaks())
+
+    def test_a_row_gets_three_tries_by_default(self) -> None:
+        import inspect
+        self.assertEqual(C.DEFAULT_MAX_ATTEMPTS, 3)
+        self.assertEqual(T.build_parser().parse_args(["--pack", "p", "--out", "o"]).max_attempts, 3)
+        self.assertEqual(inspect.signature(T.run).parameters["max_attempts"].default, 3)
+        self.assertIn("3 erros seguidos", " ".join(readme_text().split()))
+
+    def test_failed_rows_are_work_again_only_with_retry_failed(self) -> None:
+        s = self.open()
+        s.append(self.rec(0, status="failed"))
+        s.append(self.rec(1, status="ok"))
+        s.append(self.rec(2, status="error"))
+        self.assertEqual(s.done_ids(1000), {"25:0", "25:1"})
+        self.assertEqual(s.done_ids(1000, retry_failed=True), {"25:1"})
 
     def test_a_truncated_row_is_redone_only_under_a_bigger_budget(self) -> None:
         s = self.open()
@@ -1154,6 +1631,87 @@ class RunnerContract(unittest.TestCase):
             self.run_(FakeBackend(raises=T.BackendError("HTTP 401: bad key")))
         self.assertEqual(self.ids(), [])
 
+    # -- a row that cannot be answered is a wrong answer, not a row that is "absent" for ever (review of #78, blocker 1)
+    def down(self):
+        return FakeBackend(reply=lambda item: T.GenResult(error="HTTP 503: overloaded", transient=True))
+
+    def test_a_row_that_errors_in_max_attempts_runs_is_given_up_as_failed(self) -> None:
+        for k in (1, 2):
+            st = self.run_(self.down(), max_attempts=3, limit=2, max_consecutive_errors=100)
+            self.assertEqual((st.errors, st.failed), (2, 0), k)
+            self.assertEqual(self.store().done_ids(1000), set(), "a row with an error is still pending")
+        st = self.run_(self.down(), max_attempts=3, limit=2, max_consecutive_errors=100)
+        self.assertEqual((st.errors, st.failed), (0, 2))
+        last = self.store().latest()
+        for rid in ("25:0", "58:0"):
+            self.assertEqual(last[rid]["status"], "failed")
+            self.assertEqual(last[rid]["gave_up"], 3)
+            self.assertIn("HTTP 503", last[rid]["error"])
+            self.assertIn("3 attempts", last[rid]["error"])
+        self.assertEqual(self.store().done_ids(1000), {"25:0", "58:0"})
+        self.assertEqual(self.run_(self.down(), max_attempts=3, limit=2).done, 2, "the next two rows are tried, not the given-up ones")
+
+    def test_one_attempt_makes_the_first_error_final_and_a_success_in_between_keeps_the_row_alive(self) -> None:
+        self.run_(self.down(), max_attempts=1, limit=1)
+        self.assertEqual(self.store().latest()["25:0"]["status"], "failed")
+        self.run_(self.down(), max_attempts=3, limit=1, benchmarks=[58])
+        self.run_(FakeBackend(), max_attempts=3, limit=1, benchmarks=[58])
+        self.run_(self.down(), max_attempts=3, limit=1, benchmarks=[58])                  # already ok: not run again
+        self.assertEqual(self.store().latest()["58:0"]["status"], "ok")
+
+    def test_only_the_errors_at_the_end_of_the_history_count(self) -> None:
+        # a row cut by the budget (ok, truncated) and redone under a bigger one starts its count over
+        self.run_(FakeBackend(reply=lambda item: T.GenResult(content="hmm", finish_reason="length")), limit=1, max_tokens=100)
+        for k in range(2):
+            self.run_(self.down(), max_attempts=3, limit=1, max_tokens=200, max_consecutive_errors=100)
+        self.assertEqual(self.store().latest()["25:0"]["status"], "error")
+        self.run_(self.down(), max_attempts=3, limit=1, max_tokens=200, max_consecutive_errors=100)
+        self.assertEqual(self.store().latest()["25:0"]["status"], "failed")
+
+    def test_retry_failed_gives_the_given_up_rows_a_fresh_count(self) -> None:
+        self.run_(self.down(), max_attempts=1, limit=1)
+        self.assertEqual(self.run_(FakeBackend(), limit=1).done, 1, "the next row, not the given-up one")
+        st = self.run_(self.down(), max_attempts=2, retry_failed=True, limit=1)
+        self.assertEqual((st.errors, st.failed), (1, 0), "the count starts over, so one error is not final yet")
+        self.run_(FakeBackend(), retry_failed=True, limit=1)
+        self.assertEqual(self.store().latest()["25:0"]["status"], "ok")
+
+    def test_a_given_up_row_still_counts_toward_the_consecutive_errors_that_stop_the_run(self) -> None:
+        st = self.run_(self.down(), max_attempts=1, max_consecutive_errors=3)
+        self.assertEqual((st.done, st.failed, st.stopped), (3, 3, "3 consecutive errors"))
+
+    def test_the_progress_line_flags_a_row_that_did_not_think_and_one_that_did_not_close(self) -> None:
+        def reply(item):
+            return T.GenResult(content="ANSWER q: A", finish_reason="stop", completion_tokens=5)
+        self.run_(FakeBackend(reply=reply), limit=1)
+        line = self.logs[-1]
+        self.assertIn("no_thinking", line)
+        self.assertIn("no_close", line)
+        self.logs.clear()
+        self.run_(FakeBackend(), limit=1, benchmarks=[58])
+        self.assertNotIn("no_thinking", self.logs[-1])
+        self.assertNotIn("no_close", self.logs[-1])
+
+    def test_rows_are_written_with_the_thinking_the_config_asked_for_and_the_endpoint_of_the_config(self) -> None:
+        def bare(item):
+            return T.GenResult(content="B...\nANSWER q: B", finish_reason="stop", completion_tokens=9)
+        self.run_(FakeBackend(reply=bare), limit=1)
+        rec = self.store().latest()["25:0"]
+        self.assertEqual((rec["answers"], rec["no_close"], rec["thought"]), ({"q": None}, True, False))
+        off = fake_config(chat_template_kwargs={"enable_thinking": False}, endpoint="https://a.example/v1")
+        path = Path(self.tmp.name) / "control.jsonl"
+        T.run(self.rows, FakeBackend(reply=bare), T.ResultStore.open(path, off, "p" * 64, 10), max_tokens=1000, limit=1, log=lambda s: None)
+        rec = T.ResultStore.read(path)[1][0]
+        self.assertEqual((rec["answers"], rec["no_close"], rec["endpoint"]), ({"q": "B"}, False, "https://a.example/v1"))
+
+    def test_the_thinking_text_is_not_stored_unless_asked(self) -> None:
+        self.run_(FakeBackend(reply=lambda item: T.GenResult(reasoning="secret reasoning", content="ANSWER q: A", finish_reason="stop")), limit=1)
+        self.assertNotIn("reasoning", self.store().latest()["25:0"])
+        path = Path(self.tmp.name) / "kept.jsonl"
+        T.run(self.rows, FakeBackend(reply=lambda item: T.GenResult(reasoning="secret reasoning", content="ANSWER q: A", finish_reason="stop")),
+              T.ResultStore.open(path, fake_config(), "p" * 64, 10), max_tokens=1000, limit=1, keep_reasoning=True, log=lambda s: None)
+        self.assertEqual(T.ResultStore.read(path)[1][0]["reasoning"], "secret reasoning")
+
     def test_stop_flag(self) -> None:
         flag = {"stop": False}
 
@@ -1238,8 +1796,8 @@ class OpenAIPayloadContract(unittest.TestCase):
         self.assertNotIn("seed", body)
 
     def test_effort_seed_and_extra_body(self) -> None:
-        body = self.backend(reasoning_effort="medium", extra_body={"top_k": 5, "foo": 1}).payload(T.Item("a", "p", seed=42))
-        self.assertEqual((body["reasoning_effort"], body["seed"], body["top_k"], body["foo"]), ("medium", 42, 5, 1))
+        body = self.backend(reasoning_effort="medium", extra_body={"foo": 1}).payload(T.Item("a", "p", seed=42))
+        self.assertEqual((body["reasoning_effort"], body["seed"], body["top_k"], body["foo"]), ("medium", 42, 20, 1))
 
     def test_standard_only_drops_what_strict_servers_reject(self) -> None:
         body = self.backend(standard_only=True).payload(T.Item("a", "p"))
@@ -1253,8 +1811,8 @@ class OpenAIPayloadContract(unittest.TestCase):
         self.assertNotIn("stream_options", body)
 
     def test_url_and_auth_header(self) -> None:
-        b = self.backend(base_url="http://h:1/v1/", api_key="sk-secret")
-        self.assertEqual(b.url, "http://h:1/v1/chat/completions")
+        b = self.backend(base_url="https://h:1/v1/", api_key="sk-secret")
+        self.assertEqual(b.url, "https://h:1/v1/chat/completions")
         self.assertEqual(b.headers()["Authorization"], "Bearer sk-secret")
         self.assertNotIn("Authorization", self.backend().headers())
         self.assertNotIn("sk-secret", repr(b.describe()))
@@ -1705,6 +2263,47 @@ class TraceContract(unittest.TestCase):
         self.assertEqual(TR.from_record({"status": "ok", "final": "answer"}, mode="final"), "answer")
 
 
+class TraceEvalOnlyContract(unittest.TestCase):
+    """ADR 0004, item 6: the sample of the gate is evaluation data, so a trace made on one of its rows cannot be written (review of #78)."""
+
+    OK = {"status": "ok", "truncated": False, "reasoning": "think", "final": "answer"}
+
+    def gt_ids(self):
+        manifest = json.loads((ROOT / "decide" / "think" / "gt-sample-manifest.json").read_text(encoding="utf-8"))
+        return sorted(rid for b in manifest["benchmarks"].values() for rid in b["run_ids"])
+
+    def test_the_ids_are_the_ones_of_the_committed_manifest(self) -> None:
+        ids = self.gt_ids()
+        self.assertEqual(sorted(TR.gt_sample_ids()), ids)
+        self.assertGreater(len(ids), 300)
+
+    def test_a_row_of_the_sample_gives_no_trace(self) -> None:
+        for rid in (self.gt_ids()[0], self.gt_ids()[-1]):
+            for mode in TR.MODES:
+                with self.assertRaises(TR.EvaluationDataError) as cm:
+                    TR.from_record({**self.OK, "id": rid}, mode=mode)
+                self.assertIn("ADR 0004", str(cm.exception))
+                self.assertIsInstance(cm.exception, TR.TraceError)
+
+    def test_a_row_outside_the_sample_and_a_record_without_an_id_are_not_affected(self) -> None:
+        self.assertEqual(TR.from_record({**self.OK, "id": "train:0001"}), "think")
+        self.assertEqual(TR.from_record(self.OK), "think")
+
+    def test_attaching_a_trace_to_a_request_of_the_sample_is_refused_when_the_source_is_named(self) -> None:
+        rid = self.gt_ids()[3]
+        with self.assertRaises(TR.EvaluationDataError):
+            TR.attach_trace("state", "think", source_id=rid)
+        self.assertEqual(TR.attach_trace("state", "think", source_id="train:1"), TR.attach_trace("state", "think"))
+        self.assertEqual(TR.attach_trace("state", "", source_id=rid), "state", "no trace, nothing to refuse")
+
+    def test_another_manifest_can_be_named(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "m.json"
+            path.write_text(json.dumps({"benchmarks": {"25": {"run_ids": ["x:1", "x:2"]}, "58": {"run_ids": ["y:1"]}}}), encoding="utf-8")
+            self.assertEqual(TR.gt_sample_ids(path), frozenset({"x:1", "x:2", "y:1"}))
+
+
 class ServeContract(unittest.TestCase):
     """`vllm serve` for the thinker, on a rented or own GPU.  Not the Kaggle T4 (README, "Backends")."""
 
@@ -2072,8 +2671,9 @@ class ExtraBodySecretContract(unittest.TestCase):
             self.refused(json.dumps({"headers": [{"note": value}]}))
 
     def test_the_fields_a_provider_really_takes_pass(self) -> None:
-        for obj in ({"enable_thinking": True}, {"thinking": {"type": "enabled", "budget_tokens": 4000}}, {"max_tokens": 5},
-                    {"reasoning": {"effort": "high"}}, {"token_limit": 3}, {"thinking_budget": 100}, {"note": "Bearer"}, {"id": "sk-short"}):
+        for obj in ({"enable_thinking": True}, {"thinking": {"type": "enabled", "budget_tokens": 4000}}, {"max_new_tokens": 5},
+                    {"reasoning": {"effort": "high"}}, {"token_limit": 3}, {"thinking_budget": 100}, {"note": "Bearer"}, {"id": "sk-short"},
+                    {"provider": {"order": ["a"], "allow_fallbacks": False}}):
             self.assertEqual(T._json_arg(json.dumps(obj), "--extra-body"), obj)
 
     def test_the_cli_stops_before_a_results_file_exists(self) -> None:
@@ -2085,6 +2685,119 @@ class ExtraBodySecretContract(unittest.TestCase):
                 T.main(["--pack", str(pack), "--out", str(out), "--backend", "openai", "--base-url", "http://127.0.0.1:1/v1",
                         "--extra-body", json.dumps({"api_key": self.KEY})])
             self.assertFalse(out.exists())
+
+
+class ExtraBodyProtocolContract(unittest.TestCase):
+    """--extra-body is for provider fields.  The fields that make the protocol have their own options, and the request is
+    built so that the extra body cannot override them (review of #78, blocker 2a: a request for no thinking, temperature 0
+    and 64 tokens went out while the header and the report said thinking on, 16384 tokens, temperature 1)."""
+
+    THE_REVIEWERS = '{"chat_template_kwargs":{"enable_thinking":false},"temperature":0,"max_tokens":64}'
+
+    def test_the_request_of_the_review_is_refused_before_anything_is_written(self) -> None:
+        with self.assertRaises(SystemExit) as cm:
+            T._json_arg(self.THE_REVIEWERS, "--extra-body")
+        self.assertIn("chat_template_kwargs", str(cm.exception))
+
+    def test_every_protocol_field_is_refused_by_name_whatever_its_case(self) -> None:
+        for key in sorted(C.PROTOCOL_KEYS) + ["Temperature", "MAX_TOKENS"]:
+            with self.assertRaises(SystemExit) as cm:
+                T._json_arg(json.dumps({"ok": 1, key: 1}), "--extra-body")
+            self.assertIn(key, str(cm.exception), key)
+            self.assertIn("protocol", str(cm.exception), key)
+
+    def test_the_protocol_fields_cover_the_sampling_the_template_the_budget_and_the_stream(self) -> None:
+        self.assertTrue(set(C.THINKING_SAMPLING) <= C.PROTOCOL_KEYS)
+        for key in ("model", "messages", "max_tokens", "max_completion_tokens", "seed", "stream", "stream_options", "chat_template_kwargs", "reasoning_effort"):
+            self.assertIn(key, C.PROTOCOL_KEYS)
+
+    def test_a_nested_key_with_a_protocol_name_is_a_provider_field_not_a_protocol_field(self) -> None:
+        obj = {"provider": {"max_tokens": 5}}
+        self.assertEqual(T._json_arg(json.dumps(obj), "--extra-body"), obj)
+
+    def test_the_backend_refuses_them_too_for_whoever_builds_it_without_the_cli(self) -> None:
+        for key in ("temperature", "max_tokens", "chat_template_kwargs", "seed", "stream", "Temperature", "MAX_TOKENS"):
+            with self.assertRaises(T.BackendError) as cm:
+                T.OpenAIBackend(base_url="http://127.0.0.1:1/v1", model="m", extra_body={key: 1})
+            self.assertIn(key, str(cm.exception))
+
+    def test_a_results_header_that_says_the_extra_body_set_a_protocol_field_is_not_the_gate(self) -> None:
+        self.assertEqual(K.protocol_keys_in(fake_config(extra_body={"temperature": 0, "x": 1})), ["temperature"])
+        self.assertEqual(K.protocol_keys_in(fake_config(extra_body={"x": 1})), [])
+        self.assertEqual(K.protocol_keys_in(None), [])
+
+
+class KeySafetyContract(unittest.TestCase):
+    """The API key goes to the endpoint the user named, over a channel that keeps it, and nowhere else (review of #78, blocker 3)."""
+
+    KEY = "sk-test-secret-123"
+
+    def make(self, url, key=KEY):
+        return T.OpenAIBackend(base_url=url, model="m", api_key=key)
+
+    def test_a_key_is_not_sent_in_clear_to_another_machine(self) -> None:
+        for url in ("http://api.example.com/v1", "http://10.0.0.5:8000/v1", "http://[2001:db8::1]:8000/v1", "http://localhost.example.com/v1",
+                    "http://127.0.0.1.example.com/v1", "http://0.0.0.0:8000/v1", "HTTP://API.EXAMPLE.COM/v1"):
+            with self.assertRaises(T.BackendError) as cm:
+                self.make(url)
+            self.assertIn("https://", str(cm.exception), url)
+            self.assertNotIn(self.KEY, str(cm.exception))
+
+    def test_a_key_may_go_in_clear_to_this_machine_and_over_tls_anywhere(self) -> None:
+        for url in ("http://127.0.0.1:8000/v1", "http://localhost:8000/v1", "http://127.1.2.3/v1", "http://[::1]:8000/v1", "https://api.example.com/v1",
+                    "HTTPS://api.example.com/v1", "http://LOCALHOST:8000/v1"):
+            self.make(url)
+
+    def test_without_a_key_any_host_goes(self) -> None:
+        for url in ("http://api.example.com/v1", "http://10.0.0.5:8000/v1"):
+            self.make(url, key=None)
+            self.make(url, key="")
+
+    def test_only_http_and_https_are_endpoints(self) -> None:
+        for url in ("file:///etc/passwd", "ftp://host/v1", "gopher://host/", "//host/v1", "host:8000/v1"):
+            with self.assertRaises(T.BackendError, msg=url):
+                self.make(url, key=None)
+
+    def test_a_redirect_is_never_followed(self) -> None:
+        import urllib.request
+        handler = T._NoRedirect()
+        req = urllib.request.Request("https://a.example/v1/chat/completions", data=b"{}", headers={"Authorization": "Bearer x"}, method="POST")
+        for code in (301, 302, 303, 307, 308):
+            self.assertIsNone(handler.redirect_request(req, None, code, "moved", {}, "https://evil.example/"), code)
+
+    def test_the_backend_opens_with_the_opener_that_does_not_redirect(self) -> None:
+        self.assertIs(self.make("http://127.0.0.1:1/v1").opener, T.open_no_redirect)
+        self.assertIs(T.OpenAIBackend.__init__.__kwdefaults__["opener"], T.open_no_redirect)
+
+    def test_a_redirect_stops_the_run_and_says_where_it_points_without_following_it(self) -> None:
+        hops = []
+
+        def opener(req, timeout):
+            hops.append(req.full_url)
+            raise http_error(302, "", {"Location": "https://evil.example/steal?token=abc"})
+        b = T.OpenAIBackend(base_url="http://127.0.0.1:1/v1", model="m", api_key=self.KEY, opener=opener, sleep=lambda s: None, stream=False)
+        with self.assertRaises(T.BackendError) as cm:
+            b.generate([T.Item("a", "p")])
+        self.assertEqual(len(hops), 1)
+        msg = str(cm.exception)
+        self.assertIn("redirect", msg)
+        self.assertIn("https://evil.example/steal", msg)
+        self.assertNotIn("token=abc", msg, "the query of a Location can hold a credential")
+        self.assertNotIn(self.KEY, msg)
+        with self.assertRaises(T.BackendError) as cm:
+            b.preflight()
+        self.assertIn("redirect", str(cm.exception))
+
+    def test_the_cli_refuses_a_key_over_plain_http_to_another_machine_before_a_results_file_exists(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            pack, out = Path(d) / "pack.jsonl.gz", Path(d) / "r.jsonl"
+            C.write_jsonl_gz(pack, [prow(25, 0, picks={"m": "A"})])
+            with mock.patch.dict(os.environ, {"THINK_API_KEY": self.KEY}), contextlib.redirect_stdout(io.StringIO()) as buf:
+                code = T.main(["--pack", str(pack), "--out", str(out), "--backend", "openai", "--base-url", "http://api.example.com/v1", "--no-preflight"])
+            self.assertEqual(code, 2)
+            self.assertIn("https://", buf.getvalue())
+            self.assertNotIn(self.KEY, buf.getvalue())
 
 
 class NoThinkingContract(unittest.TestCase):
@@ -2140,6 +2853,23 @@ class NoThinkingContract(unittest.TestCase):
         self.assertNotIn("barely thought", T.summarize(enough, store))
         nothing_ok = T.RunStats(total=3, done=3, errors=3)
         self.assertNotIn("barely thought", T.summarize(nothing_ok, store), "no ok row, no average (and no division by zero)")
+
+    def test_the_thinker_summary_counts_replies_without_thinking_and_unclosed_ones_and_rows_given_up(self) -> None:
+        store = self.store()
+        many = C.MIN_THINKING_TOKENS * 5
+        quiet = T.RunStats(total=5, done=5, ok=5, completion_tokens=5 * many, no_thinking=2, no_close=1)
+        text = T.summarize(quiet, store)
+        self.assertIn("2 of 5 replies show no thinking", text)
+        self.assertIn("1 of 5 replies stopped without closing the thinking", text)
+        clean = T.RunStats(total=5, done=5, ok=5, completion_tokens=5 * many)
+        self.assertNotIn("show no thinking", T.summarize(clean, store))
+        self.assertNotIn("without closing", T.summarize(clean, store))
+        self.assertNotIn("show no thinking", T.summarize(quiet, store, thinking=False), "a control run is not asked to think")
+        self.assertNotIn("without closing", T.summarize(quiet, store, thinking=False))
+        store.append({"id": "a", "kind": "row", "status": "failed", "gave_up": 3})
+        store.append({"id": "b", "kind": "row", "status": "failed"})
+        store.append({"id": "c", "kind": "row", "status": "error"})
+        self.assertIn("2 failed (1 given up after repeated errors), 1 to retry", T.summarize(clean, store))
 
 
 # ------------------------------------------------------------------------------------------- notebooks
@@ -2206,14 +2936,48 @@ class NotebookFileContract(unittest.TestCase):
             for name in ("SIMPLICIO_SHA", "PACK", "WORK", "MAX_TOKENS", "LIMIT", "EXTRA"):
                 self.assertRegex(first, rf"(?m)^{name}\s*=", f"{key}: {name}")
 
-    def test_the_shell_lines_use_only_plain_variables_and_no_dollar(self) -> None:
+    def test_the_shell_lines_use_only_quoted_strings_numbers_and_the_option_strings_built_with_quotes(self) -> None:
+        """`!cmd {name}` pastes the value into a shell line.  A string the user types goes through `q(...)` (shlex.quote), a number
+        goes as it is, and the two option strings (EXTRA, REV) are built in Python from quoted parts (review of #78: an `&` in a URL cut the command)."""
+        built = {"EXTRA", "REV"}
         for key in self.KEYS:
             ns = NB.parameters(key)
             ns.update({"BASE_URL": "u", "REV": ""})
             for _, cmd in NB.shell_commands(key):
                 self.assertNotIn("$", cmd, f"{key}: IPython would read $name as a Python variable: {cmd}")
                 for expr in NB.INTERPOLATION.findall(cmd):
-                    self.assertTrue(expr.isidentifier() and expr in ns, f"{key}: {{{expr}}} is not a variable of the parameter cell")
+                    expr = expr.strip()
+                    quoted = re.fullmatch(r"q\(\s*([A-Za-z_]\w*)\s*\)", expr)
+                    name = quoted.group(1) if quoted else expr
+                    self.assertIn(name, ns, f"{key}: {{{expr}}} is not a variable of the parameter cell")
+                    if quoted:
+                        continue
+                    self.assertTrue(isinstance(ns[name], (int, float)) or name in built,
+                                    f"{key}: {{{expr}}} pastes a string into the shell unquoted: use {{q({name})}}")
+            self.assertIn("from shlex import quote as q", NB.code_cells(key)[0], key)
+
+    def test_a_value_with_a_space_a_quote_an_ampersand_or_a_substitution_reaches_the_program_as_one_argument(self) -> None:
+        hostile = "a b&c;d$(touch x)`id`'e\"f"
+        for key in self.KEYS:
+            params = {"PACK": hostile, "WORK": hostile + "w"}
+            if key == "api":
+                params.update(BASE_URL=hostile + "u", MODEL=hostile + "m", REVISION=hostile + "r", LIMIT=hostile + "l", STANDARD_ONLY=True)
+            else:
+                params.update(LIMIT=hostile + "l")
+            ns = NB.parameters(key, **params)
+            ns.setdefault("BASE_URL", hostile + "u")
+            for module, flags in (("decide.think.thinker", ["--pack", "--out", "--manifest", "--limit"] + (["--base-url", "--model", "--revision"] if key == "api" else [])),
+                                  ("decide.think.compare", ["--pack", "--thinker", "--out"]), ("decide.think.sample", ["--pack"])):
+                for cmd in NB.commands_of(key, module):
+                    argv = NB.argv_of(cmd, ns)
+                    for flag in flags:
+                        if flag in argv:
+                            value = argv[argv.index(flag) + 1]
+                            expected = {"--pack": hostile, "--out": ns["WORK"] + ("/results.jsonl" if module.endswith("thinker") else "/report"),
+                                        "--thinker": ns["WORK"] + "/results.jsonl", "--manifest": NB.MANIFEST_PATH, "--limit": hostile + "l",
+                                        "--base-url": hostile + "u", "--model": hostile + "m", "--revision": hostile + "r"}[flag]
+                            self.assertEqual(value, expected, f"{key} {module} {flag}")
+            self.assertTrue(all("touch" not in a or a.startswith("a b&c") for cmd in NB.commands_of(key, "decide.think.thinker") for a in NB.argv_of(cmd, ns)))
 
     def test_the_python_of_the_cells_has_no_undefined_name_or_syntax_error(self) -> None:
         ruff = shutil.which("ruff")
@@ -2247,12 +3011,14 @@ class NotebookPinContract(unittest.TestCase):
             self.assertNotRegex(code, r"git clone|releases/latest|raw\.githubusercontent|refs/heads|\bmain\b|\bmaster\b", key)
 
     def test_the_pinned_commit_holds_the_code_these_tests_cover(self) -> None:
-        """What the user runs is what was tested: every module and the manifest are the same blobs at the pinned commit."""
+        """What the user runs is what was tested: every module and the manifest are the same blobs at the pinned commit.
+
+        A clone that lacks the commit, or whose history does not hold it, FAILS (it used to skip, and the guard against drift went quiet)."""
         sha = NB.pinned_sha("api")
-        if shutil.which("git") is None or self.git("rev-parse", "--git-dir").returncode != 0:
-            self.skipTest("not a git checkout")
-        if self.git("cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
-            self.skipTest(f"commit {sha} is not in this clone (git fetch origin {sha})")
+        kind, message = NB.pin_state(ROOT, sha)
+        if kind == "not_git":
+            self.skipTest(message)                       # a source archive has no history to compare with
+        self.assertEqual(kind, "ok", message)
         wanted = re.compile(r"^decide/think/(?:[A-Za-z0-9_]+\.py|gt-sample-manifest\.json)$")
         here = sorted(str(p.relative_to(ROOT)) for p in (ROOT / "decide" / "think").iterdir() if wanted.match(str(p.relative_to(ROOT))))
         there = sorted(f for f in self.git("ls-tree", "-r", "--name-only", sha, "decide/think").stdout.split() if wanted.match(f))
@@ -2261,6 +3027,49 @@ class NotebookPinContract(unittest.TestCase):
                  if self.git("rev-parse", f"{sha}:{rel}").stdout.strip() != self.git("hash-object", rel).stdout.strip()]
         self.assertEqual(stale, [], "these changed after the commit the notebooks pin: change SIMPLICIO_SHA in both notebooks "
                                    "to a pushed commit that has them")
+
+    def test_a_pin_that_is_not_in_the_history_of_the_checkout_fails_with_the_way_to_get_it(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed")
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            env = C.clean_git_env()
+
+            def git(*args, cwd=None):
+                r = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", str(cwd or root / "repo"), *args],
+                                   capture_output=True, text=True, env=env)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                return r.stdout.strip()
+            (root / "repo").mkdir()
+            git("init", "-q", "-b", "main")
+            for name in ("a", "b", "c"):
+                git("commit", "-q", "--allow-empty", "-m", name)
+            first, second = git("rev-parse", "HEAD~2"), git("rev-parse", "HEAD~1")
+            git("checkout", "-q", "-b", "side", second)
+            git("commit", "-q", "--allow-empty", "-m", "squashed away")
+            side = git("rev-parse", "HEAD")
+            git("checkout", "-q", "main")
+            repo = root / "repo"
+            self.assertEqual(NB.pin_state(repo, first, env), ("ok", ""))
+            kind, message = NB.pin_state(repo, "0" * 40, env)
+            self.assertEqual(kind, "missing")
+            self.assertIn("git fetch --unshallow", message)
+            self.assertIn(f"git fetch origin {'0' * 40}", message)
+            self.assertNotIn("it is a shallow clone", message, "this clone is complete: the message must not blame a shallow one")
+            kind, message = NB.pin_state(repo, side, env)                                  # in the object store, not in the history of HEAD
+            self.assertEqual(kind, "not_ancestor")
+            self.assertIn("merge commit", message)
+            self.assertIn("SIMPLICIO_SHA", message)
+            shallow = root / "shallow"
+            git("clone", "-q", "--depth", "1", repo.resolve().as_uri(), str(shallow), cwd=root)
+            kind, message = NB.pin_state(shallow, first, env)
+            self.assertEqual(kind, "missing", "a shallow clone has no parent commits")
+            self.assertIn("(it is a shallow clone)", message)
+            plain = root / "plain"
+            plain.mkdir()
+            self.assertEqual(NB.pin_state(plain, first, {**env, "GIT_CEILING_DIRECTORIES": str(root)})[0], "not_git")
+
 
     def test_kaggle_installs_the_four_pins_of_the_colab_notebooks(self) -> None:
         installs = [c for _, c in NB.shell_commands("kaggle") if re.match(r"pip install\b", c)]
@@ -2278,6 +3087,37 @@ class NotebookPinContract(unittest.TestCase):
         self.assertNotRegex("\n".join(NB.code_cells("kaggle")), r"(?i)vllm", "a T4 cannot run the pinned vLLM (README, Backends)")
         for key in self.KEYS:
             self.assertEqual([c for _, c in NB.shell_commands(key) if re.search(r"pip install.*(?<![=\w])vllm(?!==)", c)], [], key)
+
+
+class GitEnvContract(unittest.TestCase):
+    """A test or a tool that runs git in a throwaway directory must not act on the repository that is being pushed
+    (a pre-push hook in a linked worktree exports GIT_DIR)."""
+
+    def test_the_variables_that_name_a_repository_are_dropped_and_the_rest_kept(self) -> None:
+        env = {"GIT_DIR": "/x", "GIT_WORK_TREE": "/y", "GIT_INDEX_FILE": "/z", "GIT_COMMON_DIR": "/c", "GIT_PREFIX": "p", "GIT_CONFIG_KEY_0": "a",
+               "GIT_CONFIG_VALUE_0": "b", "GIT_CONFIG_COUNT": "1", "HOME": "/h", "PATH": "/bin", "GIT_AUTHOR_NAME": "n"}
+        self.assertEqual(C.without_local_git_vars(env), {"HOME": "/h", "PATH": "/bin", "GIT_AUTHOR_NAME": "n"})
+
+    def test_it_covers_every_variable_git_itself_lists(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed")
+        r = subprocess.run(["git", "rev-parse", "--local-env-vars"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0)
+        self.assertLessEqual(set(r.stdout.split()), set(C.LOCAL_GIT_VARS))
+
+    def test_the_clean_environment_reads_no_user_config_and_never_asks_for_a_password(self) -> None:
+        with mock.patch.dict(os.environ, {"GIT_DIR": "/x", "HOME": "/h"}):
+            env = C.clean_git_env()
+        self.assertNotIn("GIT_DIR", env)
+        self.assertEqual((env["GIT_CONFIG_GLOBAL"], env["GIT_CONFIG_SYSTEM"], env["GIT_TERMINAL_PROMPT"]), (os.devnull, os.devnull, "0"))
+
+    def test_the_mutation_tool_hands_the_copy_an_environment_without_them(self) -> None:
+        from decide.think import mutation_check as M
+        with mock.patch.dict(os.environ, {"GIT_DIR": "/x", "GIT_INDEX_FILE": "/y", "GIT_COMMON_DIR": "/c", "HOME": "/h"}):
+            env = M.test_env()
+        for name in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
+            self.assertNotIn(name, env)
+        self.assertEqual((env["THINK_MUTATION_CHECK"], env["HOME"]), ("1", "/h"))
 
 
 class NotebookCommandContract(unittest.TestCase):
@@ -2318,6 +3158,7 @@ class NotebookCommandContract(unittest.TestCase):
             self.assertEqual(th.max_tokens, T.DEFAULT_MAX_TOKENS, f"{key}: a notebook budget that is not the registered one")
             self.assertEqual([k for k in C.THINKING_SAMPLING if getattr(th, k) is not None], [], f"{key}: sampling is the model card's")
             self.assertEqual((th.overwrite, th.no_preflight, th.no_reasoning, th.seed, th.reasoning_effort), (False, False, False, None, None), key)
+            self.assertEqual((th.keep_reasoning, th.retry_failed, th.max_attempts), (False, False, C.DEFAULT_MAX_ATTEMPTS), key)
             self.assertEqual(cli["compare"].bootstrap, C.BOOTSTRAP_B, key)
             self.assertEqual((cli["compare"].seed, cli["compare"].min_delta), (C.SEED, C.GT_MIN_DELTA_PTS), key)
             self.assertFalse(cli["compare"].ignore_pack_mismatch, key)
@@ -2365,7 +3206,7 @@ class NotebookCommandContract(unittest.TestCase):
     def test_the_local_vllm_cell_is_built_from_the_serve_module(self) -> None:
         api = "\n".join(NB.code_cells("api"))
         for needle in ("from decide.think import common, serve", "serve.vllm_command(MODEL, revision)", "serve.base_url()",
-                       "serve.wait_ready(BASE_URL, 1800", 'REV = f"--revision {revision}" if revision else ""', "server.terminate()"):
+                       "serve.wait_ready(BASE_URL, 1800", 'REV = f"--revision {q(revision)}" if revision else ""', "server.terminate()"):
             self.assertIn(needle, api)
         self.assertEqual(NB.parameters("api")["MODE"], "endpoint", "a hosted endpoint is the default, not a 30 GiB download")
 
@@ -2382,6 +3223,23 @@ class NotebookCommandContract(unittest.TestCase):
         kaggle = "\n".join(NB.markdown_cells("kaggle"))
         self.assertIn(f"{benches} provas", kaggle)
         self.assertIn(f"{C.PER_BENCHMARK} por prova", kaggle)
+
+    def test_kaggle_says_what_happens_to_the_files_it_writes_in_working(self) -> None:
+        """/kaggle/working is the output of the saved version: results.jsonl goes with it, and a public notebook has a public output (review of #78)."""
+        text = "\n".join(NB.markdown_cells("kaggle"))
+        self.assertIn("/kaggle/working", text)
+        self.assertRegex(text, r"(?i)saída da versão salva|saida da versao salva")
+        self.assertRegex(text, r"(?i)privado")
+        self.assertEqual(NB.parameters("kaggle")["WORK"].split("/")[1:3], ["kaggle", "working"], "the default keeps the resume path that Save Version gives")
+
+    def test_the_notebooks_say_what_each_verdict_status_means(self) -> None:
+        for key in self.KEYS:
+            text = "\n".join(NB.markdown_cells(key))
+            for status in ("PASS", "FAIL", "PARTIAL", "EXPLORATORY", "INCONCLUSIVE"):
+                self.assertIn(status, text, f"{key}: {status}")
+        api = "\n".join(NB.markdown_cells("api"))
+        self.assertIn("revision_not_declared", api, "an endpoint run that does not say which checkpoint it serves is not the gate")
+        self.assertIn("standard_only", api)
 
     def test_the_area_readme_cites_both_notebooks(self) -> None:
         readme = (ROOT / "decide" / "think" / "README.md").read_text(encoding="utf-8")
@@ -2439,6 +3297,54 @@ class ReadmeContract(unittest.TestCase):
     def test_the_two_notebooks_are_cited_by_path(self) -> None:
         for path in NB.NOTEBOOKS.values():
             self.assertIn(str(path.relative_to(ROOT)), readme_text())
+
+    def test_every_notebook_under_notebooks_decide_is_cited_by_the_readme_of_some_folder(self) -> None:
+        """test_contract_30 only reads the first level of notebooks/ (a notebook of decide/ escapes it): this is the same rule for notebooks/decide/."""
+        found = sorted((ROOT / "notebooks" / "decide").glob("*.ipynb"))
+        self.assertTrue(found)
+        readmes = [p for p in ROOT.rglob("README.md") if not {".git", "node_modules", ".venv", "venv"} & set(p.relative_to(ROOT).parts)]
+        corpus = "\n".join(p.read_text(encoding="utf-8") for p in readmes)
+        for nb in found:
+            self.assertTrue(str(nb.relative_to(ROOT)) in corpus, f"{nb.name}: no README cites it")
+
+    def test_every_status_and_reason_code_of_the_report_is_explained_in_the_readme(self) -> None:
+        text = readme_text()
+        for code in K.WHY:
+            self.assertTrue(f"`{code}`" in text, f"the report prints {code}; the README does not say what it means")
+        for status in ("PASS", "FAIL", "PARTIAL", "EXPLORATORY", "INCONCLUSIVE"):
+            self.assertTrue(f"**{status}**" in text, status)
+        for flag in ("--keep-reasoning", "--max-attempts", "--retry-failed", "--manifest"):
+            self.assertTrue(flag in text, flag)
+
+    def test_the_status_table_lists_the_reasons_of_each_status(self) -> None:
+        rows = {m.group(1): m.group(2) for m in re.finditer(r"^  \| \*\*(INCONCLUSIVE|PARTIAL|EXPLORATORY)\*\* \| (.+) \|$", readme_text(), re.M)}
+        self.assertEqual(sorted(rows), ["EXPLORATORY", "INCONCLUSIVE", "PARTIAL"])
+        inconclusive = {"thinking_not_detected", "no_replies", "no_scored_rows", "no_decision_models"}
+        partial = {"rows_not_run", "rows_with_transient_error"}
+        exploratory = set(K.WHY) - inconclusive - partial
+        for status, codes in (("INCONCLUSIVE", inconclusive), ("PARTIAL", partial), ("EXPLORATORY", exploratory)):
+            listed = set(re.findall(r"`([a-z_]+)`", rows[status]))
+            self.assertEqual(listed, codes, status)
+
+    def test_the_readme_says_who_is_not_in_the_reference_and_what_the_key_and_the_working_folder_do(self) -> None:
+        text = readme_text()
+        quem = text[text.index("**Quem entra na referência.**"):]
+        quem = quem[:quem.index("\n\n")]
+        for name in ("mammoth-1", "pplx-decider-v1.2"):
+            self.assertTrue(name in quem, name)
+            self.assertTrue(name not in C.DECISION_MODELS, f"{name} has no per-row results: it cannot be in the reference")
+        self.assertTrue("http://127.0.0.1:<porta>/v1" in text and "não segue redirecionamentos" in text)
+        self.assertTrue("**Ela só viaja por `https://` ou para o próprio computador**" in text)
+        self.assertTrue("`/kaggle/working` é a saída da versão salva" in text)
+        for flag in ("--keep-reasoning", "--max-attempts", "--retry-failed"):
+            self.assertTrue(text.count(flag) >= 1, flag)
+
+    def test_the_tests_the_readme_names_exist(self) -> None:
+        names = set(re.findall(r"`(test_[a-z0-9_]+)`", readme_text()))
+        self.assertTrue(names)
+        sources = "\n".join(p.read_text(encoding="utf-8") for p in (ROOT / "tests").glob("test_*.py"))
+        for name in sorted(names):
+            self.assertTrue(re.search(rf"def {name}\b", sources), f"the README names {name}, which is no test")
 
     def test_every_heading_the_code_points_at_exists(self) -> None:
         headings = {plain(h) for h in re.findall(r"^#{1,6}\s+(.+?)\s*$", readme_text(), re.M)}

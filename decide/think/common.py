@@ -40,8 +40,16 @@ THINKING_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.
 # (An answer line alone is about ten tokens; thinking on a hard question is thousands.)
 MIN_THINKING_TOKENS = 100
 
-# A result row is final when its status is one of these; anything else (`error`) is retried on resume.
+# A result row is final when its status is one of these; anything else (`error`) is retried on resume, but only
+# `DEFAULT_MAX_ATTEMPTS` times: a row that cannot be answered after that is `failed`, which the comparison counts as wrong.
 TERMINAL_STATUSES = ("ok", "failed")
+DEFAULT_MAX_ATTEMPTS = 3
+
+# The request fields that make the protocol.  `--extra-body` may not set them, and a results file whose header says it did is not the gate.
+PROTOCOL_KEYS = frozenset({
+    "model", "messages", "max_tokens", "max_completion_tokens", "temperature", "top_p", "top_k", "min_p", "presence_penalty",
+    "frequency_penalty", "repetition_penalty", "seed", "stream", "stream_options", "chat_template_kwargs", "reasoning_effort",
+})
 
 # Written into the manifest, the results header and the report (ADR 0004, item 6).
 EVAL_ONLY_NOTICE = (
@@ -93,6 +101,26 @@ def skill(accuracy: float, chance: float) -> float:
     return min(1.0, max(0.0, (accuracy - chance) / (1.0 - chance)))
 
 
+# ------------------------------------------------------------------------------------------- git
+
+# What `git rev-parse --local-env-vars` lists: the variables that name a repository, its index or its config.  `git push` from a linked
+# worktree runs the pre-push hook, so `make check`, with GIT_DIR set to the repository being pushed: a test or a tool that runs git in a
+# throwaway directory and inherits it acts on THAT repository (it once committed test fixtures to the branch being pushed).
+LOCAL_GIT_VARS = ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY",
+                  "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS",
+                  "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR", "GIT_NAMESPACE")
+GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_TERMINAL_PROMPT": "0"}
+
+
+def without_local_git_vars(env: Dict[str, str]) -> Dict[str, str]:
+    return {k: v for k, v in env.items() if k not in LOCAL_GIT_VARS and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
+
+
+def clean_git_env() -> Dict[str, str]:
+    """The environment for a git command that must touch only the repository it is aimed at; the user's own git config is not read."""
+    return {**without_local_git_vars(dict(os.environ)), **GIT_ENV}
+
+
 # ---------------------------------------------------------------------------------------- hashing
 
 def canonical_json(obj: Any) -> str:
@@ -121,6 +149,22 @@ def file_digests(path: os.PathLike) -> Dict[str, str]:
                 h.update(block)
         out["uncompressed_sha256"] = h.hexdigest()
     return out
+
+
+def looks_garbled(text: Optional[str], *, window: int = 2000, min_chars: int = 200) -> bool:
+    """Noise, not language: in the first `window` characters, one character is over 40% of them or letters and digits are under 40%.
+
+    On a T4 the model runs in fp16, which can overflow and make it emit a run of one token.  Such a row is
+    not a wrong answer of the model, and a FAIL made of them says nothing about it.  Too short to judge is False.
+    """
+    if not text:
+        return False
+    chunk = "".join(text[:window].split())
+    if len(chunk) < min_chars:
+        return False
+    most = max(chunk.count(ch) for ch in set(chunk))
+    readable = sum(ch.isalnum() for ch in chunk)
+    return most / len(chunk) > 0.4 or readable / len(chunk) < 0.4
 
 
 def fingerprint(obj: Any) -> str:

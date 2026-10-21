@@ -4,13 +4,17 @@ The prompt asks for `ANSWER <question id>: <label>` lines.  Models drift, so the
 usual variants, but it never guesses from the reasoning: only the text after the last `</think>` is
 read, and a reply that cannot be read is `None`, which the comparison counts as wrong.
 
-Order of the attempts for one question (the first that yields a valid option wins; inside an
-attempt the last occurrence in the reply wins):
-  1. `ANSWER <qid>: <value>` (also `ANSWER[qid]`, `ANSWER qid = value`, with markdown around it);
-  2. a line that starts with the question id (`option_3: yes`, `- option_3 - yes`), only when the
-     request has more than one question;
-  3. a single-question request only: `answer is <value>`, `answer: <value>`, `\\boxed{<value>}`, and
-     as the last resort the last bare label in the reply.
+Order of the attempts for one question:
+  1. `ANSWER <qid>: <value>` (also `ANSWER[qid]`, `ANSWER qid = value`, with markdown around it; the
+     value may be on the next line).  If the reply has such a line, the LAST one decides, and if its
+     value is not an option the question is unanswered: a model that ends on an unreadable line has
+     not answered, and an earlier line or a bare label in the reasoning would be a guess;
+  2. only when there is no such line: a line that starts with the question id (`option_3: yes`,
+     `- option_3 - yes`), when the request has more than one question (again the last one decides);
+  3. a single-question request only: the last valid of `answer is <value>`, `answer: <value>`,
+     `\\boxed{<value>}`, and as the last resort the last bare label in the reply.
+`extract_detailed` says which of these found each answer (`marker`, `line`, `generic`, `boxed`,
+`bare`); everything but `marker` is a fallback and the report counts the rows that needed one.
 A value is a label (`B`, `(B)`, `B)`, `yes`, `e2e4`), a key (`option_2`) or the exact text of one
 option (`Nf3`, `17`).  A lowercase single letter is a label only with a delimiter (`a)`), because
 `a` is an article.
@@ -115,29 +119,53 @@ def _standalone(text: str, options: List[Option]) -> Optional[Option]:
     return best
 
 
-def _find(final: str, qid: str, options: List[Option], single: bool) -> Optional[Option]:
+def _decisive(pattern: "re.Pattern[str]", text: str, options: List[Option]) -> Tuple[bool, Optional[Option]]:
+    """(there is such a line, the option its LAST occurrence names).  An empty value reads the next non-empty line."""
+    found = list(pattern.finditer(text))
+    if not found:
+        return False, None
+    m = found[-1]
+    value = m.group("val")
+    if not value.strip():
+        value = next((line for line in text[m.end():].split("\n") if line.strip()), "")
+    return True, match_value(value, options)
+
+
+def _find(final: str, qid: str, options: List[Option], single: bool) -> Tuple[Optional[Option], Optional[str]]:
     q = re.escape(qid)
     marked = re.compile(r"(?i)\banswer\s*[\[\(]?\s*" + q + r"(?![\w])\s*[\]\)]?\s*[:=\-\u2013\u2014]\s*(?P<val>[^\n]*)")
-    hit = _last_valid(marked, final, options)
-    if hit:
-        return hit
+    present, hit = _decisive(marked, final, options)
+    if present:
+        return hit, "marker"
     if not single:
         line = re.compile(r"(?im)^[\s>*_`#\-\u2022\d.)]*" + q + r"(?![\w])[\s*_`]*[:=\-\u2013\u2014][ \t]*(?P<val>[^\n]*)$")
-        return _last_valid(line, final, options)
-    hit = _last_valid(_GENERIC, final, options) or _last_valid(_BOXED, final, options)
-    return hit or _standalone(final, options)
+        present, hit = _decisive(line, final, options)
+        return (hit, "line") if present else (None, None)
+    hit = _last_valid(_GENERIC, final, options)
+    if hit:
+        return hit, "generic"
+    hit = _last_valid(_BOXED, final, options)
+    if hit:
+        return hit, "boxed"
+    hit = _standalone(final, options)
+    return (hit, "bare") if hit else (None, None)
+
+
+def extract_detailed(final: Optional[str], options: Dict[str, List[Option]]) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
+    """qid -> (original option key or None, how it was found: marker, line, generic, boxed, bare, or None)."""
+    if not final:
+        return {qid: (None, None) for qid in options}
+    single = len(options) == 1
+    out: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
+    for qid, opts in options.items():
+        hit, how = _find(final, qid, opts, single)
+        out[qid] = (hit.key if hit else None, how)
+    return out
 
 
 def extract(final: Optional[str], options: Dict[str, List[Option]]) -> Dict[str, Optional[str]]:
     """qid -> original option key, or None when the reply holds no valid answer for it."""
-    if not final:
-        return {qid: None for qid in options}
-    single = len(options) == 1
-    out: Dict[str, Optional[str]] = {}
-    for qid, opts in options.items():
-        hit = _find(final, qid, opts, single)
-        out[qid] = hit.key if hit else None
-    return out
+    return {qid: key for qid, (key, _how) in extract_detailed(final, options).items()}
 
 
 def extract_from_text(text: Optional[str], options: Dict[str, List[Option]]) -> Dict[str, Optional[str]]:
