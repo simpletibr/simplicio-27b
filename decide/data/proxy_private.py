@@ -5,7 +5,7 @@
   request leaks a proxy request (``LeakError``).
 * ``score_rows`` / ``score_proxy`` score a per-row probabilities file: chance-corrected accuracy per source,
   averaged over sources, plus NLL and Brier.  It is *not* the Jev metric (each Jev benchmark has its own).  A question answered twice
-  with different numbers is ``bad`` (no row is picked); the same row twice is one answer.
+  with different numbers is ``bad`` (no row is picked); the same row twice is one answer.  A tie for the top probability is worth 1/m, not a win.
 * ``validate_against_board`` is gate G1: Spearman between the proxy scores of >= 6 open models and their Full
   score on the board (``index.json``, field ``models[].v03.v``).  Also reported against ``new_domains``,
   ``same_skills`` and ``pub``.
@@ -255,14 +255,24 @@ def result_table(results: Iterable[Mapping[str, Any]]) -> Tuple[Dict[Tuple[str, 
     return table, conflicting
 
 
+def top_credit(probs: Sequence[float], gold: int) -> Tuple[float, bool]:
+    """``(credit, tied)`` of one answer: 1 when the gold option alone has the highest probability, 1/m when it is one of the m options that
+    share it, 0 otherwise; ``tied`` says whether the top is shared at all.  ``max`` would return the first index of a tie, and a model that
+    answers the same for every option would then be right on every question whose gold option comes first."""
+    top = max(probs)
+    best = [index for index, value in enumerate(probs) if value == top]
+    return (1.0 / len(best) if gold in best else 0.0), len(best) > 1
+
+
 def score_rows(requests: Iterable[Tuple[str, Mapping[str, Any], Mapping[str, Any], str]], results: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
     """Score ``results`` against ``requests`` = (example_id, request, gold, source) tuples.
 
-    A question answered twice with different numbers counts as ``bad`` (and in ``conflicting``); a malformed answer is ``bad``; none is ``missing``."""
+    A question answered twice with different numbers counts as ``bad`` (and in ``conflicting``); a malformed answer is ``bad``; none is ``missing``.
+    A tie for the highest probability counts 1/m for the gold option when it is one of the m tied (``top_credit``); ``ties`` counts those answers."""
     table, conflicting = result_table(results)
     per: Dict[str, Dict[str, float]] = {}
     nll = brier = 0.0
-    n = missing = bad = clashes = 0
+    n = missing = bad = clashes = ties = 0
     for eid, request, gold, source in requests:
         for qid, key in gold.items():
             if key is None:
@@ -285,7 +295,9 @@ def score_rows(requests: Iterable[Tuple[str, Mapping[str, Any], Mapping[str, Any
             g = keys.index(key)
             agg = per.setdefault(source, {"n": 0.0, "correct": 0.0, "chance": 0.0})
             agg["n"] += 1
-            agg["correct"] += 1.0 if max(range(len(p)), key=p.__getitem__) == g else 0.0
+            credit, tied = top_credit(probs, g)
+            agg["correct"] += credit
+            ties += tied
             agg["chance"] += 1.0 / len(keys)
             nll += -math.log(max(p[g], 1e-12))
             brier += sum((pi - (1.0 if i == g else 0.0)) ** 2 for i, pi in enumerate(p))
@@ -295,7 +307,7 @@ def score_rows(requests: Iterable[Tuple[str, Mapping[str, Any], Mapping[str, Any
         acc, chance = agg["correct"] / agg["n"], agg["chance"] / agg["n"]
         per_source[source] = {"n": int(agg["n"]), "accuracy": acc, "chance": chance, "skill": (acc - chance) / (1 - chance) if chance < 1 else 0.0}
     skills = [v["skill"] for v in per_source.values()]
-    return {"n": n, "missing": missing, "bad": bad, "conflicting": clashes, "proxy": sum(skills) / len(skills) if skills else None,
+    return {"n": n, "missing": missing, "bad": bad, "conflicting": clashes, "ties": ties, "proxy": sum(skills) / len(skills) if skills else None,
             "nll": nll / n if n else None, "brier": brier / n if n else None, "per_source": per_source}
 
 

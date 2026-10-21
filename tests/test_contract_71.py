@@ -1099,6 +1099,16 @@ class G4Contract(unittest.TestCase):
         self.assertEqual({value for per_source in units.values() for value in per_source.values()}, {(0.25, 0.25)}, "the units follow the scorer: a quarter of a right answer")
         self.assertEqual(PP.score_rows(requests, uniform)["ties"], 100)
 
+    def test_a_tie_that_includes_the_gold_option_is_worth_one_over_the_tied_options_wherever_it_is(self) -> None:
+        from decide.rental import gates as G
+
+        requests, new, base = self.fixture(50, 0, 0)
+        requests = [(eid, request, {"q1": "C"}, source) for eid, request, _, source in requests]              # the gold option is the third, tied with the second
+        tied = [dict(row, probs=[0.1, 0.4, 0.4, 0.1]) for row in new]
+        got = self.verdict(requests, tied, base)
+        self.assertAlmostEqual(got["new"]["proxy_points"], 100 * (0.5 - 0.25) / 0.75, places=9, msg="half a right answer on every question")
+        self.assertEqual({value for per_source in G._units(requests, tied).values() for value in per_source.values()}, {(0.5, 0.25)})
+
     def test_the_bootstrap_still_agrees_with_the_scorer_when_some_answers_are_ties(self) -> None:
         requests, new, base = self.fixture(60, 45, 30)
         tied = [dict(row, probs=[0.4, 0.4, 0.1, 0.1]) if i % 5 == 0 else row for i, row in enumerate(new)]        # gold A is one of the two tied options
