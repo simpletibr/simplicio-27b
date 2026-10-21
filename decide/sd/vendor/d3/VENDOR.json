@@ -2,7 +2,7 @@
   "files": {
     "LICENSE": {
       "modified": false,
-      "upstream_sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
+      "upstream_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
     },
     "NOTICE": {
       "modified": false,
@@ -14,7 +14,7 @@
     }
   },
   "license": "Apache-2.0",
-  "license_text_note": "standard Apache License 2.0 text (same bytes as the pplx-decider LICENSE)",
   "sentinel": "# --- upstream file follows, byte for byte ---",
-  "upstream": "https://huggingface.co/vllm-sr/d3"
+  "upstream": "https://huggingface.co/vllm-sr/d3",
+  "upstream_revision": "cf15549a78fc52598ddd1951f321c58372bbd64f"
 }

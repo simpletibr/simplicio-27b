@@ -39,5 +39,6 @@
   },
   "license": "Apache-2.0",
   "sentinel": "# --- upstream file follows, byte for byte ---",
-  "upstream": "https://huggingface.co/perplexity-ai/pplx-decider-v1.2"
+  "upstream": "https://huggingface.co/perplexity-ai/pplx-decider-v1.2",
+  "upstream_revision": "cce0f3f80033e9d89d80831d5281fd72124aacce"
 }

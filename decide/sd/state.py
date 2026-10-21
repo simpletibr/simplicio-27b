@@ -12,6 +12,9 @@ Rules the code keeps:
 * A failed push never stops the run; it is kept in `push_error` and retried on the next push.
 * Tokens are never written: error strings go through `redact`.
 * Merging is a union (a stage done anywhere is done), so two sessions cannot undo each other.
+* A state read from the store is data from outside: a mirrored file whose local path is absolute, climbs with `..`, or leaves the
+  work directory through a link is dropped when the state is read, and `restore_files` / `push` refuse it again, so a `state.json`
+  written by someone else cannot make the kit overwrite or upload a file that is not in the work directory.
 """
 from __future__ import annotations
 
@@ -19,7 +22,7 @@ import json
 import os
 import re
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 SCHEMA_VERSION = 1
@@ -173,6 +176,23 @@ def fresh_data(now: float) -> Dict[str, Any]:
             "stages": {}, "rows": {}, "meta": {}, "files": {}, "notes": []}
 
 
+_DRIVE = re.compile(r"^[A-Za-z]:")
+
+
+def _local_problem(local: Any) -> Optional[str]:
+    """Why `local` cannot be a path inside the work directory by its text alone, or None."""
+    if not isinstance(local, str) or not local:
+        return "it is not a path"
+    if "\\" in local or "\0" in local or _DRIVE.match(local):
+        return "it is not a plain relative path"
+    pure = PurePosixPath(local)
+    if pure.is_absolute():
+        return "it is absolute"
+    if ".." in pure.parts or pure.parts in ((), (".",)):
+        return "it climbs out of the directory" if ".." in pure.parts else "it is not a file"
+    return None
+
+
 def _valid(data: Any) -> bool:
     return (isinstance(data, dict) and isinstance(data.get("stages"), dict) and isinstance(data.get("rows"), dict)
             and isinstance(data.get("version"), int))
@@ -251,6 +271,7 @@ class State:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             if not _valid(data):
                 raise ValueError("not a state document")
+            self._clean_files(data)
             return data
         except (OSError, ValueError) as exc:
             aside = self.path.with_name(STATE_NAME + ".corrupt")
@@ -268,10 +289,46 @@ class State:
             data = json.loads(raw.decode("utf-8"))
             if not _valid(data):
                 raise ValueError("not a state document")
+            self._clean_files(data, "the store")
             return data
         except Exception as exc:
             self._note(f"remote state unreadable: {type(exc).__name__}: {exc}")
             return None
+
+    def _local_path(self, remote: str, rec: Any) -> Path:
+        """Where the mirrored file `remote` lives, always inside the work directory; StateError for anything else."""
+        local = rec.get("local") if isinstance(rec, Mapping) else None
+        problem = _local_problem(local)
+        if problem is None:
+            path = self.workdir / local
+            root = self.workdir.resolve()
+            resolved = path.resolve()
+            if resolved != root and root not in resolved.parents:
+                problem = "it leads out of the work directory through a link"
+            elif resolved == root:
+                problem = "it is the work directory itself"
+        if problem is not None:
+            raise StateError(f"{remote}: the local path {local!r} is outside the work directory ({problem})")
+        return path
+
+    def _clean_files(self, data: Dict[str, Any], where: str = "the work directory") -> None:
+        """Drop the mirrored files of a state read from disk or from the store whose names or local paths are not allowed."""
+        notes = data.get("notes")
+        if not isinstance(notes, list):
+            notes = data["notes"] = []
+        files = data.get("files")
+        if not isinstance(files, dict):
+            if files is not None:
+                notes.append(redact(f"state.json from {where}: 'files' was not a table and was dropped ({type(files).__name__})"))
+            data["files"] = {}
+            return
+        for remote, rec in list(files.items()):
+            try:
+                _safe_name(str(remote))
+                self._local_path(str(remote), rec)
+            except (ValueError, StateError) as exc:
+                del files[remote]
+                notes.append(redact(f"state.json from {where} named a mirrored file that is not allowed and it was dropped: {exc}"))
 
     # ---- persistence
     def _dump(self) -> str:
@@ -384,12 +441,12 @@ class State:
     # ---- mirrored files (append-only logs such as results.jsonl)
     def track_file(self, local: os.PathLike, remote: str) -> None:
         rel = os.path.relpath(Path(local).resolve(), self.workdir.resolve())
-        if rel.startswith(".."):
+        if rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel):
             raise StateError(f"{local} is outside the work directory {self.workdir}")
         self.data["files"].setdefault(_safe_name(remote), {"local": Path(rel).as_posix(), "size": 0})
 
     def _push_file(self, remote: str, rec: Dict[str, Any], files_now: bool) -> None:
-        path = self.workdir / rec["local"]
+        path = self._local_path(remote, rec)
         if not path.is_file():
             return
         size = path.stat().st_size
@@ -408,9 +465,9 @@ class State:
         restored: List[str] = []
         if self.store is None:
             return restored
-        for remote, rec in sorted(self.data["files"].items()):
-            path = self.workdir / rec["local"]
-            if path.is_file() and path.stat().st_size >= rec.get("size", 0):
+        for remote, entry in sorted(self.data["files"].items()):
+            path = self._local_path(remote, entry)
+            if path.is_file() and path.stat().st_size >= entry.get("size", 0):
                 continue
             data = self.store.read(remote)
             if data is None:

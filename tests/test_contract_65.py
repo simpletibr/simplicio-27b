@@ -149,22 +149,269 @@ class ConfigContract(HermeticTestCase):
                 with self.assertRaises(C.ConfigError):
                     C.validate(r)
 
+    def test_every_number_the_kit_reads_has_a_range(self):
+        """Eight keys were still taken as they came: a negative batch, a gate of 5, a chunk of zero megabytes went through and failed far from here."""
+        bad = {
+            "eval.batch_tokens": [-1, 0, "x", 1.5, True, None],
+            "eval.max_proxy_tokens": [-5, 0, "6000", 2.5, True],
+            "eval.min_per_benchmark": [0, -1, "4", 1.5],
+            "eval.max_gpu_gb": [0, -8, "24", True],
+            "eval.seed": ["x", 1.5, True, None],
+            "merge.chunk_mb": [0, -256, "256", 2.5, True],
+            "budget.weekly_gpu_hours": [-3, "30", True, float("nan")],
+            "calibration.by": ["bogus", "", "Question_Type", 3, None],
+            "fidelity.min_rows": [-1, 0, "500", 1.5, True],
+            "fidelity.seed": ["x", 1.5, True],
+            "gates.g0_agree_4b": [5, -0.1, 1.01, "0.98", True, float("nan")],
+            "gates.g0_agree_27b_nf4": [5, -0.1, "0.95", True],
+            "gates.g2_min_delta": ["0", True, float("inf"), None],
+            "gates.g3_min_delta": ["0", True, float("nan")],
+            "gates.calib_min_delta": ["0", True],
+        }
+        good = {
+            "eval.batch_tokens": [1, 4096], "eval.max_proxy_tokens": [None, 1, 6000], "eval.min_per_benchmark": [1, 4],
+            "eval.max_gpu_gb": [None, 0.5, 24], "eval.seed": [0, 20261021], "merge.chunk_mb": [1, 256], "budget.weekly_gpu_hours": [0, 30, 12.5],
+            "calibration.by": ["question_type", "type_k"], "fidelity.min_rows": [1, 500], "fidelity.seed": [0, 7],
+            "gates.g0_agree_4b": [0, 0.98, 1], "gates.g0_agree_27b_nf4": [0.95], "gates.g2_min_delta": [-0.01, 0, 0.02], "gates.g3_min_delta": [0.0],
+            "gates.calib_min_delta": [-1, 0.0],
+        }
+        for path, values in bad.items():
+            section, key = path.split(".")
+            for value in values:
+                with self.subTest(f"{path} = {value!r}"):
+                    r = self.raw()
+                    r.setdefault(section, {})[key] = value
+                    with self.assertRaisesRegex(C.ConfigError, path.replace(".", r"\.")):
+                        C.validate(r)
+        for path, values in good.items():
+            section, key = path.split(".")
+            for value in values:
+                with self.subTest(f"{path} = {value!r} is fine"):
+                    r = self.raw()
+                    r.setdefault(section, {})[key] = value
+                    C.validate(r)
+
+    def test_a_model_of_the_config_may_be_a_folder_without_a_revision_and_a_hub_repo_may_not(self):
+        r = self.raw()
+        r["models"]["anchor"] = {"name": "novo", "repo": "dir:work/novo"}
+        C.validate(r)
+        r["models"]["anchor"]["revision"] = "a" * 40
+        with self.assertRaisesRegex(C.ConfigError, "no revision"):
+            C.validate(r)
+        r = self.raw()
+        r["models"]["lora"]["repo"] = "dir:work/lora"
+        r["models"]["lora"].pop("revision")
+        C.validate(r)
+        for entry in ("anchor", "lora"):
+            r = self.raw()
+            r["models"][entry].pop("revision")
+            with self.subTest(f"a Hub repo without a commit: {entry}"), self.assertRaisesRegex(C.ConfigError, "revision"):
+                C.validate(r)
+
+    def test_two_spellings_of_one_folder_are_one_model_for_the_duplicate_checks(self):
+        import tempfile
+        from pathlib import Path
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name).resolve()
+        (root / "x").mkdir()
+        (root / "y").mkdir()
+        (root / "latest").symlink_to(root / "x")
+        spellings = {"a trailing slash": f"dir:{root}/x/", "a dot and a dot-dot": f"dir:{root}/./x/../x", "a link to it": f"dir:{root}/latest"}
+        for name, spelling in spellings.items():
+            r = self.raw()
+            r["models"]["anchor"] = {"name": "novo", "repo": f"dir:{root}/x"}
+            r["models"]["donors"] = [{"name": "dup", "repo": spelling, "weight": 0.5, "enabled": True}]
+            with self.subTest(f"donor is the anchor: {name}"), self.assertRaisesRegex(C.ConfigError, "is the anchor"):
+                C.validate(r)
+            r = self.raw()
+            r["models"]["anchor"] = {"name": "novo", "repo": f"dir:{root}/y"}
+            r["models"]["donors"] = [{"name": "dup", "repo": f"dir:{root}/x", "weight": 0.5, "enabled": True}]
+            r["models"]["lora"] = {"repo": spelling, "weight": 0.1, "enabled": True}
+            r["models"]["lora"].pop("weight_grid", None)
+            with self.subTest(f"donor is the LoRA: {name}"), self.assertRaisesRegex(C.ConfigError, "both a donor and the LoRA"):
+                C.validate(r)
+        r = self.raw()                                                                  # two different folders pass
+        r["models"]["anchor"] = {"name": "novo", "repo": f"dir:{root}/y"}
+        r["models"]["donors"] = [{"name": "d", "repo": f"dir:{root}/x", "weight": 0.5, "enabled": True}]
+        r["models"]["lora"] = {"repo": "dir:" + str(root / "other"), "weight": 0.1, "enabled": True}
+        C.validate(r)
+
+    def test_the_groupings_the_config_accepts_are_the_ones_calibration_fits(self):
+        from decide.sd import calibrate
+
+        self.assertEqual(C.GROUPINGS, calibrate.GROUPINGS)
+
+    # the commits the Hub reported on 2026-10-21 (read-only API calls; the review measured the same values)
+    PINS = {
+        "models.base": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+        "models.anchor": "cce0f3f80033e9d89d80831d5281fd72124aacce",
+        "models.donors[d3]": "cf15549a78fc52598ddd1951f321c58372bbd64f",
+        "models.donors[d3-turbo]": "a0f3e9e59ebd1202fe1d4de1c4c0f9a986758cbb",
+        "models.lora": "3c725e4fa45ca857a91e3e77c0156c36edbf7052",
+        "models.rehearsal.pplx_flash": "9ff7cf9838e59df461c276b7699d56b244d2af58",
+        "models.rehearsal.d3_mini": "bd0090dd758d32ba59ef5c749910a8e87fc4391f",
+        "models.d3": "cf15549a78fc52598ddd1951f321c58372bbd64f",
+    }
+
+    def test_every_model_the_config_names_is_pinned_to_the_commit_that_was_measured(self):
+        entries = dict(C.model_entries(C.load_config().models))
+        self.assertEqual({k: v["revision"] for k, v in entries.items()}, self.PINS)
+
+    def test_no_repo_in_the_models_section_escapes_the_pin_check(self):
+        def walk(node):
+            if isinstance(node, dict):
+                if "repo" in node:
+                    yield node
+                for child in node.values():
+                    yield from walk(child)
+            elif isinstance(node, list):
+                for child in node:
+                    yield from walk(child)
+
+        raw = self.raw()
+        self.assertEqual(len(list(walk(raw["models"]))), len(C.model_entries(raw["models"])))
+
+    def test_a_revision_that_is_not_a_full_commit_hash_is_refused_for_every_model(self):
+        raw = self.raw()
+        for label, _entry in C.model_entries(raw["models"]):
+            for bad in ("main", "", "1d4bf0f", "A" * 40, "g" * 40, "a" * 41, 123, None, "refs/heads/main"):
+                with self.subTest(f"{label}: {bad!r}"):
+                    r = self.raw()
+                    dict(C.model_entries(r["models"]))[label]["revision"] = bad
+                    with self.assertRaisesRegex(C.ConfigError, "revision"):
+                        C.validate(r)
+            with self.subTest(f"{label}: missing"):
+                r = self.raw()
+                dict(C.model_entries(r["models"]))[label].pop("revision")
+                with self.assertRaisesRegex(C.ConfigError, "revision"):
+                    C.validate(r)
+
+    def test_the_published_result_datasets_are_pinned_too_and_a_moving_one_is_refused(self):
+        entries = dict(C.dataset_entries(self.raw()))
+        self.assertEqual({k: v["revision"] for k, v in entries.items()},
+                         {"fidelity.published.d3_mini": "5f7068bacba93972219f721eb3e2b09cb33caf91",
+                          "fidelity.published.d3": "0cfbfd61699fd4c614658d0112616cd5fea11a89"})
+        for label in entries:
+            for bad in ("main", None, "5f7068b"):
+                with self.subTest(f"{label}: {bad!r}"):
+                    r = self.raw()
+                    dict(C.dataset_entries(r))[label]["revision"] = bad
+                    with self.assertRaisesRegex(C.ConfigError, "revision"):
+                        C.validate(r)
+
+    def test_an_unknown_or_misspelled_key_is_an_error_that_names_the_key_and_the_likely_one(self):
+        cases = [
+            ("tta.rotatons", lambda r: r["tta"].update(rotatons=2), "rotations"),
+            ("merge.max_candidate", lambda r: r["merge"].update(max_candidate=3), "max_candidates"),
+            ("eval.per_benchmarks", lambda r: r["eval"].update(per_benchmarks=3), "per_benchmark"),
+            ("a section mergee", lambda r: r.update(mergee={"method": "ties"}), "merge"),
+            ("models.anchor.revison", lambda r: r["models"]["anchor"].update(revison="x"), "revision"),
+            ("a donor's wieght", lambda r: r["models"]["donors"][0].update(wieght=1), "weight"),
+            ("fidelity.published.d3.datasets", lambda r: r["fidelity"]["published"]["d3"].update(datasets="x"), "dataset"),
+            ("modal.gpus", lambda r: r["modal"].update(gpus="B200"), "gpu"),
+            ("the dead key eval.double_quant", lambda r: r["eval"].update(double_quant=True), "double_quant"),
+        ]
+        for label, mutate, hint in cases:
+            with self.subTest(label):
+                r = self.raw()
+                mutate(r)
+                with self.assertRaisesRegex(C.ConfigError, rf"unknown key.*{hint}|{hint}.*unknown key|section.*{hint}"):
+                    C.validate(r)
+
+    def test_the_shipped_config_has_no_dead_key(self):
+        self.assertNotIn("double_quant", self.raw()["eval"])
+
+    def test_a_section_an_overlay_file_brings_is_allowed_only_under_the_name_of_the_file(self):
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "config.yaml"
+            base.write_text(C.DEFAULT_PATH.read_text())
+            (Path(tmp) / "config.rental.yaml").write_text(yaml.safe_dump({"rental": {"hours": 3}}))
+            self.assertEqual(C.load_config(base, overlays=True).rental.hours, 3)
+            (Path(tmp) / "config.rental.yaml").write_text(yaml.safe_dump({"rentl": {"hours": 3}}))
+            with self.assertRaisesRegex(C.ConfigError, "rentl"):
+                C.load_config(base, overlays=True)
+            (Path(tmp) / "config.rental.yaml").write_text(yaml.safe_dump({"tta": {"rotatons": 3}}))      # an overlay may override our sections, not misspell them
+            with self.assertRaisesRegex(C.ConfigError, "rotatons"):
+                C.load_config(base, overlays=True)
+            (Path(tmp) / "config.rental.yaml").write_text(yaml.safe_dump({"tta": {"rotations": 3}}))
+            self.assertEqual(C.load_config(base, overlays=True).tta.rotations, 3)
+        with self.assertRaisesRegex(C.ConfigError, "rentl"):
+            C.load_config(overrides={"rentl": {"hours": 3}})
+
+    def test_values_that_would_run_something_other_than_what_was_written_are_refused(self):
+        cases = {
+            "lora weight_grid with a negative": lambda r: r["models"]["lora"].update(weight_grid=[-0.1]),
+            "lora weight_grid with zero": lambda r: r["models"]["lora"].update(weight_grid=[0]),
+            "lora weight_grid not a list": lambda r: r["models"]["lora"].update(weight_grid=0.1),
+            "lambda_grid with zero": lambda r: r["merge"].update(lambda_grid=[0, 0.5]),
+            "lambda_grid with text": lambda r: r["merge"].update(lambda_grid=["0.5"]),
+            "calibration grid reversed": lambda r: r["calibration"].update(grid=[4, 0.5]),
+            "calibration grid from zero": lambda r: r["calibration"].update(grid=[0, 4]),
+            "calibration grid of one": lambda r: r["calibration"].update(grid=[1]),
+            "calibration grid of text": lambda r: r["calibration"].update(grid=["a", "b"]),
+            "session longer than Kaggle allows": lambda r: r["budget"].update(session_hours=14),
+            "donor weight as text": lambda r: r["models"]["donors"][0].update(weight="0.5"),
+            "lora weight as text": lambda r: r["models"]["lora"].update(weight="0.1"),
+            "density as text": lambda r: r["merge"]["ties"].update(density="half"),
+            "holdout as text": lambda r: r["calibration"].update(holdout="0.5"),
+            "per_benchmark as text": lambda r: r["eval"].update(per_benchmark="16"),
+            "rotations as a fraction": lambda r: r["tta"].update(rotations=1.5),
+            "a boolean where a number goes": lambda r: r["models"]["donors"][0].update(weight=True),
+            "endpoint over plain http": lambda r: r["hub"].update(endpoint="http://huggingface.co"),
+            "endpoint of another scheme": lambda r: r["hub"].update(endpoint="ftp://huggingface.co"),
+            "endpoint without a host": lambda r: r["hub"].update(endpoint="https://"),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label):
+                r = self.raw()
+                mutate(r)
+                with self.assertRaises(C.ConfigError):
+                    C.validate(r)
+        for ok in (12, 12.0, 0.5):
+            r = self.raw()
+            r["budget"].update(session_hours=ok, reserve_minutes=1)
+            C.validate(r)
+        for endpoint in ("http://127.0.0.1:8080", "http://localhost", "http://[::1]:9", "https://huggingface.co", "https://hf-mirror.example/"):
+            with self.subTest(endpoint):
+                r = self.raw()
+                r["hub"]["endpoint"] = endpoint
+                C.validate(r)
+
     def test_license_and_readout_exclusions_cannot_be_enabled(self):
         for name, repo in (("lychee", "someone/Lychee-27B"), ("amos", "mukaddamzaid/amos-1-large")):
             with self.subTest(name):
                 r = self.raw()
-                r["models"]["donors"].append({"name": name, "repo": repo, "weight": 1.0, "enabled": True})
+                r["models"]["donors"].append({"name": name, "repo": repo, "weight": 1.0, "enabled": True, "revision": "4" * 40})
                 with self.assertRaisesRegex(C.ConfigError, "not allowed"):
                     C.validate(r)
         r = self.raw()
-        r["models"]["donors"].append({"name": "amos", "repo": "mukaddamzaid/amos-1-large", "weight": 1.0, "enabled": False})
+        r["models"]["donors"].append({"name": "amos", "repo": "mukaddamzaid/amos-1-large", "weight": 1.0, "enabled": False, "revision": "4" * 40})
         C.validate(r)      # present but disabled is tolerated
+
+    def test_a_donor_that_is_the_lora_or_the_anchor_is_refused(self):
+        r = self.raw()
+        r["models"]["donors"].append({"name": "twice", "repo": r["models"]["lora"]["repo"], "weight": 1.0, "enabled": True, "revision": "4" * 40})
+        with self.assertRaisesRegex(C.ConfigError, "both a donor and the LoRA"):
+            C.validate(r)
+        r["models"]["lora"]["enabled"] = False
+        C.validate(r)                                                   # the LoRA is off, so nothing is counted twice
+        r = self.raw()
+        r["models"]["donors"].append({"name": "self", "repo": r["models"]["anchor"]["repo"], "weight": 1.0, "enabled": True, "revision": "4" * 40})
+        with self.assertRaisesRegex(C.ConfigError, "is the anchor"):
+            C.validate(r)
 
     def test_candidates_are_deterministic_and_normalised(self):
         cfg = C.load_config(overrides={"models": {"donors": [
-            {"name": "d3", "repo": "a/b", "weight": 3.0, "enabled": True},
-            {"name": "t", "repo": "a/c", "weight": 1.0, "enabled": True},
-            {"name": "off", "repo": "a/d", "weight": 9.0, "enabled": False},
+            {"name": "d3", "repo": "a/b", "weight": 3.0, "enabled": True, "revision": "1" * 40},
+            {"name": "t", "repo": "a/c", "weight": 1.0, "enabled": True, "revision": "2" * 40},
+            {"name": "off", "repo": "a/d", "weight": 9.0, "enabled": False, "revision": "3" * 40},
         ]}})
         cands = C.enumerate_candidates(cfg)
         self.assertEqual(cands, C.enumerate_candidates(cfg))
@@ -257,10 +504,20 @@ class BudgetContract(unittest.TestCase):
         c.t += 10_000
         self.assertEqual(b.available(), 0.0)
         self.assertLess(b.remaining(), 0)
-        self.assertTrue(b.ok(0.0))
+        self.assertFalse(b.ok(0.0))                # an exhausted budget affords nothing, not even a step whose cost is not known yet
         self.assertFalse(b.ok(1.0))
         with self.assertRaisesRegex(B.BudgetExceeded, "step"):
             b.guard(5.0)
+
+    def test_inside_the_reserve_nothing_is_affordable_and_a_free_step_is_while_time_is_left(self):
+        c = self.Clock()
+        b = B.Budget(1.0, 10.0, clock=c)
+        c.t += 3000 - 1                            # one second of work time left
+        self.assertTrue(b.ok(0.0))
+        self.assertTrue(b.ok(1.0))
+        c.t += 1
+        self.assertEqual(b.available(), 0.0)       # exactly at the reserve
+        self.assertFalse(b.ok(0.0))
 
     def test_start_offset_counts_earlier_work(self):
         c = self.Clock()
@@ -634,6 +891,44 @@ class CalibrateContract(unittest.TestCase):
 
         cls.np, cls.K = np, calibrate
 
+    # two views that disagree: view 0 prefers option 0 by a wide margin and option 2 almost as much, view 1 is flat with a bump on option 1
+    VIEWS = [[6.0, 0.0, 5.0], [0.0, 2.0, 0.0]]
+
+    def test_with_several_views_the_temperature_can_change_the_winner(self):
+        item = self.K.Item("r", "q", "choice", self.VIEWS, None)
+        self.assertEqual(int(self.K.item_probs(item, 0.5).argmax()), 1)
+        self.assertEqual(int(self.K.item_probs(item, 4.0).argmax()), 0)
+
+    def test_with_one_view_the_temperature_never_changes_the_winner(self):
+        for view in self.VIEWS:
+            item = self.K.Item("r", "q", "choice", [view], None)
+            self.assertEqual({int(self.K.item_probs(item, t).argmax()) for t in (0.3, 0.5, 1.0, 4.0, 20.0)}, {int(self.np.argmax(view))})
+
+    def test_the_module_does_not_promise_what_tta_breaks(self):
+        doc = " ".join(self.K.__doc__.split())
+        self.assertNotRegex(doc, r"never which option wins")
+        self.assertNotRegex(doc, r"leaves argmax-based benchmark scores alone")
+        self.assertIn("can change which option wins", doc)
+        self.assertIn("[[6, 0, 5], [0, 2, 0]]", doc)                    # the example the claim is shown with: it is the one tested above
+
+    def test_the_teacher_probabilities_come_from_the_views_not_from_the_mixed_probabilities(self):
+        t_teacher = 1.3823494677922652
+        exact = self.K.reprobabilities(self.VIEWS, t_teacher)
+        mixed = self.K.reprobabilities(self.VIEWS, 1.0)
+        rescaled = self.K.softmax(self.np.log(mixed), t_teacher)         # what you get by re-temperaturing the probabilities that were reported
+        self.assertGreater(float(self.np.abs(self.np.array(exact) - rescaled).max()), 0.02)
+        single = self.K.reprobabilities(self.VIEWS[:1], t_teacher)       # with one view the two routes agree: nothing to mix
+        self.assertTrue(self.np.allclose(single, self.K.softmax(self.np.log(self.K.reprobabilities(self.VIEWS[:1], 1.0)), t_teacher)))
+
+    def test_the_modules_say_which_logits_a_teacher_label_is_made_from(self):
+        from decide.sd import engine
+
+        for doc in (self.K.__doc__, engine.__doc__):
+            flat = " ".join(doc.split())
+            self.assertIn("teacher", flat)
+            self.assertIn("per-view raw logits", flat)
+            self.assertIn("reprobabilities", flat)
+
     def synth(self, n, k, temp, qtype="choice", seed=0, views=1, prefix="r"):
         """Items whose gold is drawn from softmax(logits / temp): the best temperature is `temp`."""
         rng = self.np.random.default_rng(seed)
@@ -879,6 +1174,47 @@ class StateContract(HermeticTestCase):
         st.save()
         self.assertEqual(self.open().rows("eval:anchor"), st.rows("eval:anchor"))
 
+    def test_a_write_that_fails_halfway_leaves_the_previous_state_intact(self):
+        import builtins
+        from unittest import mock
+
+        st = self.open()
+        st.run_stage("a", lambda: 1)
+        path = self.dir / "w" / "state.json"
+        before = path.read_text(encoding="utf-8")
+        real_open = builtins.open
+
+        class Dying:                                  # writes half of the text, then the disk is full
+            def __init__(self, handle):
+                self.handle = handle
+
+            def write(self, text):
+                self.handle.write(text[: len(text) // 2])
+                self.handle.flush()
+                raise OSError(28, "No space left on device")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.handle.close()
+                return False
+
+            def __getattr__(self, name):
+                return getattr(self.handle, name)
+
+        def open_that_dies(file, mode="r", *args, **kwargs):
+            handle = real_open(file, mode, *args, **kwargs)
+            return Dying(handle) if "w" in mode and str(file).endswith(("state.json", "state.json.tmp")) else handle
+
+        st.mark_row("s", "k")
+        with mock.patch.object(self.S, "open", open_that_dies, create=True), self.assertRaises(OSError):
+            st.save()
+        self.assertEqual(path.read_text(encoding="utf-8"), before)                   # not truncated, not half-written
+        again = self.open()
+        self.assertTrue(again.is_done("a"))
+        self.assertFalse(again.row_done("s", "k"))                                    # the row that was not saved is redone, nothing else is lost
+
     def test_a_truncated_state_file_is_moved_aside_and_the_store_copy_is_used(self):
         store = self.S.MemoryStore()
         st = self.open(store)
@@ -981,6 +1317,116 @@ class StateContract(HermeticTestCase):
         log.write_text("1\n2\n3\n")                    # the session kept going after the last push
         self.assertEqual(st.restore_files(), [])
         self.assertEqual(log.read_text(), "1\n2\n3\n")
+
+    def hostile_store(self, local, remote="runs/x/results.jsonl"):
+        """A store whose state.json was written by someone else: it says `remote` is mirrored at `local`, and the store holds bytes for it."""
+        store = self.S.MemoryStore()
+        data = self.S.fresh_data(1.0)
+        data["files"][remote] = {"local": local, "size": 5, "pushed": True}
+        store.write("state.json", json.dumps(data).encode())
+        if "/../" not in f"/{remote}/":                                  # the store itself refuses to hold such a name
+            store.write(remote, b"owned\n")
+        return store
+
+    def test_a_remote_state_cannot_make_the_kit_write_outside_the_work_directory(self):
+        target = self.dir / "abs" / "pwned.txt"
+        inside = str(self.dir / "victim" / "inside.txt")                 # absolute, and it does lead into the work directory: still refused
+        hostile = ["../outside/pwned.txt", "runs/../../outside/pwned.txt", "../../../../../../../../tmp/pwned.txt", str(target), inside,
+                   "runs/../inside.txt", "a\\..\\b", "C:/Users/x/pwned.txt", "", ".", "runs/\0/x"]
+        for local in hostile:
+            with self.subTest(local=local):
+                st = self.open(self.hostile_store(local), sub="victim")
+                self.assertEqual(st.restore_files(), [])
+                self.assertEqual(st.data["files"], {})                    # the entry is dropped, not kept for later
+                self.assertTrue(any("outside the work directory" in note for note in st.data["notes"]), st.data["notes"])
+        self.assertFalse((self.dir / "outside").exists())
+        self.assertFalse(target.exists())
+
+    def test_a_local_state_file_is_not_trusted_either(self):
+        work = self.dir / "victim"
+        work.mkdir()
+        data = self.S.fresh_data(1.0)
+        data["files"]["runs/x/results.jsonl"] = {"local": "../outside/pwned.txt", "size": 5}
+        (work / "state.json").write_text(json.dumps(data), encoding="utf-8")
+        st = self.open(self.S.MemoryStore(), sub="victim")
+        self.assertEqual(st.data["files"], {})
+        self.assertTrue(any("outside the work directory" in note for note in st.data["notes"]))
+
+    def test_a_mirror_name_that_climbs_is_dropped_too(self):
+        store = self.hostile_store("runs/x/results.jsonl", remote="runs/../state.json")
+        st = self.open(store, sub="victim")
+        self.assertEqual(st.data["files"], {})
+
+    def test_a_files_table_that_is_not_a_table_is_dropped(self):
+        for files in ([], "x", {"runs/x": "../y"}, {"runs/x": ["../y"]}):
+            with self.subTest(files=files):
+                store = self.S.MemoryStore()
+                data = self.S.fresh_data(1.0)
+                data["files"] = files
+                data["stages"]["fidelity"] = {"status": "done", "attempts": 1, "finished": 2.0, "result": 7}
+                store.write("state.json", json.dumps(data).encode())
+                st = self.open(store, sub="victim")
+                self.assertEqual(st.data["files"], {})
+                self.assertEqual(st.result("fidelity"), 7)                    # the rest of that state is still good: only the table goes
+
+    def test_restore_refuses_a_path_that_was_put_into_the_state_after_it_was_read(self):
+        st = self.open(self.hostile_store("runs/x/results.jsonl"), sub="victim")
+        for local in ("../outside/pwned.txt", str(self.dir / "abs" / "pwned.txt")):
+            with self.subTest(local=local):
+                st.data["files"] = {"runs/x/results.jsonl": {"local": local, "size": 5}}
+                with self.assertRaisesRegex(self.S.StateError, "outside the work directory"):
+                    st.restore_files()
+        self.assertFalse((self.dir / "outside").exists())
+        self.assertFalse((self.dir / "abs").exists())
+
+    def test_push_does_not_upload_a_file_that_is_not_in_the_work_directory(self):
+        secret = self.dir / "secret.txt"
+        secret.write_text("hf_THE_TOKEN_FILE")
+        store = self.S.MemoryStore()
+        st = self.open(store, sub="victim")
+        for local in (str(secret), "../secret.txt"):
+            with self.subTest(local=local):
+                st.data["files"] = {"stolen.txt": {"local": local, "size": 0}}
+                self.assertFalse(st.push(files_now=True))
+                self.assertRegex(st.push_error, "outside the work directory")
+        self.assertNotIn("stolen.txt", store.files)
+        self.assertNotIn(b"hf_THE_TOKEN_FILE", b"".join(store.files.values()))
+
+    def test_a_link_inside_the_work_directory_does_not_lead_out_of_it(self):
+        outside = self.dir / "elsewhere"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("secret")
+        work = self.dir / "victim"
+        work.mkdir()
+        try:
+            os.symlink(outside, work / "link", target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"no symlinks here: {exc}")
+        store = self.S.MemoryStore()
+        st = self.open(store, sub="victim")
+        st.data["files"] = {"x.txt": {"local": "link/secret.txt", "size": 0}}
+        self.assertFalse(st.push(files_now=True))
+        self.assertNotIn("x.txt", store.files)
+        st.data["files"] = {"x.txt": {"local": "link/new.txt", "size": 5}}
+        store.write("x.txt", b"owned")
+        with self.assertRaisesRegex(self.S.StateError, "outside the work directory"):
+            st.restore_files()
+        self.assertFalse((outside / "new.txt").exists())
+        os.symlink(work, work / "home", target_is_directory=True)           # a link to the work directory itself is not a file either
+        st.data["files"] = {"x.txt": {"local": "home", "size": 5}}
+        with self.assertRaisesRegex(self.S.StateError, "outside the work directory"):
+            st.restore_files()
+        self.assertTrue((work / "home").is_symlink())
+
+    def test_a_directory_whose_name_starts_with_two_dots_is_inside_the_work_directory(self):
+        store = self.S.MemoryStore()
+        st = self.open(store)
+        log = self.dir / "w" / "..runs" / "results.jsonl"
+        log.parent.mkdir(parents=True)
+        log.write_text("1\n")
+        st.track_file(log, "runs/results.jsonl")
+        self.assertTrue(st.push(files_now=True))
+        self.assertEqual(store.read("runs/results.jsonl"), b"1\n")
 
     def test_tokens_are_redacted_from_recorded_errors(self):
         store = self.S.MemoryStore()
@@ -1464,6 +1910,28 @@ class VendorContract(unittest.TestCase):
                 with self.subTest(f"{package}/{name}"):
                     head = (self.VENDOR / package / name).read_text(encoding="utf-8").splitlines()[:6]
                     self.assertTrue(any("Modifications by simplicio-decide:" in line for line in head))
+
+    def test_each_package_names_the_upstream_commit_it_was_copied_from_and_it_is_the_pinned_one(self):
+        cfg = C.load_config()
+        donors = {d["name"]: d for d in cfg.models.donors}
+        for package, entry in (("pplx_decider", cfg.models.anchor), ("d3", donors["d3"])):
+            with self.subTest(package):
+                self.assertEqual(self.manifest(package)["upstream_revision"], entry["revision"])      # what we copied is what we merge and measure
+
+    def test_the_licence_of_each_package_is_its_own_upstream_file_not_a_copy_of_the_other(self):
+        # sha256 of the LICENSE of each upstream at the pinned commit, read from the Hub on 2026-10-21; they differ in the Appendix line
+        # ("Copyright [yyyy] [name of copyright owner]" in d3's, "2026 Alibaba Cloud" in pplx's)
+        expected = {"pplx_decider": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+                    "d3": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"}
+        for package, digest in expected.items():
+            with self.subTest(package):
+                self.assertEqual(hashlib.sha256((self.VENDOR / package / "LICENSE").read_bytes()).hexdigest(), digest)
+                self.assertEqual(self.manifest(package)["files"]["LICENSE"], {"modified": False, "upstream_sha256": digest})
+        self.assertNotIn("license_text_note", self.manifest("d3"))
+
+    def test_exactly_the_files_the_description_says_are_modified_are_modified(self):
+        modified = {pkg: sorted(n for n, info in self.manifest(pkg)["files"].items() if info["modified"]) for pkg in ("pplx_decider", "d3")}
+        self.assertEqual(modified, {"pplx_decider": ["__init__.py", "fast.py"], "d3": []})
 
     def test_protocol_constants_match_the_shipped_json(self):
         joint = json.loads((self.VENDOR / "pplx_decider" / "joint_config.json").read_text(encoding="utf-8"))

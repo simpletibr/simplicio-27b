@@ -13,7 +13,7 @@ from decide.sd import remote
 
 
 def hub_repos(hub):
-    return lambda repo_id, revision=None: remote.HubRepo(repo_id, revision, endpoint=hub.base_url, sleep=lambda s: None, probe=4096)
+    return lambda repo_id, revision: remote.HubRepo(repo_id, revision, endpoint=hub.base_url, sleep=lambda s: None, probe=4096)
 
 
 @needs_transformers
@@ -40,7 +40,8 @@ class D3Flow(HermeticTestCase):
 
     def load(self, spec=None, **opts):
         opts = {"quant": "none", "compute_dtype": "float32", "workers": 2, **opts}
-        return self.L.load_decider(spec or {"anchor": "org/d3", "protocol": "d3"}, self.L.LoadOptions(**opts),
+        spec = {"anchor_revision": "d" * 40, **(spec or {"anchor": "org/d3", "protocol": "d3"})}               # a repo is read at a commit, never at "main"
+        return self.L.load_decider(spec, self.L.LoadOptions(**opts),
                                    repo_factory=hub_repos(self.hub), processor_factory=self.tm.processor_factory)
 
     def reference_logits(self, state_text, question, n):

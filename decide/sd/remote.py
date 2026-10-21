@@ -9,10 +9,14 @@ truncated body is resumed from the byte where it stopped.
 from __future__ import annotations
 
 import json
+import os
 import random
+import re
 import struct
 import threading
 import time
+import urllib.parse
+from pathlib import Path
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Sequence, Tuple
@@ -35,12 +39,34 @@ def torch_dtype(name: str):
     return getattr(torch, _TORCH_NAMES[name])
 
 
+LOOPBACK = ("localhost", "127.0.0.1", "::1")
+MAX_REDIRECTS = 5
 RETRY_STATUS = {408, 425, 429, 500, 502, 503, 504}
 MAX_HEADER = 256 << 20
+MAX_SMALL_FILE = 64 << 20          # a whole-file read (config.json, an index, a manifest, tokenizer.json); a shard is read by Range, never whole
+CHUNK = 65536
+
+
+def _cap(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"max_bytes must be a positive whole number of bytes, got {value!r}")
+    return value
 
 
 class RemoteError(RuntimeError):
     pass
+
+
+def endpoint_problem(endpoint: Any) -> Optional[str]:
+    """Why `endpoint` cannot carry a token, or None: https anywhere, plain http only to this machine."""
+    if not isinstance(endpoint, str):
+        return "must be text"
+    parts = urllib.parse.urlsplit(endpoint)
+    if not parts.hostname:
+        return f"has no host: {endpoint!r}"
+    if parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in LOOPBACK):
+        return None
+    return f"{endpoint!r} would send the token without encryption: use https (plain http is accepted only for {', '.join(LOOPBACK)})"
 
 
 class TensorInfo(NamedTuple):
@@ -66,14 +92,35 @@ class TensorInfo(NamedTuple):
 class LocalTransport:
     """Transport over local files; `url` is a path."""
 
-    def fetch(self, url: str, start: int, end: int) -> bytearray:
-        with open(url, "rb") as f:
+    def __init__(self, max_bytes: int = MAX_SMALL_FILE) -> None:
+        self.max_bytes = _cap(max_bytes)
+
+    def fetch_total(self, url: str, start: int, end: int) -> Tuple[bytearray, Optional[int]]:
+        with _open_local(url) as f:
             f.seek(start)
-            return bytearray(f.read(end - start + 1))
+            data = bytearray(f.read(end - start + 1))
+            f.seek(0, 2)
+            return data, f.tell()
+
+    def fetch(self, url: str, start: int, end: int) -> bytearray:
+        return self.fetch_total(url, start, end)[0]
+
+    def head(self, url: str) -> Dict[str, str]:
+        return {}
 
     def get(self, url: str) -> bytes:
-        with open(url, "rb") as f:
-            return f.read()
+        with _open_local(url) as f:
+            data = f.read(self.max_bytes + 1)
+        if len(data) > self.max_bytes:
+            raise RemoteError(f"{url}: more than {self.max_bytes} bytes for a file that is read whole")
+        return data
+
+
+def _open_local(path: str) -> Any:
+    try:
+        return open(path, "rb")
+    except OSError as exc:                                       # a missing file answers like the Hub does, so `exists()` and the callers that look for "404" work
+        raise RemoteError(f"404: {path} is not a file here ({type(exc).__name__})") from exc
 
 
 class HttpTransport:
@@ -81,8 +128,9 @@ class HttpTransport:
 
     def __init__(self, token: Optional[str] = None, max_retries: int = 6, backoff: float = 0.5,
                  max_backoff: float = 30.0, timeout: Tuple[float, float] = (15.0, 120.0),
-                 sleep: Callable[[float], None] = time.sleep, seed: int = 0) -> None:
+                 sleep: Callable[[float], None] = time.sleep, seed: int = 0, max_bytes: int = MAX_SMALL_FILE) -> None:
         self.token = token
+        self.max_bytes = _cap(max_bytes)
         self.max_retries = int(max_retries)
         self.backoff = float(backoff)
         self.max_backoff = float(max_backoff)
@@ -100,6 +148,80 @@ class HttpTransport:
             s = requests.Session()
             self._local.session = s
         return s
+
+    @staticmethod
+    def _origin(url: str) -> Tuple[str, str, Optional[int]]:
+        parts = urllib.parse.urlsplit(url)
+        return (parts.scheme, (parts.hostname or "").lower(), parts.port or {"http": 80, "https": 443}.get(parts.scheme))
+
+    @staticmethod
+    def _redirect_target(url: str, where: str) -> str:
+        """The URL a `Location` sends the next request to, rebuilt from the fields that were checked.
+
+        The origin (and with it whether the token goes along) is decided here with `urllib.parse`; the request leaves through urllib3, which reads
+        some spellings differently: `http://B\\@A/x` is host A for `urlsplit` and host B for urllib3, and the Authorization header met B.  So a
+        location with a control character, a backslash or userinfo is refused, what is sent is `scheme://host[:port]/path?query` built from the
+        fields checked here (no fragment, no userinfo), and urllib3's own reading of that URL must give the same host and port or the redirect
+        is refused too.  The host that was checked is then the host that is connected to.
+        """
+        def refuse(why: str) -> RemoteError:
+            return RemoteError(f"refusing a redirect from {url} to {where.split('?')[0]!r}: {why}")
+
+        if any(ord(c) < 0x20 or ord(c) == 0x7F for c in where):
+            raise refuse("the location has a control character in it")
+        try:
+            target = urllib.parse.urljoin(url, where)
+            parts = urllib.parse.urlsplit(target)
+        except ValueError as exc:                                # a full-width at sign, an unbalanced bracket: not a URL
+            raise refuse(f"the location is not a URL ({exc})") from None
+        scheme, was = parts.scheme, urllib.parse.urlsplit(url).scheme
+        if scheme not in ("http", "https") or (was == "https" and scheme == "http"):
+            raise RemoteError(f"refusing a redirect from {url} to {target.split('?')[0]}: it must stay on https")
+        if "%" in parts.netloc:                                  # an escaped @, backslash or NUL in a host: a name no server has, read differently by every client
+            raise refuse("the host has a percent escape in it")
+        if "@" in parts.netloc or "\\" in where:                      # user@host is read differently by different parsers: nobody gets to use it
+            raise refuse("the location has credentials or a backslash in it")
+        try:
+            host, port = (parts.hostname or "").lower(), parts.port
+        except ValueError:
+            raise refuse("the port is not a number") from None
+        if not host:
+            raise refuse("the location names no host")
+        rebuilt = urllib.parse.urlunsplit((scheme, (f"[{host}]" if ":" in host else host) + (f":{port}" if port is not None else ""),
+                                           parts.path, parts.query, ""))
+        import urllib3.util
+
+        seen = urllib3.util.parse_url(rebuilt)
+        default = {"http": 80, "https": 443}[scheme]
+        if (seen.host or "").lower().strip("[]") != host or (seen.port or default) != (port or default):
+            raise refuse(f"another parser reads its host as {seen.host}:{seen.port or default}, not {host}:{port or default}")
+        return rebuilt
+
+    def _follow(self, method: str, url: str, headers: dict, **kw: Any):
+        """One request, with redirects followed here and not by `requests`: the Authorization header goes to the first origin only.
+
+        A Hub download is a redirect to a CDN, and the CDN has no business seeing the token.  `requests` also strips it when the host
+        changes, but that is a detail of its version (the images of Kaggle and Colab bring their own); this does not depend on it.
+        Range and the other headers go along, a redirect may not lower https to http or leave http(s), and a chain ends after 5 hops.
+        """
+        first = self._origin(url)
+        for _hop in range(MAX_REDIRECTS + 1):
+            sent = dict(headers)
+            if self._origin(url) != first:
+                sent.pop("Authorization", None)
+            try:
+                resp = self._session().request(method, url, headers=sent, allow_redirects=False, **kw)
+            except ValueError as exc:                            # `requests` also prepares the next request of a redirect it was told not to follow, and
+                raise RemoteError(f"refusing a redirect from {url.split('?')[0]!r}: no request can be built for its location "   # fails on a bad one (InvalidURL,
+                                  f"({type(exc).__name__}: {exc})") from exc                                                       # LocationParseError, a port out of range)
+            if resp.status_code not in (301, 302, 303, 307, 308):
+                return resp
+            where = resp.headers.get("Location")
+            resp.close()
+            if not where:
+                raise RemoteError(f"HTTP {resp.status_code} without a Location for {url}")
+            url = self._redirect_target(url, where)
+        raise RemoteError(f"too many redirects for {url}")
 
     def _headers(self, extra: Optional[dict] = None) -> dict:
         h = {"User-Agent": "simplicio-decide/0.1"}
@@ -128,18 +250,22 @@ class HttpTransport:
     # -- public
     def fetch(self, url: str, start: int, end: int) -> bytearray:
         """Bytes [start, end] inclusive.  A range running past EOF is clipped (Content-Range tells where)."""
+        return self.fetch_total(url, start, end)[0]
+
+    def fetch_total(self, url: str, start: int, end: int) -> Tuple[bytearray, Optional[int]]:
+        """`fetch`, plus the size of the whole file as the server states it in Content-Range (None when it does not say)."""
         if start < 0 or end < start:
             raise ValueError(f"bad range {start}-{end}")
         buf = bytearray()
         want_end = end
+        file_size: Optional[int] = None
         attempt = 0
         retryable = self._retryable_exceptions()
         while start + len(buf) <= want_end:
             cur = start + len(buf)
             retry_after = None
             try:
-                resp = self._session().get(url, headers=self._headers({"Range": f"bytes={cur}-{want_end}"}),
-                                           stream=True, timeout=self.timeout, allow_redirects=True)
+                resp = self._follow("GET", url, self._headers({"Range": f"bytes={cur}-{want_end}"}), stream=True, timeout=self.timeout)
                 code = resp.status_code
                 if code == 206:
                     cr = resp.headers.get("Content-Range", "")
@@ -149,7 +275,8 @@ class HttpTransport:
                         if a != cur:
                             raise RemoteError(f"server answered range starting at {a}, wanted {cur} ({url})")
                         if total.isdigit():
-                            want_end = min(want_end, int(total) - 1)
+                            file_size = int(total)
+                            want_end = min(want_end, file_size - 1)
                     before = len(buf)
                     try:
                         for chunk in resp.iter_content(1 << 20):
@@ -180,20 +307,66 @@ class HttpTransport:
                 if attempt > self.max_retries:
                     raise RemoteError(f"{exc} for {url} after {self.max_retries} retries") from exc
                 self.sleep(self._delay(attempt - 1, retry_after))
-        return buf
+        return buf, file_size
 
-    def get(self, url: str) -> bytes:
-        """Whole small file (config.json, index.json ...)."""
+    def head(self, url: str) -> Dict[str, str]:
+        """The headers of the Hub's own answer to a HEAD (lowercase names; redirects are not followed, so the token goes to one origin only).
+
+        For a file stored with Git LFS or Xet the Hub states its sha256 here (`x-linked-etag`) without sending the file.
+        """
         attempt = 0
         retryable = self._retryable_exceptions()
         while True:
             retry_after = None
             try:
-                resp = self._session().get(url, headers=self._headers(), timeout=self.timeout, allow_redirects=True)
+                resp = self._session().head(url, headers=self._headers(), timeout=self.timeout, allow_redirects=False)
                 code = resp.status_code
-                if code == 200:
-                    return resp.content
-                retry_after = resp.headers.get("Retry-After")
+                headers = {k.lower(): v for k, v in resp.headers.items()}
+                resp.close()
+                if code in (200, 301, 302, 303, 307, 308):
+                    return headers
+                retry_after = headers.get("retry-after")
+                if code in RETRY_STATUS:
+                    raise _Retry(f"HTTP {code}")
+                raise RemoteError(f"HTTP {code} for HEAD {url}")
+            except RemoteError:
+                raise
+            except (_Retry, *retryable) as exc:
+                attempt += 1
+                if attempt > self.max_retries:
+                    raise RemoteError(f"{exc} for HEAD {url} after {self.max_retries} retries") from exc
+                self.sleep(self._delay(attempt - 1, retry_after))
+
+    def _read_capped(self, resp: Any, url: str) -> bytes:
+        declared = resp.headers.get("Content-Length")
+        try:
+            size = int(declared) if declared is not None else None
+        except ValueError:
+            size = None
+        if size is not None and size > self.max_bytes:
+            raise RemoteError(f"{url}: the server says {size} bytes, more than {self.max_bytes} bytes for a file that is read whole")
+        buf = bytearray()
+        for chunk in resp.iter_content(chunk_size=CHUNK):          # the body is counted as it arrives: no length, or a wrong one, cannot fill the memory
+            buf += chunk
+            if len(buf) > self.max_bytes:
+                raise RemoteError(f"{url}: more than {self.max_bytes} bytes for a file that is read whole")
+        return bytes(buf)
+
+    def get(self, url: str) -> bytes:
+        """Whole small file (config.json, index.json ...), at most `max_bytes`."""
+        attempt = 0
+        retryable = self._retryable_exceptions()
+        while True:
+            retry_after = None
+            try:
+                resp = self._follow("GET", url, self._headers(), timeout=self.timeout, stream=True)
+                try:
+                    code = resp.status_code
+                    if code == 200:
+                        return self._read_capped(resp, url)
+                    retry_after = resp.headers.get("Retry-After")
+                finally:
+                    resp.close()
                 if code in RETRY_STATUS:
                     raise _Retry(f"HTTP {code}")
                 if code in (401, 403):
@@ -214,30 +387,78 @@ class _Retry(Exception):
 
 # --------------------------------------------------------------------------- safetensors over Range
 
+def _whole_numbers(values: Any, count: Optional[int] = None) -> bool:
+    return isinstance(values, list) and (count is None or len(values) == count) and all(isinstance(v, int) and not isinstance(v, bool) for v in values)
+
+
+def _tensor_entry(url: str, name: str, entry: Any) -> Tuple[str, tuple, int, int]:
+    """`(dtype, shape, start, end)` of one header entry, refusing anything that does not describe exactly the bytes it claims."""
+    if not isinstance(entry, dict):
+        raise RemoteError(f"{url}: the header entry of {name!r} is not an object")
+    dtype, shape, offsets = entry.get("dtype"), entry.get("shape"), entry.get("data_offsets")
+    if dtype not in DTYPE_SIZES:
+        raise RemoteError(f"{url}: unsupported dtype {dtype!r} for {name}")
+    if not _whole_numbers(shape) or any(d < 0 for d in shape):
+        raise RemoteError(f"{url}: tensor {name!r} has an invalid shape {shape!r}")
+    if not _whole_numbers(offsets, 2) or not 0 <= offsets[0] <= offsets[1]:
+        raise RemoteError(f"{url}: tensor {name!r} has data_offsets {offsets!r}; they must be two whole numbers with 0 <= start <= end")
+    numel = 1
+    for d in shape:
+        numel *= d
+    if offsets[1] - offsets[0] != numel * DTYPE_SIZES[dtype]:
+        raise RemoteError(f"{url}: tensor {name!r} spans {offsets[1] - offsets[0]} bytes but its shape {tuple(shape)} of {dtype} needs {numel * DTYPE_SIZES[dtype]}")
+    return dtype, tuple(shape), offsets[0], offsets[1]
+
+
+def _fetch_total(transport, url: str, start: int, end: int) -> Tuple[bytearray, Optional[int]]:
+    """`(bytes, size of the whole file or None)`; a transport without `fetch_total` cannot say how big the file is."""
+    method = getattr(transport, "fetch_total", None)
+    if method is None:
+        return transport.fetch(url, start, end), None
+    return method(url, start, end)
+
+
 class SafetensorsFile:
     """One safetensors file addressed by URL (or path, with LocalTransport)."""
 
     def __init__(self, url: str, transport, probe: int = 1 << 18) -> None:
         self.url = url
         self.transport = transport
-        first = bytes(transport.fetch(url, 0, probe - 1))
+        raw, total = _fetch_total(transport, url, 0, probe - 1)
+        first = bytes(raw)
         if len(first) < 8:
             raise RemoteError(f"{url}: file too short to be safetensors")
         (n,) = struct.unpack("<Q", first[:8])
         if not 0 < n < MAX_HEADER:
             raise RemoteError(f"{url}: implausible safetensors header length {n}")
+        if total is not None and 8 + n > total:
+            raise RemoteError(f"{url}: the header says it is {n} bytes long but the whole file has {total}")
         if 8 + n > len(first):
             first += bytes(transport.fetch(url, len(first), 8 + n - 1))
-        header = json.loads(first[8:8 + n].decode("utf-8"))
+        if len(first) < 8 + n:
+            raise RemoteError(f"{url}: the header is cut short ({len(first) - 8} of {n} bytes)")
+        try:
+            header = json.loads(first[8:8 + n].decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise RemoteError(f"{url}: the header is not valid JSON ({exc})") from exc
+        if not isinstance(header, dict):
+            raise RemoteError(f"{url}: the header is not a JSON object")
         self.metadata = header.pop("__metadata__", {}) or {}
         base = 8 + n
         self.data_start = base
-        self._info: "OrderedDict[str, TensorInfo]" = OrderedDict()
-        for name, h in sorted(header.items(), key=lambda kv: kv[1]["data_offsets"][0]):
-            if h["dtype"] not in DTYPE_SIZES:
-                raise RemoteError(f"{url}: unsupported dtype {h['dtype']} for {name}")
-            a, b = h["data_offsets"]
-            self._info[name] = TensorInfo(h["dtype"], tuple(h["shape"]), base + a, base + b)
+        parsed = [(name, *_tensor_entry(url, name, h)) for name, h in header.items()]
+        parsed.sort(key=lambda item: (item[3], item[4]))
+        expected = 0
+        for name, _dtype, _shape, a, b in parsed:
+            if a != expected:
+                raise RemoteError(f"{url}: tensors are not contiguous from offset 0: {name!r} starts at {a}, the previous one ended at {expected}")
+            expected = b
+        self._info: "OrderedDict[str, TensorInfo]" = OrderedDict((name, TensorInfo(dtype, shape, base + a, base + b)) for name, dtype, shape, a, b in parsed)
+        self.implied_size = base + expected                  # where the last tensor ends = the size of a sound file
+        self.size = total
+        if total is not None and total != self.implied_size:
+            raise RemoteError(f"{url}: the server says the file has {total} bytes but its header describes {self.implied_size}; "
+                              "the file is truncated, padded or replaced")
 
     def names(self) -> List[str]:
         return list(self._info)
@@ -320,21 +541,101 @@ class SafetensorsFile:
 
 # --------------------------------------------------------------------------- a repo
 
-class HubRepo:
-    """A model repo read through Range requests.  `endpoint` is overridable for tests."""
+SAFE_PATH = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*")
 
-    def __init__(self, repo_id: str, revision: Optional[str] = None, token: Optional[str] = None,
+
+def safe_path(name: Any) -> bool:
+    """A file path inside a repo: letters, digits, `._-` and `/` between non-empty parts, no `.` or `..` part."""
+    return isinstance(name, str) and SAFE_PATH.fullmatch(name) is not None and all(part not in (".", "..") for part in name.split("/"))
+
+
+MANIFEST_NAME = "release-manifest.json"
+SHA256 = re.compile(r"[0-9a-f]{64}")
+_UNSET = object()
+
+
+def _manifest_files(data: Any, where: str) -> Dict[str, Dict[str, Any]]:
+    files = data.get("files") if isinstance(data, dict) else None
+    if not isinstance(files, dict):
+        raise RemoteError(f"{where}: {MANIFEST_NAME} has no 'files' table")
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, entry in files.items():
+        size, digest = (entry.get("bytes"), str(entry.get("sha256", "")).lower()) if isinstance(entry, dict) else (None, "")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0 or not SHA256.fullmatch(digest):
+            raise RemoteError(f"{where}: {MANIFEST_NAME} entry {name!r} needs an integer 'bytes' and a 64-hex 'sha256'")
+        out[name] = {"bytes": size, "sha256": digest}
+    return out
+
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}")                       # what a repo is read at; config.py and api.py hold the same rule for the files they validate
+LOCAL_PREFIX = "dir:"                                          # "dir:PATH" names a checkpoint folder on this machine: not on the Hub, so it has no commit to pin
+
+
+def is_local(repo_id: Any) -> bool:
+    """True for a repo id that names a folder on this machine (`dir:PATH`) and not a Hub repo."""
+    return isinstance(repo_id, str) and repo_id.startswith(LOCAL_PREFIX)
+
+
+def local_path(repo_id: str) -> Path:
+    """The folder `dir:PATH` names (`~` expanded; not resolved, not checked)."""
+    return Path(repo_id[len(LOCAL_PREFIX):].strip()).expanduser()
+
+
+def repo_key(repo_id: Any) -> str:
+    """What two repo ids must agree on to be one repo.
+
+    A Hub id is case-insensitive, and the Hub refuses the other spellings (a trailing slash, `.git`, a URL).  A folder has no such referee: the
+    file system reads `x`, `x/`, `./x/../x` and a link to `x` as the same directory, so its key is the real path, and the case counts (on Linux
+    `A` and `a` are two folders).  A donor that is the anchor gives a merge that is the anchor, and a donor that is the adapter counts its delta twice.
+    """
+    if is_local(repo_id):
+        return LOCAL_PREFIX + os.path.realpath(local_path(repo_id))
+    return str(repo_id).lower()
+
+
+class HubRepo:
+    """A model repo read through Range requests.  `endpoint` is overridable for tests.
+
+    A Hub repo is read at a full commit hash.  A repo id `dir:PATH` is a checkpoint folder on this machine (the model that was just trained):
+    the same shard, header and manifest code reads it from the disk, there is no network, and it has no revision (a revision given for it is
+    refused).  Names are checked the same way and cannot leave the folder, links included.
+    """
+
+    def __init__(self, repo_id: str, revision: str, token: Optional[str] = None,
                  endpoint: str = "https://huggingface.co", transport=None, probe: int = 1 << 18, **transport_kw) -> None:
+        self.root: Optional[Path] = None
+        if is_local(repo_id):
+            if revision is not None:
+                raise RemoteError(f"{repo_id}: a folder on this machine has no revision, got {revision!r}")
+            folder = local_path(repo_id)
+            if not folder.is_dir():
+                raise RemoteError(f"{repo_id}: not a folder")
+            self.root = folder.resolve()
+            transport = transport or LocalTransport(**{k: v for k, v in transport_kw.items() if k == "max_bytes"})
+        elif not isinstance(revision, str) or not COMMIT_SHA.fullmatch(revision):
+            raise RemoteError(f"{repo_id}: the revision must be a full commit hash (40 lowercase hex characters), got {revision!r}: "
+                              "a branch such as 'main' moves while a sweep that takes days is running")
+        if token and self.root is None:
+            problem = endpoint_problem(endpoint)
+            if problem:
+                raise RemoteError(f"the Hub endpoint {problem}")
         self.probe = probe
         self.repo_id = repo_id
-        self.revision = revision or "main"
+        self.revision = revision
         self.endpoint = endpoint.rstrip("/")
         self.transport = transport or HttpTransport(token=token, **transport_kw)
         self._shards: Dict[str, SafetensorsFile] = {}
         self._weight_map: Optional[Dict[str, str]] = None
+        self._manifest: Any = _UNSET
         self._lock = threading.RLock()
 
     def url(self, filename: str) -> str:
+        if not safe_path(filename):
+            raise RemoteError(f"{self.repo_id}: refusing the file name {filename!r}: it must be a relative path of letters, digits and ._- without '..', '?' or '#'")
+        if self.root is not None:
+            target = (self.root / filename).resolve()
+            if self.root != target and self.root not in target.parents:
+                raise RemoteError(f"404: {filename} is outside the folder {self.repo_id}")
+            return str(target)
         return f"{self.endpoint}/{self.repo_id}/resolve/{self.revision}/{filename}"
 
     def read_bytes(self, filename: str) -> bytes:
@@ -352,11 +653,43 @@ class HubRepo:
                 return False
             raise
 
+    def manifest(self) -> Optional[Dict[str, Dict[str, Any]]]:
+        """`{file: {"bytes": int, "sha256": str}}` from the repo's `release-manifest.json` (pplx-decider ships one); None when there is none."""
+        with self._lock:
+            if self._manifest is _UNSET:
+                try:
+                    data = self.read_json(MANIFEST_NAME)
+                except RemoteError as exc:
+                    if "404" not in str(exc):
+                        raise
+                    data = None
+                self._manifest = None if data is None else _manifest_files(data, f"{self.repo_id}@{self.revision}")
+            return self._manifest
+
+    def _verify(self, filename: str, sf: SafetensorsFile) -> None:
+        """A shard the repo's manifest lists must be the file it describes: same size, and the sha256 the Hub holds for it.
+
+        The sha256 comes from the Hub's `x-linked-etag` (a HEAD, nothing is downloaded), so this proves the Hub serves the file
+        the publisher listed; it does not re-hash the bytes we read.  A transport that cannot say (a local file, a server
+        without the header) leaves the size check as the only one.
+        """
+        entry = (self.manifest() or {}).get(filename)
+        if entry is None:
+            return
+        where = f"{self.repo_id}@{self.revision}/{filename}"
+        if sf.implied_size != entry["bytes"]:
+            raise RemoteError(f"{where}: {sf.implied_size} bytes, but {MANIFEST_NAME} lists {entry['bytes']}")
+        head = getattr(self.transport, "head", None)
+        tag = str((head(self.url(filename)) if head else {}).get("x-linked-etag", "")).strip().removeprefix("W/").strip('"').lower()
+        if SHA256.fullmatch(tag) and tag != entry["sha256"]:
+            raise RemoteError(f"{where}: the Hub holds sha256 {tag}, but {MANIFEST_NAME} lists {entry['sha256']}")
+
     def shard(self, filename: str) -> SafetensorsFile:
         with self._lock:
             sf = self._shards.get(filename)
             if sf is None:
                 sf = SafetensorsFile(self.url(filename), self.transport, self.probe)
+                self._verify(filename, sf)
                 self._shards[filename] = sf
             return sf
 
@@ -364,12 +697,16 @@ class HubRepo:
         with self._lock:
             if self._weight_map is None:
                 try:
-                    self._weight_map = dict(self.read_json("model.safetensors.index.json")["weight_map"])
+                    table = dict(self.read_json("model.safetensors.index.json")["weight_map"])
                 except RemoteError as exc:
                     if "404" not in str(exc):
                         raise
                     sf = self.shard("model.safetensors")
-                    self._weight_map = {n: "model.safetensors" for n in sf.names()}
+                    table = {n: "model.safetensors" for n in sf.names()}
+                for shard_name in sorted(set(table.values())):         # they go into a URL: checked here, outside the 404 fallback above
+                    if not safe_path(shard_name):
+                        raise RemoteError(f"{self.repo_id}: the index names a shard name that is not a safe relative path: {shard_name!r}")
+                self._weight_map = table
             return self._weight_map
 
     def names(self) -> List[str]:
