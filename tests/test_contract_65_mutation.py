@@ -95,10 +95,13 @@ class TheTableFitsTheCode(unittest.TestCase):
     def test_the_tests_named_in_the_table_exist(self):
         for m in mu.MUTATIONS:
             for test_id in m.tests:
-                module, _, cls = test_id.partition(".")
+                module, cls, method = (test_id.split(".") + ["", ""])[:3]            # module, module.Class or module.Class.method
                 source = (ROOT / "tests" / f"{module}.py").read_text(encoding="utf-8")
                 with self.subTest(f"{m.id}: {test_id}"):
-                    self.assertIsNotNone(re.search(rf"^class {cls}\b", source, re.M), test_id)
+                    if cls:
+                        self.assertIsNotNone(re.search(rf"^class {cls}\b", source, re.M), test_id)
+                    if method:
+                        self.assertIsNotNone(re.search(rf"^    def {method}\(", source, re.M), test_id)
 
     def test_a_stale_table_is_reported_with_the_reason(self):
         tmp = tempfile.TemporaryDirectory()
