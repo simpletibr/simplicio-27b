@@ -303,10 +303,32 @@ class AdapterContract(unittest.TestCase):
         req, gold = self.check(A.ADAPTERS["classification"]({"text": "how do i x", "label": 2}, args, self.ctx()))
         q = req["questions"]["q1"]
         self.assertEqual(q["instructions"], "Classify the intent:\nhow do i x")
-        self.assertEqual(list(q["criteria"]), ["option_0", "option_1", "option_2"])
-        self.assertEqual(gold, {"q1": "option_2"})
+        self.assertEqual(list(q["criteria"]), ["option_000", "option_001", "option_002"])
+        self.assertEqual(gold, {"q1": "option_002"})
         self.assertIsNone(A.ADAPTERS["classification"]({"text": "t", "label": None}, args, self.ctx()))
         self.assertIsNone(A.ADAPTERS["classification"]({"text": "t", "label": 9}, args, self.ctx()))
+
+    def test_option_order_survives_the_sorted_keys_of_the_stored_json(self) -> None:
+        # review of PR #74: the corpus stores sorted keys, so option_0, option_1, option_10, ... moved the options of
+        # any question with 11 or more classes; the stored order must be the order of the classes
+        for count in (11, 12, 27, 77, 150, 255):
+            names = [f"class{i}" for i in range(count)]
+            args = {"text": "text", "label": "label", "label_names": names}
+            for target in (0, 2, count - 1):
+                request, gold = self.check(A.ADAPTERS["classification"]({"text": "t", "label": target}, args, self.ctx()))
+                row = S.corpus_row(example_id="x:1", source="x", license="mit", split="train", lang="en", request=request, gold=gold)
+                stored, stored_gold = S.parse_row(row)
+                criteria = stored["questions"]["q1"]["criteria"]
+                self.assertEqual(list(criteria.values()), names, count)
+                self.assertEqual(criteria[stored_gold["q1"]], names[target], (count, target))
+
+    def test_mcq_with_many_choices_keeps_its_order(self) -> None:
+        texts = [f"answer {i}" for i in range(40)]
+        args = {"question": "question", "choices": "choices", "answer": "answer", "answer_kind": "index"}
+        request, gold = self.check(A.ADAPTERS["mcq"]({"question": "q", "choices": texts, "answer": 33}, args, self.ctx()))
+        keys = list(request["questions"]["q1"]["criteria"])
+        self.assertEqual(keys, sorted(keys))
+        self.assertEqual(request["questions"]["q1"]["criteria"][gold["q1"]], "answer 33")
 
     def test_nli(self) -> None:
         args = {"premise": "premise", "hypothesis": "hypothesis", "label": "gold", "labels": ["entailment", "neutral", "contradiction"]}
