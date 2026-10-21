@@ -214,6 +214,61 @@ class RemoteFlow(HermeticTestCase):
         self.assertEqual(reply.status_code, 200)
         self.assertEqual(session.asked, [("https://huggingface.co/x", "Bearer tok"), ("https://huggingface.co/other/path", "Bearer tok")])
 
+    # ---- a whole-file read has a ceiling: a config.json is not a shard
+    def test_a_small_file_over_the_cap_is_refused_by_the_length_the_server_declares(self):
+        self.hub.add("org/big", "config.json", b"{" + b" " * 4096 + b"}")
+        with self.assertRaisesRegex(remote.RemoteError, "server says 4098 bytes, more than 1024 bytes"):
+            self.repo("org/big", max_bytes=1024).read_json("config.json")
+        self.assertEqual(self.repo("org/big", max_bytes=8192).read_json("config.json"), {})
+        self.assertEqual(len(self.repo("org/big", max_bytes=4098).read_bytes("config.json")), 4098)       # exactly at the cap is fine
+        with self.assertRaisesRegex(remote.RemoteError, "server says 4098 bytes, more than 4097 bytes"):
+            self.repo("org/big", max_bytes=4097).read_bytes("config.json")
+
+    def test_a_body_with_no_length_is_cut_at_the_cap_and_not_read_to_the_end(self):
+        class Endless:
+            status_code, headers = 200, {}
+
+            def __init__(self):
+                self.chunks = 0
+                self.closed = False
+
+            def iter_content(self, chunk_size=1):
+                for _ in range(40):                                  # "endless", but a test that fails must end
+                    self.chunks += 1
+                    yield b"x" * chunk_size
+
+            def close(self):
+                self.closed = True
+
+        reply = Endless()
+
+        class Session:
+            def request(self, method, url, **kw):
+                return reply
+
+        t = remote.HttpTransport(max_bytes=100_000, sleep=lambda s: None)
+        t._session = lambda: Session()
+        with self.assertRaisesRegex(remote.RemoteError, "more than 100000 bytes"):
+            t.get("https://huggingface.co/x")
+        self.assertEqual(reply.chunks, 2)                                                # it stopped at the cap, it did not drain the stream
+        self.assertTrue(reply.closed)
+
+    def test_the_cap_is_a_positive_whole_number_and_the_default_leaves_room_for_tokenizer_json(self):
+        for bad in (0, -1, 1.5, True, "8"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "max_bytes"):
+                remote.HttpTransport(max_bytes=bad)
+        self.assertGreaterEqual(remote.MAX_SMALL_FILE, 32 << 20)
+        self.assertLess(remote.MAX_SMALL_FILE, 1 << 30)
+        self.assertEqual(remote.HttpTransport().max_bytes, remote.MAX_SMALL_FILE)
+
+    def test_a_local_file_has_the_same_ceiling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_bytes(b"x" * 600)
+            with self.assertRaisesRegex(remote.RemoteError, "more than 500 bytes"):
+                remote.LocalTransport(max_bytes=500).get(str(path))
+            self.assertEqual(len(remote.LocalTransport(max_bytes=600).get(str(path))), 600)
+
     def test_missing_file_and_unknown_tensor(self):
         r = self.repo()
         with self.assertRaisesRegex(remote.RemoteError, "404"):

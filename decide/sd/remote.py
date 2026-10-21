@@ -41,6 +41,14 @@ LOOPBACK = ("localhost", "127.0.0.1", "::1")
 MAX_REDIRECTS = 5
 RETRY_STATUS = {408, 425, 429, 500, 502, 503, 504}
 MAX_HEADER = 256 << 20
+MAX_SMALL_FILE = 64 << 20          # a whole-file read (config.json, an index, a manifest, tokenizer.json); a shard is read by Range, never whole
+CHUNK = 65536
+
+
+def _cap(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"max_bytes must be a positive whole number of bytes, got {value!r}")
+    return value
 
 
 class RemoteError(RuntimeError):
@@ -82,6 +90,9 @@ class TensorInfo(NamedTuple):
 class LocalTransport:
     """Transport over local files; `url` is a path."""
 
+    def __init__(self, max_bytes: int = MAX_SMALL_FILE) -> None:
+        self.max_bytes = _cap(max_bytes)
+
     def fetch_total(self, url: str, start: int, end: int) -> Tuple[bytearray, Optional[int]]:
         with open(url, "rb") as f:
             f.seek(start)
@@ -97,7 +108,10 @@ class LocalTransport:
 
     def get(self, url: str) -> bytes:
         with open(url, "rb") as f:
-            return f.read()
+            data = f.read(self.max_bytes + 1)
+        if len(data) > self.max_bytes:
+            raise RemoteError(f"{url}: more than {self.max_bytes} bytes for a file that is read whole")
+        return data
 
 
 class HttpTransport:
@@ -105,8 +119,9 @@ class HttpTransport:
 
     def __init__(self, token: Optional[str] = None, max_retries: int = 6, backoff: float = 0.5,
                  max_backoff: float = 30.0, timeout: Tuple[float, float] = (15.0, 120.0),
-                 sleep: Callable[[float], None] = time.sleep, seed: int = 0) -> None:
+                 sleep: Callable[[float], None] = time.sleep, seed: int = 0, max_bytes: int = MAX_SMALL_FILE) -> None:
         self.token = token
+        self.max_bytes = _cap(max_bytes)
         self.max_retries = int(max_retries)
         self.backoff = float(backoff)
         self.max_backoff = float(max_backoff)
@@ -270,18 +285,36 @@ class HttpTransport:
                     raise RemoteError(f"{exc} for HEAD {url} after {self.max_retries} retries") from exc
                 self.sleep(self._delay(attempt - 1, retry_after))
 
+    def _read_capped(self, resp: Any, url: str) -> bytes:
+        declared = resp.headers.get("Content-Length")
+        try:
+            size = int(declared) if declared is not None else None
+        except ValueError:
+            size = None
+        if size is not None and size > self.max_bytes:
+            raise RemoteError(f"{url}: the server says {size} bytes, more than {self.max_bytes} bytes for a file that is read whole")
+        buf = bytearray()
+        for chunk in resp.iter_content(chunk_size=CHUNK):          # the body is counted as it arrives: no length, or a wrong one, cannot fill the memory
+            buf += chunk
+            if len(buf) > self.max_bytes:
+                raise RemoteError(f"{url}: more than {self.max_bytes} bytes for a file that is read whole")
+        return bytes(buf)
+
     def get(self, url: str) -> bytes:
-        """Whole small file (config.json, index.json ...)."""
+        """Whole small file (config.json, index.json ...), at most `max_bytes`."""
         attempt = 0
         retryable = self._retryable_exceptions()
         while True:
             retry_after = None
             try:
-                resp = self._follow("GET", url, self._headers(), timeout=self.timeout)
-                code = resp.status_code
-                if code == 200:
-                    return resp.content
-                retry_after = resp.headers.get("Retry-After")
+                resp = self._follow("GET", url, self._headers(), timeout=self.timeout, stream=True)
+                try:
+                    code = resp.status_code
+                    if code == 200:
+                        return self._read_capped(resp, url)
+                    retry_after = resp.headers.get("Retry-After")
+                finally:
+                    resp.close()
                 if code in RETRY_STATUS:
                     raise _Retry(f"HTTP {code}")
                 if code in (401, 403):
