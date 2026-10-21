@@ -48,6 +48,7 @@ def tiny_config():
 
     cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "decide" / "config.rental.yaml").read_text(encoding="utf-8"))["rental"]
     cfg["hub"].update(work_repo="me/day", data_repo="me/data", weights_repo="me/weights")
+    cfg["gates"]["g4_min_rows"] = 10                                        # the rehearsal proxy has 80 questions; the shipped floor is for the real one
     return cfg
 
 
@@ -116,10 +117,11 @@ class FakeKit:
         return {"rows": count, "total": count, "tokens": 10 * count, "seconds": 1.5, "status": "complete"}
 
 
-def build_world(root: Path, *, label_every=1, screened=True, labels_sealed=True):
+def build_world(root: Path, *, label_every=1, screened=True, labels_sealed=True, proxy_checked=True, proxy_declared_rows=None):
     """A LocalHub holding the private data repo and the start checkpoint; returns (hub, proxy_requests_file).
 
-    ``screened=False`` uploads a corpus sealed by hand (not the output of decontaminate); ``labels_sealed=False`` uploads labels without a manifest."""
+    ``screened=False`` uploads a corpus sealed by hand (not the output of decontaminate); ``labels_sealed=False`` uploads labels without a manifest;
+    ``proxy_checked=False`` uploads a proxy whose second pass (against the clean corpus) never ran; ``proxy_declared_rows`` makes its manifest declare another number."""
     from decide.data import schema as S
     from decide.rental import gates as G
     from decide.rental import hub as H
@@ -139,7 +141,16 @@ def build_world(root: Path, *, label_every=1, screened=True, labels_sealed=True)
                                            request={"state": f"case {i}", "questions": {"q1": {"type": "choice", "instructions": "pick", "criteria": {k: k.lower() for k in "ABCD"}}}},
                                            gold={"q1": "A"}))
     S.write_corpus_part(data / "proxy" / "proxy.parquet", proxy_rows)
-    S.seal_directory(data / "proxy", kind="proxy")
+    S.seal_directory(data / "proxy", kind="proxy", extra={"sources": {"alpha": {"rows": 40}, "beta": {"rows": 40}},
+                                                           "corpus_leak_check": ({"checked": True, "leaks": 0, "examples": []} if proxy_checked
+                                                                                 else {"checked": False, "sources_only": True})})     # as the second pass of proxy_private build leaves it
+    if proxy_declared_rows is not None:
+        sealed = json.loads((data / "proxy" / "manifest.json").read_text(encoding="utf-8"))
+        S.write_manifest(data / "proxy" / "manifest.json", {**sealed, "rows": proxy_declared_rows})
+    clean = json.loads((data / "corpus" / "manifest.json").read_text(encoding="utf-8"))                                            # and decontaminate, given the proxy
+    S.write_manifest(data / "corpus" / "manifest.json", {**clean, "sources": {"toy": {"rows": clean["rows"]}}})
+    report = json.loads((data / "corpus" / "decontamination.json").read_text(encoding="utf-8"))
+    S.write_manifest(data / "corpus" / "decontamination.json", {**report, "references": [{"path": "work/proxy", "requests": len(proxy_rows), "rows": len(proxy_rows), "skipped": 0, "sha256": "0" * 64}]})
     staging = root / "staging"
     shutil.copytree(data / "corpus", staging / "corpus-limpo")
     shutil.copytree(data / "labels", staging / "labels" / "pplx-decider-v1.2")
@@ -441,6 +452,68 @@ class RefusalsBeforeTheMoney(unittest.TestCase):
             self.assertIn("seal_directory", str(caught.exception), "the message says how to make the manifest")
             self.assertEqual(executor.calls, [])
 
+    def test_a_proxy_the_clean_corpus_was_not_checked_against_stops_the_day_at_the_fetch(self) -> None:
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp), proxy_checked=False)
+            executor = InProcessExecutor()
+            day = make_day(Path(tmp) / "day", hub, FakeKit(), executor)
+            with self.assertRaises(R.DayError) as caught:
+                day.run()
+            self.assertIn("proxy", str(caught.exception))
+            self.assertIn("corpus_leak_check", str(caught.exception))
+            self.assertFalse((Path(tmp) / "day" / "start").exists(), "stopped before the 52 GB checkpoint was downloaded")
+            self.assertEqual(executor.calls, [])
+
+    def test_a_proxy_with_fewer_questions_than_the_floor_stops_the_day_at_the_fetch_not_after_the_training(self) -> None:
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp))
+            cfg = tiny_config()
+            cfg["gates"]["g4_min_rows"] = 81                                    # the proxy of the rehearsal has 80
+            executor = InProcessExecutor()
+            with self.assertRaises(R.DayError) as caught:
+                make_day(Path(tmp) / "day", hub, FakeKit(), executor, cfg=cfg).run()
+            self.assertIn("g4_min_rows", str(caught.exception))
+            self.assertIn("80", str(caught.exception))
+            self.assertFalse((Path(tmp) / "day" / "start").exists())
+            self.assertEqual(executor.calls, [])
+
+    def test_a_proxy_whose_parts_hold_other_rows_than_its_manifest_declares_stops_the_day_at_the_fetch(self) -> None:
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp), proxy_declared_rows=79)
+            executor = InProcessExecutor()
+            with self.assertRaises(R.DayError) as caught:
+                make_day(Path(tmp) / "day", hub, FakeKit(), executor).run()
+            self.assertIn("declares 79", str(caught.exception))
+            self.assertIn("hold 80", str(caught.exception))
+            self.assertEqual(executor.calls, [])
+
+    def test_g4_scores_the_whole_proxy_the_manifest_declares(self) -> None:
+        from decide.data import schema as S
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp))
+            day = make_day(Path(tmp) / "day", hub, FakeKit(), InProcessExecutor())
+            day.run(until="calibrate")
+            manifest = json.loads((day.paths.proxy / "manifest.json").read_text(encoding="utf-8"))
+            S.write_manifest(day.paths.proxy / "manifest.json", {**manifest, "rows": 81})          # a manifest that declares one row more than the parts hold
+            with self.assertRaises(R._Stop) as caught:
+                day._do_g4()
+            self.assertIn("proxy_rows_differ_from_manifest", str(caught.exception))
+
+    def test_the_shipped_floor_is_not_met_by_the_tiny_rehearsal_proxy_so_the_default_config_is_not_a_rehearsal_config(self) -> None:
+        import yaml
+
+        shipped = yaml.safe_load((Path(__file__).resolve().parents[1] / "decide" / "config.rental.yaml").read_text(encoding="utf-8"))["rental"]
+        self.assertEqual(shipped["gates"]["g4_min_rows"], 100)
+        self.assertEqual(tiny_config()["gates"]["g4_min_rows"], 10)
+
     def test_a_dry_run_prints_the_plan_and_touches_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             hub, _ = build_world(Path(tmp))
@@ -509,6 +582,20 @@ class GuardsOfTheDay(unittest.TestCase):
         G.proxy_to_requests(day.paths.proxy, requests)
         return day, hub, requests
 
+    @staticmethod
+    def settle(day, phase, detail=None) -> None:
+        """Record ``phase`` as finished, with what it was built on, as the orchestrator does (the unit tests below set states up by hand)."""
+        day.state.begin(phase)
+        day.state.done(phase, outputs={}, detail=detail or {}, built_on=day._inputs(phase))
+
+    def g4_passed(self, day) -> None:
+        """A checkpoint on the disk and a G4 that measured exactly it."""
+        from decide.rental import state as ST
+
+        day.paths.final.mkdir(parents=True, exist_ok=True)
+        (day.paths.final / "model.safetensors").write_bytes(b"weights")
+        self.settle(day, "g4", {"final_digest": ST.digest_tree(day.paths.final), "start_fingerprint": day._start_fingerprint()})
+
     def test_the_public_round_does_not_start_before_g4_passed(self) -> None:
         from decide.rental import run as R
 
@@ -544,11 +631,27 @@ class GuardsOfTheDay(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 kit = IncompleteKit(unfinished)
                 day, _, _ = self.world(tmp, kit=kit)
+                day.paths.final.mkdir(parents=True)
+                (day.paths.final / "model.safetensors").write_bytes(b"weights")
                 with self.assertRaises(R.DayError, msg=unfinished) as caught:
                     day._do_g4()
                 self.assertIn(f"ended the {unfinished} run with status 'interrupted'", str(caught.exception))
                 self.assertIn("run again", str(caught.exception))
                 self.assertFalse((day.paths.g4 / "verdict.json").exists(), "no verdict from a half run")
+
+    def test_g4_itself_refuses_a_proxy_below_the_floor_even_if_the_fetch_let_it_by(self) -> None:
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            kit = FakeKit()
+            day, _, _ = self.world(tmp, kit=kit)                                     # 16 questions
+            day.cfg["gates"]["g4_min_rows"] = 17
+            day.paths.final.mkdir(parents=True)
+            (day.paths.final / "model.safetensors").write_bytes(b"weights")
+            with self.assertRaises(R._Stop) as caught:
+                day._do_g4()
+            self.assertIn("too_few_rows", str(caught.exception))
+            self.assertIn("INVALID", str(caught.exception))
 
     def test_a_public_round_the_kit_did_not_finish_is_not_recorded_as_done(self) -> None:
         from decide.rental import run as R
@@ -557,8 +660,7 @@ class GuardsOfTheDay(unittest.TestCase):
             kit = IncompleteKit("final")
             day, _, requests = self.world(tmp, kit=kit)
             day.public_requests = requests
-            day.state.begin("g4")
-            day.state.done("g4", outputs={}, detail={})
+            self.g4_passed(day)
             with self.assertRaises(R.DayError) as caught:
                 day._do_public_round()
             self.assertIn("ended the public round with status 'interrupted'", str(caught.exception))
@@ -569,8 +671,7 @@ class GuardsOfTheDay(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             kit = FakeKit()
             day, _, requests = self.world(tmp, kit=kit)
-            day.state.begin("g4")
-            day.state.done("g4", outputs={}, detail={})
+            self.g4_passed(day)
             day.state.skip("public_round", "no public requests file")
             self.assertEqual(day.run(only=["public_round"]).phases["public_round"], "skipped", "still no file: still skipped")
             self.assertEqual(kit.calls, [])
@@ -583,21 +684,17 @@ class GuardsOfTheDay(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             day, _, _ = self.world(tmp)
             for phase, detail in (("g4", {}), ("public_round", {}), ("publish", {"uploaded": ["weights", "report"]})):
-                day.state.begin(phase)
-                day.state.done(phase, outputs={}, detail=detail)
+                self.settle(day, phase, detail)
             self.assertIn("public round", day._stale("publish") or "")
-            day.state.begin("publish")
-            day.state.done("publish", outputs={}, detail={"uploaded": ["weights", "public round", "report"]})
+            self.settle(day, "publish", {"uploaded": ["weights", "public round", "report"]})
             self.assertIsNone(day._stale("publish"))
 
     def test_a_publish_without_a_public_round_stays_done(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             day, _, _ = self.world(tmp)
-            day.state.begin("g4")
-            day.state.done("g4", outputs={}, detail={})
+            self.settle(day, "g4")
             day.state.skip("public_round", "no public requests file")
-            day.state.begin("publish")
-            day.state.done("publish", outputs={}, detail={"uploaded": ["weights", "report"]})
+            self.settle(day, "publish", {"uploaded": ["weights", "report"]})
             self.assertIsNone(day._stale("publish"))
 
     def test_a_gt_report_that_comes_after_the_training_is_refused_not_ignored(self) -> None:
@@ -655,6 +752,140 @@ class GuardsOfTheDay(unittest.TestCase):
                 self.assertIn("a lost machine would lose this phase", day._backup_warnings[0])
                 self.assertTrue(any(line.startswith("WARNING: backup of train") for line in seen), seen)
                 self.assertEqual(day.state.status("train"), "done", "the phase itself stays done")
+
+
+    def test_what_g4_measured_is_every_byte_not_the_edges_of_a_big_weight_file(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            day, _, _ = self.world(tmp)
+            weights = day.paths.final / "model.safetensors"
+            day.paths.final.mkdir(parents=True)
+            with open(weights, "wb") as handle:
+                handle.truncate(ST.FULL_LIMIT + (6 << 20))                                   # sparse: cheap to make and to read
+            self.settle(day, "g4", {"final_digest": ST.digest_tree(day.paths.final), "start_fingerprint": day._start_fingerprint()})
+            self.assertIsNone(day._measured_problem())
+            with open(weights, "r+b") as handle:
+                handle.seek(ST.FULL_LIMIT // 2)
+                handle.write(b"a flipped byte in the middle of the weights")
+            day._digests = {}
+            self.assertIn("not the one G4 measured", day._measured_problem() or "")
+
+    def test_the_digest_is_read_again_after_a_phase_that_may_have_changed_the_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            day, _, _ = self.world(tmp)
+            weights = day.paths.final / "model.safetensors"
+            day.paths.final.mkdir(parents=True)
+            weights.write_bytes(b"one")
+            before = day._final_digest()
+            self.assertEqual(day._final_digest(), before, "read once while nothing ran")
+
+            def changes_the_checkpoint():
+                weights.write_bytes(b"two")
+                return {}, {}
+
+            day._do_preflight = changes_the_checkpoint                                       # any phase will do for the rule
+            day._phase("preflight")
+            self.assertNotEqual(day._final_digest(), before)
+
+    def test_the_start_checkpoint_changing_after_g4_is_noticed_because_the_baseline_was_measured_on_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            day, _, _ = self.world(tmp)
+            day.paths.start.mkdir(parents=True)
+            (day.paths.start / "model.safetensors").write_bytes(b"start")
+            self.g4_passed(day)
+            self.assertIsNone(day._measured_problem())
+            (day.paths.start / "model.safetensors").write_bytes(b"another start checkpoint")
+            self.assertIn("start checkpoint", day._measured_problem() or "")
+
+    def test_publish_and_the_public_round_check_the_bytes_themselves_not_only_the_gate_before_them(self) -> None:
+        from decide.rental import run as R
+
+        for name, call in (("publish", lambda day: day._do_publish()), ("public round", lambda day: day._do_public_round())):
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                kit = FakeKit()
+                day, hub, requests = self.world(tmp, kit=kit)
+                day.public_requests = requests
+                self.g4_passed(day)
+                (day.paths.final / "model.safetensors").write_bytes(b"retrained after G4")
+                with self.assertRaises(R.DayError) as caught:
+                    call(day)
+                self.assertIn("G4", str(caught.exception))
+                self.assertEqual(kit.calls, [])
+
+    #: What each phase needs, written out here on purpose: a test that only loops over ``NEEDS`` would pass when a line is taken out of it.
+    EXPECTED_NEEDS = {
+        "preflight": set(), "fetch": set(), "targets": {"fetch"}, "traces": {"fetch", "targets"}, "targets_traces": {"fetch", "targets", "traces"},
+        "train": {"fetch", "targets", "traces", "targets_traces"}, "soup": {"train"}, "calibrate": {"targets", "targets_traces", "train", "soup"},
+        "g4": {"fetch", "calibrate"}, "public_round": {"g4"}, "publish": {"g4", "public_round"}}
+
+    def test_the_table_of_what_each_phase_needs_is_the_one_the_gates_rely_on(self) -> None:
+        from decide.rental import run as R
+
+        self.assertEqual({phase: {need.partition(":")[0] for need in needs} for phase, needs in R.NEEDS.items()}, self.EXPECTED_NEEDS)
+        self.assertEqual(list(R.NEEDS), list(R.PHASES), "one line per phase, in the order of the day")
+
+    def test_every_phase_needs_each_of_the_phases_it_names(self) -> None:
+        """For every phase and every phase it names, with all the others settled and that one not, the phase is refused naming it."""
+        from decide.rental import run as R
+
+        for phase, needs in R.NEEDS.items():
+            names = [need.partition(":")[0] for need in needs]
+            for missing in names:
+                with self.subTest(phase=phase, missing=missing), tempfile.TemporaryDirectory() as tmp:
+                    day, _, _ = self.world(tmp)
+                    for dep in (name for name in R.PHASES if name in names and name != missing):
+                        if dep == "g4":
+                            self.g4_passed(day)
+                        else:
+                            self.settle(day, dep)
+                    with self.assertRaises(R.DayError) as caught:
+                        day._require(phase)
+                    self.assertIn(missing, str(caught.exception))
+            with self.subTest(phase=phase, settled="all"), tempfile.TemporaryDirectory() as tmp:
+                day, _, _ = self.world(tmp)
+                for dep in (name for name in R.PHASES if name in names):
+                    self.g4_passed(day) if dep == "g4" else self.settle(day, dep)
+                self.assertEqual(set(day._require(phase)), set(names), "with everything settled the phase may run, and says what it is built on")
+
+    def test_a_phase_that_was_skipped_settles_only_the_phases_that_may_be_skipped(self) -> None:
+        from decide.rental import run as R
+
+        for dep in R.PHASES:
+            users = [phase for phase, needs in R.NEEDS.items() if dep in [need.partition(":")[0] for need in needs]]
+            if not users:
+                continue
+            with self.subTest(dep=dep), tempfile.TemporaryDirectory() as tmp:
+                day, _, _ = self.world(tmp)
+                day.state.skip(dep, "for the test")
+                if dep in R.MAY_BE_SKIPPED:
+                    self.assertIsNone(day._unsettled(dep), dep)
+                else:
+                    self.assertIn(dep, day._unsettled(dep) or "")
+
+    def test_built_on_follows_exactly_the_outputs_a_phase_reads(self) -> None:
+        """targets reads corpus and labels of the fetch, not the proxy: a new proxy leaves it, new labels make it stale."""
+        with tempfile.TemporaryDirectory() as tmp:
+            day, _, _ = self.world(tmp)
+            folders = {}
+            for name in ("corpus", "labels", "proxy", "start"):
+                folders[name] = Path(tmp) / "fetched" / name
+                folders[name].mkdir(parents=True)
+                (folders[name] / "part.txt").write_text(name, encoding="utf-8")
+
+            def fetch_again() -> None:
+                day.state.begin("fetch")
+                day.state.done("fetch", outputs=folders, detail={}, built_on=day._inputs("fetch"))
+
+            fetch_again()
+            self.settle(day, "targets")
+            self.assertIsNone(day._stale("targets"))
+            (folders["proxy"] / "part.txt").write_text("a new proxy", encoding="utf-8")
+            fetch_again()
+            self.assertIsNone(day._stale("targets"), "the proxy is not an input of targets")
+            (folders["labels"] / "part.txt").write_text("new labels", encoding="utf-8")
+            fetch_again()
+            self.assertIn("fetch", day._stale("targets") or "")
 
 
 class NoisyTrainer(InProcessExecutor):
@@ -736,13 +967,33 @@ class GatesCannotBeSkipped(unittest.TestCase):
             hub, _ = build_world(Path(tmp))
             executor = InProcessExecutor()
             work = Path(tmp) / "day"
-            make_day(work, hub, FakeKit(), executor).run(until="targets")
+            make_day(work, hub, FakeKit(), executor).run(until="targets_traces")           # traces and targets_traces are settled (skipped): only targets can refuse
             (work / "targets" / "edited-by-hand.txt").write_text("x", encoding="utf-8")
             calls = len(executor.calls)
             with self.assertRaises(R.DayError) as caught:
                 make_day(work, hub, FakeKit(), executor).run(only=["train"])
             self.assertIn("targets", str(caught.exception))
             self.assertEqual(len(executor.calls), calls)
+
+    def test_train_alone_refuses_while_the_traces_are_due(self) -> None:
+        """Traces were skipped (no GT report); the report that passes is given now; ``--only train`` must not train without the reasoning the report asks for."""
+        from decide.rental import run as R
+
+        sys.path.insert(0, str(Path(__file__).parent))
+        from test_contract_71 import FakeThinker, gt_report
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp))
+            work, executor = Path(tmp) / "day", InProcessExecutor()
+            make_day(work, hub, FakeKit(), executor).run(until="targets_traces")             # no report: traces and targets_traces are skipped
+            report = Path(tmp) / "gt-report.json"
+            report.write_text(json.dumps(gt_report()), encoding="utf-8")
+            calls = len(executor.calls)
+            with self.assertRaises(R.DayError) as caught:
+                make_day(work, hub, FakeKit(), executor, thinker=FakeThinker(), gt_report=report).run(only=["train"])
+            self.assertIn("traces", str(caught.exception))
+            self.assertIn("GT report", str(caught.exception))
+            self.assertEqual(len(executor.calls), calls, "nothing was trained")
 
     def test_g4_writes_the_digest_of_the_checkpoint_it_measured(self) -> None:
         from decide.rental import state as ST
@@ -899,6 +1150,44 @@ class RestoreStaysInsideTheWorkdir(unittest.TestCase):
         self.day.run(only=["preflight"])
         self.assertTrue((self.work / "targets" / "payload.txt").is_file())
         self.assertTrue((self.work / "state" / "day.json").is_file())
+
+
+    def test_a_restore_that_stops_halfway_leaves_no_state_file_so_the_next_run_finishes_it(self) -> None:
+        self.plant({"targets": str(self.work / "targets")})
+        real = self.hub.download
+
+        def failing(repo, dest, **kw):
+            if any(str(pattern).startswith("outputs/") for pattern in kw.get("patterns") or ()):
+                raise self.H.HubError("the connection dropped")
+            return real(repo, dest, **kw)
+
+        self.hub.download = failing
+        with self.assertRaises(self.H.HubError):
+            self.day.run(only=["preflight"])
+        self.assertFalse((self.work / "state" / "day.json").exists(), "a state without its outputs would make the next run believe they are there")
+        self.hub.download = real
+        self.day.run(only=["preflight"])
+        self.assertTrue((self.work / "targets" / "payload.txt").is_file())
+        self.assertTrue((self.work / "state" / "day.json").is_file())
+
+    def test_what_an_earlier_stopped_restore_left_in_the_scratch_folder_is_not_trusted(self) -> None:
+        self.plant({"targets": str(self.work / "targets")})
+        left = self.work / ".restore" / "outputs" / "targets" / "targets"
+        left.mkdir(parents=True)
+        (left / "left-by-someone.txt").write_text("not from the work repo\n", encoding="utf-8")
+        self.day.run(only=["preflight"])
+        self.assertTrue((self.work / "targets" / "payload.txt").is_file())
+        self.assertFalse((self.work / "targets" / "left-by-someone.txt").exists())
+
+    def test_a_state_already_on_the_disk_is_checked_too(self) -> None:
+        from decide.rental import run as R
+        from decide.rental import state as ST
+
+        (self.work / "state").mkdir(parents=True)
+        record = {"status": "done", "outputs": {"targets": {"path": str(self.outside / "targets"), "fingerprint": "0" * 64}}}
+        (self.work / "state" / "day.json").write_text(json.dumps({"version": 1, "identity": self.day.identity, "phases": {"targets": record}}), encoding="utf-8")
+        with self.assertRaises((ST.StateError, R.DayError)):
+            self.day.run(only=["preflight"])
 
 
 class OneOrchestratorPerWorkdir(unittest.TestCase):

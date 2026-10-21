@@ -189,8 +189,10 @@ def _percentile(sorted_values: Sequence[float], share: float) -> float:
 
 
 def g4_verdict(requests: Iterable[Request], new_results: Iterable[Mapping[str, Any]], baseline_results: Iterable[Mapping[str, Any]], *,
-               margin_points: float, scale: float = 100, resamples: int = 1000, seed: int = DEFAULT_SEED) -> Dict[str, Any]:
-    """PASS when the new checkpoint beats the baseline by ``margin_points`` or more on the proxy; INVALID when either side is incomplete."""
+               margin_points: float, scale: float = 100, resamples: int = 1000, seed: int = DEFAULT_SEED, min_rows: int = 0, expected_rows: Optional[int] = None) -> Dict[str, Any]:
+    """PASS when the new checkpoint beats the baseline by ``margin_points`` or more on the proxy; INVALID when either side is incomplete,
+    when the proxy has fewer than ``min_rows`` rows with a gold answer (a gain measured on two rows is not a gain), or when it does not
+    have the ``expected_rows`` its manifest declares (the whole proxy is scored, not a part of it)."""
     if isinstance(margin_points, bool) or not isinstance(margin_points, (int, float)) or margin_points < 0:
         raise ValueError(f"margin_points must be a number >= 0, got {margin_points!r}")
     if isinstance(resamples, bool) or not isinstance(resamples, int) or resamples < 1:
@@ -198,7 +200,7 @@ def g4_verdict(requests: Iterable[Request], new_results: Iterable[Mapping[str, A
     requests = list(requests)
     new_results, baseline_results = list(new_results), list(baseline_results)
     new, base = PP.score_rows(requests, new_results), PP.score_rows(requests, baseline_results)
-    verdict: Dict[str, Any] = {"margin_points": margin_points, "scale": scale, "resamples": resamples, "seed": seed, "scope": SCOPE, "status": "INVALID",
+    verdict: Dict[str, Any] = {"margin_points": margin_points, "min_rows": min_rows, "expected_rows": expected_rows, "rows": len(requests), "scale": scale, "resamples": resamples, "seed": seed, "scope": SCOPE, "status": "INVALID",
                                "reasons": [], "notes": [], "new": _score_view(new, scale), "baseline": _score_view(base, scale), "delta_points": None,
                                "ci95": None, "ci_above_zero": None, "questions": new["n"]}
     reasons: List[str] = verdict["reasons"]
@@ -209,6 +211,10 @@ def g4_verdict(requests: Iterable[Request], new_results: Iterable[Mapping[str, A
             reasons.append(f"{label}_bad_rows")
     if new["proxy"] is None or base["proxy"] is None or not new["n"] or not base["n"]:
         reasons.append("no_scored_questions")
+    if expected_rows is not None and len(requests) != expected_rows:
+        reasons.append("proxy_rows_differ_from_manifest")
+    if min_rows and sum(1 for _, _, gold, _ in requests if any(key is not None for key in gold.values())) < min_rows:
+        reasons.append("too_few_rows")
     if reasons:
         return verdict
     delta = scale * (new["proxy"] - base["proxy"])

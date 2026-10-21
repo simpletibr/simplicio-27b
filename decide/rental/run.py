@@ -15,16 +15,24 @@ a seed loses at most that seed's progress since the last ``resume.pt`` of the DI
 Gates stop the day, they never warn: label coverage (F3) before any GPU time is spent, and G4 before the public round.  The
 thinker-trace step needs a GT report that passed.  Every upload goes to a private repo.
 
+A gate cannot be walked around.  Every phase names what it needs (``NEEDS``): that must be finished, unchanged on the disk, and
+still the thing the phase was built on.  So ``--only train ...`` after a day that stopped at the label gate is refused, a
+``targets`` folder edited after its gate is not trusted, and what G4 measured is tied to the BYTES of the checkpoint (the digest
+of every byte, ``state.digest_tree``): a retrain or a hand edit after G4 makes G4 run again, on results set aside, before the
+public round or the upload.  One orchestrator at a time works in a work folder (``state/day.lock``).
+
 Exit codes: 0 the day is complete (or the dry run printed); 1 an error (the state says where; run again); 2 a usage or
 configuration error; 3 a gate stopped the day.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -46,12 +54,36 @@ from . import report as RP
 from . import traces as TR
 from .config import DEFAULT_PATH, load_rental_config
 from .profile import Profile, load_profile
+from . import state as ST
 from .state import PHASES, DayState, StateError
+
+try:                                         # POSIX; the rented day runs on a Linux box (torch.distributed.run), a laptop rehearsal on another OS has no lock
+    import fcntl
+except ImportError:                          # pragma: no cover - not on Linux
+    fcntl = None                             # type: ignore[assignment]
 
 ROOT = Path(__file__).resolve().parents[2]
 EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_STOPPED = 0, 1, 2, 3
 #: The phases whose outputs are copied to the work repo.  ``fetch`` is not: its outputs are downloads that the Hub still has.
 NOT_BACKED_UP = ("preflight", "fetch", "publish")
+#: What a phase needs before it may run: the phases that must be settled (finished or skipped, their outputs unchanged on the disk,
+#: and not due to be decided again), each optionally followed by ``:name,name`` for the outputs it is built on.  The fingerprints of
+#: those outputs are written to the state when the phase finishes (``built_on``); if they differ later, the phase is stale.
+NEEDS: Dict[str, Tuple[str, ...]] = {
+    "preflight": (),
+    "fetch": (),
+    "targets": ("fetch:corpus,labels",),
+    "traces": ("fetch:corpus", "targets"),
+    "targets_traces": ("fetch:corpus,labels", "targets", "traces"),
+    "train": ("fetch:start", "targets", "traces", "targets_traces"),
+    "soup": ("train",),
+    "calibrate": ("targets", "targets_traces", "train", "soup"),
+    "g4": ("fetch:proxy,start", "calibrate:final"),
+    "public_round": ("g4",),
+    "publish": ("g4", "public_round"),
+}
+#: The only phases that may be settled by being skipped.
+MAY_BE_SKIPPED = ("traces", "targets_traces", "soup", "public_round")
 HUB_TOKEN_NAMES = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN")
 
 
@@ -142,14 +174,54 @@ class Day:
         self._state: Optional[DayState] = None
         self._preflight: Dict[str, Any] = {}
         self._backup_warnings: List[str] = []
+        self._digests: Dict[str, str] = {}
 
     # ------------------------------------------------------------------ small things
 
     @property
     def state(self) -> DayState:
         if self._state is None:
-            self._state = DayState(self.paths.state, identity=self.identity, clock=self.clock)
+            self._state = DayState(self.paths.state, identity=self.identity, clock=self.clock, root=self.paths.workdir)
         return self._state
+
+    @contextlib.contextmanager
+    def _exclusive(self):
+        """One orchestrator at a time per work folder: two of them would train into the same folders and race on the state.
+
+        A ``flock`` on ``state/day.lock``: the kernel lets go of it when the process dies, so a lock left behind by a crash is simply taken over."""
+        lock = self.paths.state / "day.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        handle = None
+        for _ in range(3):
+            handle = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
+            if fcntl is not None:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    try:
+                        held = os.read(handle, 4096).decode("utf-8", "replace").strip() or "unknown"
+                    finally:
+                        os.close(handle)
+                    raise DayError(f"another orchestrator is working in {self.paths.workdir} ({held}); two of them would train into the same folders. "
+                                   f"Wait for it to end, or stop it, and run again (lock: {lock})") from None
+            try:
+                same_file = os.fstat(handle).st_ino == os.stat(lock).st_ino          # the holder before us may have removed it while we were opening it
+            except FileNotFoundError:
+                same_file = False
+            if same_file:
+                break
+            os.close(handle)
+            handle = None
+        if handle is None:
+            raise DayError(f"could not take the lock {lock}; run again")
+        try:
+            os.ftruncate(handle, 0)
+            os.write(handle, json.dumps({"pid": os.getpid(), "host": socket.gethostname(), "started": self.clock()}).encode("utf-8"))
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                lock.unlink()
+            os.close(handle)
 
     def _say(self, text: str) -> None:
         self.paths.logs.mkdir(parents=True, exist_ok=True)
@@ -192,11 +264,16 @@ class Day:
         for name in (*(only or ()), *([until] if until else [])):
             if name not in PHASES:
                 raise ValueError(f"unknown phase {name!r}; the phases are {', '.join(PHASES)}")
+        with self._exclusive():
+            return self._run(only=only, until=until)
+
+    def _run(self, *, only: Optional[Sequence[str]], until: Optional[str]) -> DayResult:
         check = PF.preflight(self.profile, self.cfg, self.paths.workdir, probes=self.probes, allow_cpu=self.allow_cpu, ignore_warnings=self.ignore_warnings,
                              public_requests=self._public_requests())
         if not check["ok"]:
             raise DayError("preflight failed, nothing was downloaded or started: " + "; ".join(check["problems"]))
         self._preflight = check
+        self._digests = {}
         self._restore()
         state = self.state
         stop: Optional[_Stop] = None
@@ -233,6 +310,16 @@ class Day:
         (no passing GT report) are decided again as soon as the input exists; the upload is done again when the public round finished
         after it.  The traces cannot be made after the model trained without them: that day is over, and the message says so."""
         state, status = self.state, self.state.status(phase)
+        if status == "done" and NEEDS.get(phase):
+            recorded, now = state.built_on(phase), self._inputs(phase)
+            if recorded != now:
+                changed = sorted(name for name in {*recorded, *now} if recorded.get(name) != now.get(name))
+                return (f"what it was built on changed ({', '.join(changed)})" if recorded
+                        else "the state has no record of what it was built on, so it cannot be told that the inputs are the same")
+        if phase == "g4" and status == "done":
+            problem = self._measured_problem()
+            if problem:
+                return problem
         if phase == "public_round" and status == "skipped" and self._public_requests() is not None:
             return "the public requests file is given now"
         if phase == "traces" and status == "skipped" and self._evidence()["enabled"]:
@@ -249,8 +336,100 @@ class Day:
                 return "the public round finished after the upload, and its results were not sent"
         return None
 
+    # ------------------------------------------------------------------ what a phase needs
+
+    def _inputs(self, phase: str) -> Dict[str, Any]:
+        """The fingerprints, as the state recorded them, of the outputs the phase is built on (``{dep: status}`` for a dep that has none to give)."""
+        found: Dict[str, Any] = {}
+        for need in NEEDS.get(phase, ()):
+            dep, _, names = need.partition(":")
+            status = self.state.status(dep)
+            if status != "done":
+                found[dep] = status
+                continue
+            outputs = self.state.record(dep).get("outputs", {})
+            wanted = names.split(",") if names else sorted(outputs)
+            found[dep] = {name: outputs[name]["fingerprint"] for name in wanted if name in outputs}
+        return found
+
+    def _unsettled(self, dep: str) -> Optional[str]:
+        """Why ``dep`` cannot be built on now (``None``: it is finished or legitimately skipped, unchanged on the disk, and not due to be decided again)."""
+        status = self.state.status(dep)
+        if status == "skipped" and dep in MAY_BE_SKIPPED:
+            pass
+        elif status != "done":
+            reason = self.state.record(dep).get("reason")
+            return f"{dep} is {status}" + (f" ({reason})" if reason else "") + ": it has to finish first"
+        why = self.state.why_not_reusable(dep)
+        if why:
+            return f"{why}, so {dep} cannot be trusted"
+        stale = self._stale(dep)
+        if stale:
+            return f"{dep} has to be decided again first: {stale}"
+        return None
+
+    def _require(self, phase: str) -> Dict[str, Any]:
+        """Refuse a phase whose inputs are not settled; the inputs it will be built on otherwise.  Nothing is written when it refuses.
+
+        This is what keeps ``--only`` from going around a gate: the phases it leaves out are checked, not assumed."""
+        for need in NEEDS.get(phase, ()):
+            problem = self._unsettled(need.partition(":")[0])
+            if problem:
+                raise DayError(f"{phase} cannot run now: {problem}.  Run the earlier phases first (leave out --only, or name them in it); the gates are asked again, never skipped")
+        return self._inputs(phase)
+
+    def _final_digest(self) -> Optional[str]:
+        """The digest of every byte of the checkpoint to publish (``None``: it is not there).  One pass over the files, once per phase."""
+        key = str(self.paths.final)
+        if key not in self._digests:
+            if not self.paths.final.is_dir():
+                return None
+            self._say(f"reading every byte of {self.paths.final} to tie G4 and the upload to it (one pass over the checkpoint; the time is UNVERIFIED)")
+            self._digests[key] = ST.digest_tree(self.paths.final)
+        return self._digests[key]
+
+    def _start_fingerprint(self) -> Optional[str]:
+        return ST.fingerprint(self.paths.start) if self.paths.start.exists() else None
+
+    def _baseline_identity(self) -> str:
+        """What the baseline run was made of: the bytes of the start checkpoint when it is the baseline, else the pinned repo revision."""
+        baseline = self.cfg["gates"]["baseline"]
+        if baseline == self.cfg["start"]:
+            return f"start:{self._start_fingerprint()}"
+        return f"hub:{baseline['repo']}@{baseline['revision']}"
+
+    def _measured_problem(self) -> Optional[str]:
+        """Why what is on the disk is not what G4 measured (``None``: it is).  The public round and the upload ask this, so they never run on another checkpoint."""
+        record = self.state.record("g4")
+        if record.get("status") != "done":
+            return "G4 has not passed"
+        detail = record.get("detail") or {}
+        now = self._final_digest()
+        if now is None:
+            return f"{self.paths.final} is gone, so it cannot be told that it is the checkpoint G4 measured"
+        if detail.get("final_digest") != now:
+            return (f"the checkpoint in {self.paths.final} is not the one G4 measured (its digest is {now[:12]}, G4 measured {str(detail.get('final_digest'))[:12]}): "
+                    "it was trained, calibrated or edited after G4")
+        if detail.get("start_fingerprint") != self._start_fingerprint():
+            return f"the start checkpoint in {self.paths.start} is not the one the baseline of G4 was measured on"
+        return None
+
+    def _results_for(self, out: Path, marks: Path, key: str, identity: str) -> None:
+        """The kit resumes a run from its output folder; it must only find one that was made for exactly these bytes, else that folder is set aside (never deleted)."""
+        known = json.loads(marks.read_text(encoding="utf-8")) if marks.is_file() else {}
+        if out.exists() and known.get(key) != identity:
+            number = 1
+            while out.with_name(f"{out.name}.stale-{number}").exists():
+                number += 1
+            aside = out.with_name(f"{out.name}.stale-{number}")
+            out.rename(aside)
+            self._say(f"the results in {out} were not made for these bytes; they are set aside as {aside.name} and the run starts clean")
+        known[key] = identity
+        _write_json(marks, known)
+
     def _phase(self, phase: str) -> None:
         state = self.state
+        built_on = self._require(phase)
         state.begin(phase)
         self._say(f"{phase}: begin")
         try:
@@ -270,7 +449,8 @@ class Day:
             state.fail(phase, f"{type(exc).__name__}: {exc}")
             self._say(f"{phase}: FAILED ({exc})")
             raise DayError(f"{phase} failed: {exc}") from exc
-        state.done(phase, outputs=outputs, detail=detail)
+        state.done(phase, outputs=outputs, detail=detail, built_on=built_on)
+        self._digests = {}                        # a phase may have changed the bytes (calibrate does)
         self._say(f"{phase}: done in {state.seconds(phase):.1f} s")
         self._backup(phase)
 
@@ -293,6 +473,13 @@ class Day:
                 raise DayError(f"{key}: {exc}. A folder the day reads needs a manifest.json: seal it before the upload, e.g. "
                                f"`python -c \"from decide.data import schema as S; S.seal_directory('<folder>', kind='{key}')\"` (RUNBOOK, session 4)") from None
         facts["corpus"]["screened"] = IN.check_corpus_screened(paths.corpus)
+        facts["proxy"]["rows_checked"] = rows = IN.proxy_rows(paths.proxy)
+        if rows["declared"] != rows["read"]:
+            raise DayError(f"the manifest of the proxy declares {rows['declared']} rows and its parts hold {rows['read']}: G4 scores the whole proxy, so it has to be the one that was sealed")
+        facts["proxy"]["screened"] = IN.check_proxy_screened(paths.proxy, paths.corpus)
+        if rows["with_gold"] < cfg["gates"]["g4_min_rows"]:
+            raise DayError(f"the proxy has {rows['with_gold']} rows with a gold answer and G4 needs at least {cfg['gates']['g4_min_rows']} "
+                           "(gates.g4_min_rows): the day would train for hours and then end INVALID at G4.  Build a bigger proxy, or lower the floor in the config if you decide a smaller proxy is enough")
         for item in facts.values():
             if item.get("warning"):
                 self._say(f"warning: {item['warning']}")
@@ -402,11 +589,16 @@ class Day:
 
     def _do_g4(self) -> Tuple[Dict[str, Path], Dict[str, Any]]:
         g4, gates = self.paths.g4, self.cfg["gates"]
+        measured = {"final_digest": self._final_digest(), "start_fingerprint": self._start_fingerprint(), "baseline": self._baseline_identity()}
+        if measured["final_digest"] is None:
+            raise DayError(f"{self.paths.final} is not there: calibrate makes it, and G4 measures it")
         g4.mkdir(parents=True, exist_ok=True)
         requests = g4 / "requests.jsonl"
         G.proxy_to_requests(self.paths.proxy, requests)
         outs = {"baseline": g4 / "baseline", "new": g4 / "new"}
+        identities = {"baseline": measured["baseline"], "new": measured["final_digest"]}
         for model in (self._baseline(), K.ModelRef(name="new", path=self.paths.final)):
+            self._results_for(outs[model.name], g4 / "made-for.json", model.name, identities[model.name])
             info = self.kit.run(model, requests, outs[model.name])
             if info.get("status") != "complete":
                 raise DayError(f"the kit ended the {model.name} run with status {info.get('status')!r}; run again, it resumes")
@@ -416,11 +608,14 @@ class Day:
                 raise DayError(f"the kit wrote no probability table for the {name} run ({table})")
         verdict = G.g4_verdict(G.proxy_requests(self.paths.proxy), list(PP.read_results(tables["new"])), list(PP.read_results(tables["baseline"])),
                                margin_points=gates["g4_margin_points"], scale=gates["proxy_scale"], resamples=gates["bootstrap"]["resamples"],
-                               seed=gates["bootstrap"]["seed"])
+                               seed=gates["bootstrap"]["seed"], min_rows=gates["g4_min_rows"],
+                               expected_rows=IN.proxy_rows(self.paths.proxy)["declared"])
         verdict["mode"] = "decider only: no thinker reasoning is shown to either model"
+        verdict["measured"] = measured
         _write_json(g4 / "verdict.json", verdict)
         summary = {key: verdict[key] for key in ("status", "reasons", "notes", "delta_points", "ci95", "ci_above_zero", "margin_points", "questions", "scope")}
         summary["new_points"], summary["baseline_points"] = verdict["new"]["proxy_points"], verdict["baseline"]["proxy_points"]
+        summary["final_digest"], summary["start_fingerprint"] = measured["final_digest"], measured["start_fingerprint"]
         if verdict["status"] != "PASS":
             raise _Stop(f"G4 {verdict['status']} ({', '.join(verdict['reasons'])}): the new checkpoint is {verdict['delta_points']} points over the baseline on the home proxy, "
                         f"the gate asks for {gates['g4_margin_points']}; the public round and the upload were not done")
@@ -432,6 +627,10 @@ class Day:
             raise _Skip("no public requests file: pass --public-requests with the kit's requests file of the full public suite")
         if self.state.status("g4") != "done":
             raise DayError("the public round needs G4 passed first")
+        problem = self._measured_problem()
+        if problem:
+            raise DayError(f"the public round needs G4 passed on this very checkpoint: {problem}")
+        self._results_for(self.paths.public / "run", self.paths.public / "made-for.json", "run", self._final_digest() or "")
         info = self.kit.run(K.ModelRef(name="final", path=self.paths.final), requests, self.paths.public / "run")
         if info.get("status") != "complete":
             raise DayError(f"the kit ended the public round with status {info.get('status')!r}; run again, it resumes")
@@ -442,6 +641,9 @@ class Day:
     def _do_publish(self) -> Tuple[Dict[str, Path], Dict[str, Any]]:
         if self.state.status("g4") != "done":
             raise DayError("nothing is published before G4 passes")
+        problem = self._measured_problem()
+        if problem:
+            raise DayError(f"nothing is published that G4 did not measure: {problem}")
         repo = self.cfg["hub"]["weights_repo"]
         self.hub.ensure_repo(repo, kind="model")
         revision = self.hub.upload(repo, self.paths.final, kind="model", patterns=H.CHECKPOINT_PATTERNS, message="weights from the rented day")
@@ -452,7 +654,7 @@ class Day:
         self._write_report(extra_phase_running="publish")
         self.hub.upload(repo, self.paths.report, kind="model", path_in_repo="day", patterns=["day-report.json"], message="report of the day")
         uploaded.append("report")
-        return {}, {"repo": repo, "weights_revision": revision, "uploaded": uploaded}
+        return {}, {"repo": repo, "weights_revision": revision, "uploaded": uploaded, "final_digest": self._final_digest()}
 
     # ------------------------------------------------------------------ backup, restore, report
 
@@ -472,6 +674,11 @@ class Day:
             self._say(f"WARNING: {text}")
 
     def _restore(self) -> None:
+        """Bring the state and the outputs of an earlier session back from the work repo.
+
+        The state is read as INPUT: it is parsed and every path it names is checked (strictly inside the work folder, no ``..``, no
+        backslash or drive letter, no link out, an output name that is one plain part) and its identity compared BEFORE a byte is
+        moved.  The state file itself is put in place last, so a restore that stops halfway is finished by the next run."""
         paths, repo = self.paths, self.cfg["hub"]["work_repo"]
         if (paths.state / "day.json").exists():
             return
@@ -482,11 +689,15 @@ class Day:
             return
         self._say(f"restoring the state and the outputs of an earlier session from {repo}")
         scratch = paths.workdir / ".restore"
+        shutil.rmtree(scratch, ignore_errors=True)                # nothing left over from a stopped restore is trusted
         try:
             self.hub.download(repo, scratch, kind="model", patterns=["state/day.json"])
-            paths.state.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(scratch / "state" / "day.json"), str(paths.state / "day.json"))
-            earlier = json.loads((paths.state / "day.json").read_text(encoding="utf-8"))["phases"]
+            downloaded = scratch / "state" / "day.json"
+            try:
+                text = downloaded.read_text(encoding="utf-8")
+            except (OSError, ValueError) as exc:
+                raise StateError(f"the state in {repo} cannot be read ({exc}); nothing was restored") from exc
+            earlier = ST.parse_state(text, identity=self.identity, root=paths.workdir, label=f"the state in {repo}")
             for phase, record in earlier.items():
                 if record.get("status") != "done" or phase in NOT_BACKED_UP:
                     continue
@@ -499,6 +710,8 @@ class Day:
                     if source.is_dir():
                         destination.parent.mkdir(parents=True, exist_ok=True)
                         shutil.move(str(source), str(destination))
+            paths.state.mkdir(parents=True, exist_ok=True)
+            os.replace(downloaded, paths.state / "day.json")
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
 

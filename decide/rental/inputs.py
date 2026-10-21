@@ -5,7 +5,9 @@
   readout head and the decision config;
 * a dataset folder is read through its ``manifest.json``: every part is checked against its sha256 (``decide.data.schema``);
 * the corpus is the output of ``decide.data.decontaminate`` (SCHEMA.md section 11), which is what ``build_targets`` demands: the day
-  says so at the fetch, before the 52 GB checkpoint is downloaded and before any GPU hour, not in the middle of the targets phase.
+  says so at the fetch, before the 52 GB checkpoint is downloaded and before any GPU hour, not in the middle of the targets phase;
+* the proxy G4 will score on is the one that corpus was screened against (``check_proxy_screened``), and it has enough questions
+  (``proxy_rows``).  A G4 on a proxy that leaked into the training data measures memory, not the checkpoint.
 """
 from __future__ import annotations
 
@@ -85,6 +87,58 @@ def verify_dataset(path: "str | os.PathLike[str]", *, name: str, manifest_requir
     else:
         facts["warning"] = f"{name}: no {S.MANIFEST_NAME}, so its parts are not checked against a sha256 (they are read by name)"
     return facts
+
+
+def _json_object(path: Path) -> Dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def proxy_rows(proxy: "str | os.PathLike[str]") -> Dict[str, Optional[int]]:
+    """The rows the manifest of the proxy declares, the rows its parts hold, and how many of those have a gold answer (the ones G4 scores)."""
+    declared = _json_object(Path(proxy) / S.MANIFEST_NAME).get("rows")
+    read = with_gold = 0
+    for row in S.read_corpus(proxy):
+        read += 1
+        _, gold = S.parse_row(row)
+        with_gold += 1 if any(key is not None for key in gold.values()) else 0
+    return {"declared": declared if isinstance(declared, int) else None, "read": read, "with_gold": with_gold}
+
+
+def check_proxy_screened(proxy: "str | os.PathLike[str]", corpus: "str | os.PathLike[str]") -> Dict[str, Any]:
+    """The proxy was built and checked against THIS clean corpus, as far as the files say; ``InputsError`` otherwise.
+
+    * its ``corpus_leak_check`` says the second pass of ``proxy_private build --corpus <clean corpus>`` ran and found no leak;
+    * it shares no source with the corpus (``sources`` of the two manifests);
+    * ``decontamination.json`` of the corpus lists a reference with as many requests as the proxy has rows, which is what it has when
+      ``decontaminate`` was given the proxy.  (The reference digest it also records is over the proxy of the FIRST pass, before the
+      second pass rewrote ``manifest.json``, so it cannot be compared with the folder that comes to the day; the count can.)
+
+    What this cannot know: that the reference with that many requests WAS this proxy, and that the corpus was also screened against the
+    sample of the GT gate (the public suite given to ``decontaminate`` covers it, if it was given).  Both stay with the RUNBOOK."""
+    proxy_root, corpus_root = Path(proxy), Path(corpus)
+    proxy_manifest = _json_object(proxy_root / S.MANIFEST_NAME)
+    corpus_manifest = _json_object(corpus_root / S.MANIFEST_NAME)
+    report = _json_object(corpus_root / "decontamination.json")
+    rows = proxy_manifest.get("rows")
+    problems = []
+    leak = proxy_manifest.get("corpus_leak_check")
+    if not (isinstance(leak, dict) and leak.get("checked") is True and leak.get("leaks") == 0):
+        problems.append(f"its manifest does not say that the second pass found no corpus request in it (corpus_leak_check is {leak!r}): "
+                        "build the proxy again with --corpus <the clean corpus> (RUNBOOK, session 1, step 6)")
+    shared = sorted(set(corpus_manifest.get("sources") or {}) & set(proxy_manifest.get("sources") or {}))
+    if shared:
+        problems.append(f"{', '.join(shared)} are sources of both the corpus and the proxy")
+    references = [ref for ref in report.get("references") or [] if isinstance(ref, dict)]
+    if not isinstance(rows, int) or not any(ref.get("requests") == rows for ref in references):
+        problems.append(f"decontamination.json of the corpus lists no reference with {rows} requests, the size of this proxy "
+                        f"(it lists {[ref.get('requests') for ref in references]}): decontaminate was run without --reference <the proxy> (RUNBOOK, session 1, step 5)")
+    if problems:
+        raise InputsError("proxy: " + "; ".join(problems))
+    return {"rows": rows, "references": [ref.get("path") for ref in references]}
 
 
 def check_corpus_screened(path: "str | os.PathLike[str]", *, name: str = "corpus") -> Dict[str, Any]:

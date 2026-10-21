@@ -680,11 +680,36 @@ class DayStateFromTheOutsideContract(unittest.TestCase):
             os.symlink(Path(tmp) / "elsewhere", root / "link")
             good = [str(root / "targets"), str(root / "runs" / "seed1" / "final")]
             bad = [str(Path(tmp) / "elsewhere" / "x"), str(root / "a" / ".." / ".." / "x"), "..\\x", "C:\\x", str(root / "t\\..\\..\\x"), str(root / "link" / "x"),
-                   str(root), str(root / "state" / ".." / ".."), "", 7, None]
+                   str(root), str(root / "state" / ".." / ".."), str(root / "state" / "x"), str(root / ".restore" / "outputs"), "", 7, None]
             for path in good:
                 self.assertIsNone(ST.output_path_problem(root, path), path)
             for path in bad:
                 self.assertIsNotNone(ST.output_path_problem(root, path), repr(path))
+
+    def test_a_path_spelled_with_dotdot_is_refused_even_when_it_ends_up_inside_the_root(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "day"
+            (root / "a").mkdir(parents=True)
+            self.assertIsNone(ST.output_path_problem(root, str(root / "targets")))
+            self.assertIn("..", ST.output_path_problem(root, str(root / "a" / ".." / "targets")) or "")
+
+    def test_a_drive_letter_is_refused_even_when_the_current_folder_is_the_root(self) -> None:
+        """On this system ``C:/x`` is a plain relative name; in a state file written elsewhere it is a drive.  It must not be read as a folder of the day."""
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "day"
+            root.mkdir()
+            here = os.getcwd()
+            os.chdir(root)
+            try:
+                for path in ("C:/outside/targets", "c:targets"):
+                    self.assertIn("drive", ST.output_path_problem(root, path) or "", path)
+                self.assertIsNotNone(ST.output_path_problem(root, "Z:\\x"))
+            finally:
+                os.chdir(here)
 
     def test_a_state_that_names_a_path_outside_the_root_is_not_loaded(self) -> None:
         from decide.rental import state as ST
@@ -1020,6 +1045,32 @@ class G4Contract(unittest.TestCase):
         got = self.verdict(requests, new, base)
         self.assertEqual(got["status"], "FAIL")
         self.assertLess(got["delta_points"], 0)
+
+    def test_a_part_of_the_proxy_is_not_the_proxy_its_manifest_declares(self) -> None:
+        requests, new, base = self.fixture(50, 40, 20)                       # 100 rows
+        self.assertEqual(self.verdict(requests, new, base, expected_rows=100)["status"], "PASS")
+        got = self.verdict(requests[:-1], new, base, expected_rows=100)
+        self.assertEqual(got["status"], "INVALID")
+        self.assertIn("proxy_rows_differ_from_manifest", got["reasons"])
+        self.assertEqual((got["expected_rows"], got["rows"]), (100, 99))
+        self.assertNotIn("proxy_rows_differ_from_manifest", self.verdict(requests, new, base)["reasons"], "no manifest rows given: not checked")
+
+    def test_a_proxy_with_too_few_rows_is_invalid_however_large_the_gain(self) -> None:
+        requests, new, base = self.fixture(1, 1, 0)                          # two questions: both right for the new, both wrong for the baseline
+        got = self.verdict(requests, new, base, min_rows=100)
+        self.assertEqual(got["status"], "INVALID")
+        self.assertIn("too_few_rows", got["reasons"])
+        self.assertEqual(got["min_rows"], 100)
+        self.assertEqual(got["questions"], 2)
+
+    def test_exactly_the_minimum_number_of_questions_is_enough(self) -> None:
+        requests, new, base = self.fixture(50, 40, 20)                       # 100 questions
+        self.assertEqual(self.verdict(requests, new, base, min_rows=100)["status"], "PASS")
+        self.assertIn("too_few_rows", self.verdict(requests, new, base, min_rows=101)["reasons"])
+
+    def test_without_a_minimum_the_verdict_is_what_it_was(self) -> None:
+        requests, new, base = self.fixture(1, 1, 0)
+        self.assertNotIn("too_few_rows", self.verdict(requests, new, base)["reasons"])
 
     def test_the_margin_is_a_parameter_and_there_is_no_way_to_skip_the_gate(self) -> None:
         import inspect
@@ -1659,7 +1710,8 @@ class LocalHubContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             hub = self.hub(tmp)
             hub.ensure_repo("me/day", kind="model")
-            for bad in (".env", "hf_token.json", "my-secret.json", "id_rsa", "cert.pem", "api.key", "sub/.env.local"):
+            for bad in (".env", "hf_token.json", "my-secret.json", "id_rsa", "cert.pem", "api.key", "sub/.env.local",
+                        "apikey.txt", "api_key.json", "auth.json", "oauth.json", ".netrc", ".npmrc", ".pypirc", "password.txt", "passwd", "openai-api-key"):
                 src = self.folder(Path(tmp) / bad.replace("/", "_"), {"ok.json": b"{}", bad: b"x"})
                 with self.assertRaises(H.HubError) as caught:
                     hub.upload("me/day", src, kind="model", patterns=["*.json", "*", ".env*"])
@@ -1670,9 +1722,10 @@ class LocalHubContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             hub = self.hub(tmp)
             hub.ensure_repo("me/day", kind="model")
-            names = ["added_tokens.json", "special_tokens_map.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors.index.json", "readout.safetensors"]
+            names = ["added_tokens.json", "special_tokens_map.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors.index.json", "readout.safetensors",
+                     "authors.json", "generation_config.json", "chat_template.jinja"]
             src = self.folder(tmp, {name: b"{}" for name in names})
-            hub.upload("me/day", src, kind="model", patterns=["*.json", "*.safetensors"])
+            hub.upload("me/day", src, kind="model", patterns=["*.json", "*.safetensors", "*.jinja"])
             self.assertEqual(hub.files("me/day", kind="model"), sorted(names))
 
     def test_the_checkpoint_patterns_take_the_weights_and_the_configs_and_not_the_training_state(self) -> None:
@@ -2262,6 +2315,38 @@ class PreflightContract(unittest.TestCase):
         cfg["gates"]["baseline"]["revision"] = "abc"
         self.assertIn("revision", " ".join(self.check(cfg=cfg)["problems"]))
 
+    def test_a_gate_that_asks_for_nothing_is_a_problem(self) -> None:
+        cases = {"gates.g4_margin_points": (0, 0.0, -1, True, "1.5", None), "gates.label_coverage": (0.01, 0.5, 0.89, 1.5, True, "0.95", None),
+                 "gates.g4_min_rows": (0, -5, 1.5, True, "100", None)}
+        for dotted, values in cases.items():
+            for value in values:
+                with self.subTest(dotted, value=value):
+                    cfg = rental_cfg()
+                    cfg["gates"][dotted.split(".")[1]] = value
+                    got = self.check(cfg=cfg)
+                    self.assertFalse(got["ok"], got)
+                    self.assertIn(dotted, " ".join(got["problems"]))
+        cfg = rental_cfg()
+        del cfg["gates"]["g4_min_rows"]
+        self.assertIn("gates.g4_min_rows", " ".join(self.check(cfg=cfg)["problems"]))
+
+    def test_the_shipped_gates_pass_and_the_edge_values_are_accepted(self) -> None:
+        for name, value in (("label_coverage", 0.9), ("label_coverage", 1.0), ("g4_margin_points", 0.1), ("g4_min_rows", 1)):
+            cfg = rental_cfg()
+            cfg["gates"][name] = value
+            self.assertTrue(self.check(cfg=cfg)["ok"], (name, value))
+
+    def test_two_roles_in_one_repo_are_a_problem(self) -> None:
+        """The backup of the day holds the private proxy with its gold (g4/requests.jsonl): it must not go to the repo of the weights."""
+        for first, second in (("work_repo", "weights_repo"), ("work_repo", "data_repo"), ("data_repo", "weights_repo")):
+            with self.subTest(first=first, second=second):
+                cfg = rental_cfg()
+                cfg["hub"][second] = cfg["hub"][first]
+                got = self.check(cfg=cfg)
+                self.assertFalse(got["ok"], got)
+                self.assertIn(f"hub.{first}", " ".join(got["problems"]))
+                self.assertIn(f"hub.{second}", " ".join(got["problems"]))
+
     def test_a_public_requests_file_that_is_not_there_is_a_problem(self) -> None:
         self.assertIn("public", " ".join(self.check(public_requests=Path("/nonexistent/requests.jsonl"))["problems"]))
 
@@ -2487,6 +2572,65 @@ class DatasetInputsContract(unittest.TestCase):
             facts = IN.check_corpus_screened(decontaminated(self.corpus(tmp, "clean")))
             self.assertEqual(facts["tool"], "decontaminate")
             self.assertEqual(len(facts["decontamination_sha256"]), 64)
+
+    def sealed_pair(self, tmp, *, leak=None, corpus_sources=None, references=None, proxy_sources=None, rows=3):
+        """A clean corpus and a proxy as ``decontaminate`` and the second pass of ``proxy_private build`` leave them, in the fields the day reads."""
+        from decide.data import schema as S
+
+        corpus = self.corpus(tmp, "clean")
+        from decide_b_support import decontaminated
+
+        decontaminated(corpus)
+        manifest = json.loads((corpus / "manifest.json").read_text(encoding="utf-8"))
+        manifest["sources"] = corpus_sources if corpus_sources is not None else {"alpha": {"rows": 3}}
+        S.write_manifest(corpus / "manifest.json", manifest)
+        report = json.loads((corpus / "decontamination.json").read_text(encoding="utf-8"))
+        report["references"] = references if references is not None else [{"path": "requests/suite-0.3", "requests": 900, "rows": 900, "skipped": 0, "sha256": "a" * 64},
+                                                                              {"path": "work/proxy", "requests": rows, "rows": rows, "skipped": 0, "sha256": "b" * 64}]
+        S.write_manifest(corpus / "decontamination.json", report)
+        proxy = Path(tmp) / "proxy"
+        S.write_corpus_part(proxy / "proxy.parquet", [S.corpus_row(example_id=f"p:{i}", source="held", license="mit", split="dev", lang="en",
+                                                                     request={"state": f"q{i}", "questions": {"q1": {"type": "choice", "instructions": "pick", "criteria": {"A": "a", "B": "b"}}}},
+                                                                     gold={"q1": "A"}) for i in range(rows)])
+        S.seal_directory(proxy, kind="proxy", extra={"sources": proxy_sources if proxy_sources is not None else {"held": {"rows": rows}},
+                                                      "corpus_leak_check": leak if leak is not None else {"checked": True, "leaks": 0, "examples": []}})
+        return corpus, proxy
+
+    def test_a_proxy_that_the_clean_corpus_was_checked_against_is_accepted(self) -> None:
+        from decide.rental import inputs as IN
+
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus, proxy = self.sealed_pair(tmp)
+            facts = IN.check_proxy_screened(proxy, corpus)
+            self.assertEqual(facts["rows"], 3)
+
+    def test_a_proxy_is_refused_when_the_corpus_was_not_checked_against_it(self) -> None:
+        from decide.rental import inputs as IN
+
+        cases = {
+            "the second pass was never run": dict(leak={"checked": False, "sources_only": True}),
+            "the second pass found a leak": dict(leak={"checked": True, "leaks": 2, "examples": []}),
+            "a source in both": dict(corpus_sources={"alpha": {"rows": 3}, "held": {"rows": 4}}),
+            "decontaminate was not given the proxy": dict(references=[{"path": "requests/suite-0.3", "requests": 900, "rows": 900, "skipped": 0, "sha256": "a" * 64}]),
+            "decontaminate was given another proxy": dict(references=[{"path": "work/proxy", "requests": 7, "rows": 7, "skipped": 0, "sha256": "b" * 64}]),
+        }
+        for label, kw in cases.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                corpus, proxy = self.sealed_pair(tmp, **kw)
+                with self.assertRaises(IN.InputsError) as caught:
+                    IN.check_proxy_screened(proxy, corpus)
+                self.assertIn("proxy", str(caught.exception))
+
+    def test_the_rows_of_a_proxy_are_the_declared_the_read_and_the_ones_with_a_gold_answer(self) -> None:
+        from decide.data import schema as S
+        from decide.rental import inputs as IN
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _, proxy = self.sealed_pair(tmp, rows=5)
+            self.assertEqual(IN.proxy_rows(proxy), {"declared": 5, "read": 5, "with_gold": 5})
+            manifest = json.loads((proxy / "manifest.json").read_text(encoding="utf-8"))
+            S.write_manifest(proxy / "manifest.json", {**manifest, "rows": 4})
+            self.assertEqual(IN.proxy_rows(proxy), {"declared": 4, "read": 5, "with_gold": 5})
 
     def test_a_corpus_parquet_file_is_not_a_screened_corpus(self) -> None:
         from decide.rental import inputs as IN

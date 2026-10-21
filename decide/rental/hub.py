@@ -28,6 +28,7 @@ CHECKPOINT_PATTERNS = ("*.safetensors", "*.json", "*.jinja", "*.txt", "tokenizer
 KINDS = ("model", "dataset")
 #: A tokenizer's ``added_tokens.json`` and ``special_tokens_map.json`` are not credentials; ``token.json`` and ``hf_token.txt`` are.
 _SECRET = re.compile(r"(^\.env)|((^|[_-])(hf|access|api|auth|bearer)[_-]?tokens?([._-]|$))|(^tokens?(\.[a-z0-9]+)?$)|secret|credential"
+                     r"|(^|[_-])api[_-]?keys?([._-]|$)|(^|[_-])o?auth([._-]|$)|passw(or)?d|^\.(netrc|npmrc|pypirc|pgpass)$"
                      r"|^id_(rsa|dsa|ecdsa|ed25519)|\.(pem|key|p12|pfx)$", re.IGNORECASE)
 
 

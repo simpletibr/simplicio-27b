@@ -36,9 +36,10 @@ class MutantsApply(unittest.TestCase):
         for name in ("gates", "state", "plan", "run", "hub", "inputs", "kit", "proxy_eval", "traces"):
             self.assertIn(f"decide/rental/{name}.py", files)
 
-    def test_only_the_unreachable_mutant_is_marked_equivalent_and_says_why(self) -> None:
-        """G12: the two runs of G4 have been scored by the same rules on the same requests before the line is reached."""
-        self.assertEqual([m.id for m in MC.MUTANTS if m.equivalent], ["G12"])
+    def test_only_the_unreachable_mutants_are_marked_equivalent_and_say_why(self) -> None:
+        """G12: the two runs of G4 have been scored by the same rules on the same requests before the line is reached.  R39: the inode check of the
+        lock guards a race between two processes that a test cannot place."""
+        self.assertEqual([m.id for m in MC.MUTANTS if m.equivalent], ["G12", "R39"])
         for m in MC.MUTANTS:
             if m.equivalent:
                 self.assertGreater(len(m.equivalent), 60, f"{m.id}: say why no test can tell it from the original")

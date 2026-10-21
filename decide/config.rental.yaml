@@ -24,7 +24,8 @@ rental:
     baseline:                              # o modelo que o G4 bate: o mesmo de onde o dia parte
       repo: perplexity-ai/pplx-decider-v1.2
       revision: cce0f3f80033e9d89d80831d5281fd72124aacce
-    g4_margin_points: 1.5                  # G4: >= baseline + 1,5 pontos do privado caseiro
+    g4_margin_points: 1.5                  # G4: >= baseline + 1,5 pontos do privado caseiro (tem de ser > 0)
+    g4_min_rows: 100                  # G4 só vale com pelo menos isto de linhas com gold no privado (senão INVALID) e pontua o proxy INTEIRO que o manifest declara; piso contra n minúsculo, não é um cálculo de poder (UNVERIFIED). O padrão de data é per_source: 300 por fonte (config.data.yaml)
     proxy_scale: 100                       # pontos = 100 x a habilidade média corrigida pelo acaso (proxy_private.score_rows)
     label_coverage: 0.95                   # F3: >= 95% do corpus rotulado
     bootstrap: {resamples: 1000, seed: 20261021}
