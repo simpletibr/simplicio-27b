@@ -149,6 +149,53 @@ class ConfigContract(HermeticTestCase):
                 with self.assertRaises(C.ConfigError):
                     C.validate(r)
 
+    def test_every_number_the_kit_reads_has_a_range(self):
+        """Eight keys were still taken as they came: a negative batch, a gate of 5, a chunk of zero megabytes went through and failed far from here."""
+        bad = {
+            "eval.batch_tokens": [-1, 0, "x", 1.5, True, None],
+            "eval.max_proxy_tokens": [-5, 0, "6000", 2.5, True],
+            "eval.min_per_benchmark": [0, -1, "4", 1.5],
+            "eval.max_gpu_gb": [0, -8, "24", True],
+            "eval.seed": ["x", 1.5, True, None],
+            "merge.chunk_mb": [0, -256, "256", 2.5, True],
+            "budget.weekly_gpu_hours": [-3, "30", True, float("nan")],
+            "calibration.by": ["bogus", "", "Question_Type", 3, None],
+            "fidelity.min_rows": [-1, 0, "500", 1.5, True],
+            "fidelity.seed": ["x", 1.5, True],
+            "gates.g0_agree_4b": [5, -0.1, 1.01, "0.98", True, float("nan")],
+            "gates.g0_agree_27b_nf4": [5, -0.1, "0.95", True],
+            "gates.g2_min_delta": ["0", True, float("inf"), None],
+            "gates.g3_min_delta": ["0", True, float("nan")],
+            "gates.calib_min_delta": ["0", True],
+        }
+        good = {
+            "eval.batch_tokens": [1, 4096], "eval.max_proxy_tokens": [None, 1, 6000], "eval.min_per_benchmark": [1, 4],
+            "eval.max_gpu_gb": [None, 0.5, 24], "eval.seed": [0, 20261021], "merge.chunk_mb": [1, 256], "budget.weekly_gpu_hours": [0, 30, 12.5],
+            "calibration.by": ["question_type", "type_k"], "fidelity.min_rows": [1, 500], "fidelity.seed": [0, 7],
+            "gates.g0_agree_4b": [0, 0.98, 1], "gates.g0_agree_27b_nf4": [0.95], "gates.g2_min_delta": [-0.01, 0, 0.02], "gates.g3_min_delta": [0.0],
+            "gates.calib_min_delta": [-1, 0.0],
+        }
+        for path, values in bad.items():
+            section, key = path.split(".")
+            for value in values:
+                with self.subTest(f"{path} = {value!r}"):
+                    r = self.raw()
+                    r.setdefault(section, {})[key] = value
+                    with self.assertRaisesRegex(C.ConfigError, path.replace(".", r"\.")):
+                        C.validate(r)
+        for path, values in good.items():
+            section, key = path.split(".")
+            for value in values:
+                with self.subTest(f"{path} = {value!r} is fine"):
+                    r = self.raw()
+                    r.setdefault(section, {})[key] = value
+                    C.validate(r)
+
+    def test_the_groupings_the_config_accepts_are_the_ones_calibration_fits(self):
+        from decide.sd import calibrate
+
+        self.assertEqual(C.GROUPINGS, calibrate.GROUPINGS)
+
     # the commits the Hub reported on 2026-10-21 (read-only API calls; the review measured the same values)
     PINS = {
         "models.base": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",

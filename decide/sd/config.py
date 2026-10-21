@@ -46,6 +46,7 @@ SCHEMA: Dict[str, Any] = {
               "pricing_as_of": None},
     "kit": {"repo": None, "commit": None},
 }
+GROUPINGS = ("question_type", "type_k")      # what calibrate.fit_groups(by=...) can fit (a test keeps the two lists equal)
 REVISION = re.compile(r"[0-9a-f]{40}")      # a Hub revision is a full commit hash: a branch ("main") moves under a sweep that takes days
 
 
@@ -249,6 +250,23 @@ def validate(raw: Mapping, foreign: Iterable[str] = ()) -> None:
     need(_whole(raw["tta"].get("rotations", 0)) and raw["tta"].get("rotations", 0) >= 0, "tta.rotations must be a whole number >= 0")
     need(raw["tta"].get("mode", "reverse") in TTA_MODES, f"tta.mode must be one of {TTA_MODES}")
     need(raw["merge"].get("head", "anchor") in ("anchor", "refit"), "merge.head must be anchor|refit")
+    # the numbers the rest of the kit takes as they come: each has a range, so a typo fails here and not a night later
+    positive = lambda x: _whole(x) and x >= 1                                      # noqa: E731
+    need(positive(e.get("batch_tokens", 4096)), "eval.batch_tokens must be a whole number >= 1")
+    need(e.get("max_proxy_tokens") is None or positive(e["max_proxy_tokens"]), "eval.max_proxy_tokens must be a whole number >= 1 (or null for no limit)")
+    need(positive(e.get("min_per_benchmark", 1)), "eval.min_per_benchmark must be a whole number >= 1")
+    need(e.get("max_gpu_gb") is None or (_number(e["max_gpu_gb"]) and e["max_gpu_gb"] > 0), "eval.max_gpu_gb must be a number > 0 (or null)")
+    need(_whole(e.get("seed", 0)), "eval.seed must be a whole number")
+    need(positive(m.get("chunk_mb", 256)), "merge.chunk_mb must be a whole number >= 1")
+    need(_number(b.get("weekly_gpu_hours", 0)) and b.get("weekly_gpu_hours", 0) >= 0, "budget.weekly_gpu_hours must be a number >= 0")
+    need(c.get("by", "question_type") in GROUPINGS, f"calibration.by must be one of {GROUPINGS}")
+    fid, gates = raw.get("fidelity") or {}, raw.get("gates") or {}
+    need(positive(fid.get("min_rows", 1)), "fidelity.min_rows must be a whole number >= 1")
+    need(_whole(fid.get("seed", 0)), "fidelity.seed must be a whole number")
+    for key in ("g0_agree_4b", "g0_agree_27b_nf4"):
+        need(_number(gates.get(key, 0)) and 0 <= gates.get(key, 0) <= 1, f"gates.{key} must be a number in [0, 1]")
+    for key in ("g2_min_delta", "g3_min_delta", "calib_min_delta"):
+        need(_number(gates.get(key, 0)), f"gates.{key} must be a number")
 
 
 @dataclass(frozen=True)
