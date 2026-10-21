@@ -53,6 +53,7 @@ TERMINAL_STATUSES = C.TERMINAL_STATUSES      # anything else (`error`) is transi
 REPORT_FORMAT = "think-gt-report/2"
 MIN_THOUGHT_SHARE = 0.5                      # thinking must show in at least this share of the rows that answered
 MAX_NO_USAGE_SHARE = 0.5                     # and the tokens of more than this share of them must have been counted
+MAX_UNREADABLE_SHARE = 0.10                  # rows that hid their reasoning or never closed it: past this share of the rows that answered, the run is not a verdict
 
 
 class PackError(ValueError):
@@ -406,6 +407,7 @@ def thinker_stats(s: Scored, benchmarks: Optional[Sequence[int]] = None) -> Dict
         "garbled": sum(bool(r["garbled"]) if "garbled" in r else looks_garbled(r.get("reasoning")) or looks_garbled(r.get("final")) for r in recs),
         "thought": sum(r.get("thought") is True for r in answered),
         "no_close": sum(bool(r.get("no_close")) for r in answered),
+        "reasoning_hidden": sum(bool(r.get("reasoning_hidden")) for r in answered),
         "read_by_fallback": sum(_read_by_fallback(r) for r in answered),
         "usage_missing": sum(not (isinstance(r.get("tokens"), dict) and r["tokens"].get("completion") is not None) for r in answered),
         "endpoints": sorted({r["endpoint"] for r in recs if r.get("endpoint")}),
@@ -486,18 +488,30 @@ def exploratory_reasons(cfg: Optional[Dict[str, Any]], st: Dict[str, Any], *, B:
     out += thinker_deviations(cfg)
     if st["ok"] and st["usage_missing"] > MAX_NO_USAGE_SHARE * st["ok"]:
         out.append("usage_missing")
+    if st.get("reasoning_hidden"):
+        out.append("reasoning_hidden")
+    if len(st.get("endpoints") or []) > 1:
+        out.append("mixed_endpoints")
     return out
 
 
 def inconclusive_reasons(cfg: Optional[Dict[str, Any]], st: Dict[str, Any]) -> List[str]:
-    """A thinker that was not seen thinking is not the thing the gate measures, whatever the numbers say."""
+    """A thinker that was not seen thinking is not the thing the gate measures, whatever the numbers say.
+
+    Nor is a run in which more than a tenth of the rows that answered hid their reasoning (a provider that thinks and shows
+    only the reply) or never closed it: those rows say nothing about the model, and a FAIL built on them would send the
+    plan to the decider-only mode (ADR 0004) on a measurement of the provider.
+    """
     if not thinking_requested(cfg):
         return []
     if st["rows"] and not st["ok"]:
         return ["no_replies"]
+    out = []
     if st["ok"] and st["thought"] < MIN_THOUGHT_SHARE * st["ok"]:
-        return ["thinking_not_detected"]
-    return []
+        out.append("thinking_not_detected")
+    if st["ok"] and st.get("reasoning_hidden", 0) + st.get("no_close", 0) > MAX_UNREADABLE_SHARE * st["ok"]:
+        out.append("reasoning_hidden_or_not_closed")
+    return out
 
 
 def build_report(pack_rows: Iterable[dict], records: Iterable[dict], *, header: Optional[dict] = None,
@@ -558,7 +572,7 @@ def build_report(pack_rows: Iterable[dict], records: Iterable[dict], *, header: 
     verdict = {**rule, "outcome": rule["status"], "outcome_reasons": rule["reasons"], "delta_pts": delta, "ci": [lo, hi],
                "ci_reselected": list(percentile_ci(reselected)), "reference": ref, "min_delta_pts": min_delta,
                "thinker_macro_acc": s.macro_acc(THINKER), "reference_macro_acc": s.macro_acc(ref),
-               "incomplete": incomplete, "exploratory": exploratory, "inconclusive": inconclusive}
+               "incomplete": incomplete, "exploratory": exploratory, "inconclusive": inconclusive, "gave_up": st["gave_up"]}
     if inconclusive:
         verdict.update(status="INCONCLUSIVE", reasons=inconclusive)
     elif incomplete:
@@ -582,11 +596,14 @@ OFFICIAL = ("PASS", "FAIL")
 
 def _why_inconclusive(report: Dict[str, Any]) -> str:
     v, st = report["verdict"], report["thinker_stats"]
-    return {"no_scored_rows": "no thinker row scored yet",
+    texts = {"no_scored_rows": "no thinker row scored yet",
             "no_decision_models": "the pack has no decision model",
             "no_replies": "no scored row got a reply from the thinker",
             "thinking_not_detected": (f"thinking not detected: {st['thought']} of {st['ok']} rows that answered show thinking (reasoning apart, a closing tag "
-                                      f"or {C.MIN_THINKING_TOKENS}+ tokens), so the endpoint probably ignored the request for it")}.get(v["reasons"][0], v["reasons"][0])
+                                      f"or {C.MIN_THINKING_TOKENS}+ tokens), so the endpoint probably ignored the request for it"),
+            "reasoning_hidden_or_not_closed": (f"{st['reasoning_hidden'] + st['no_close']} of {st['ok']} rows that answered hid their reasoning ({st['reasoning_hidden']}) "
+                                               f"or never closed it ({st['no_close']}): the run measures the provider, not the model")}
+    return "; ".join(texts.get(r, r) for r in v["reasons"])
 
 
 def verdict_line(report: Dict[str, Any]) -> str:
@@ -607,8 +624,11 @@ def verdict_line(report: Dict[str, Any]) -> str:
         parts = [head, *numbers, rule]
         if status == "FAIL" and v["can_still_pass"]:
             parts.append(f"the CI still holds {_pts(v['min_delta_pts'])}: more rows could pass")
+        quant = ((report.get("thinker") or {}).get("config") or {}).get("quantization")
+        if status == "FAIL" and quant not in (None, "none"):
+            parts.append(f"one-sided ({quant})")                 # a FAIL in 4 bits does not prove that bf16 or FP8 would fail
         parts.append(scope)
-        return " | ".join(parts)
+        return " | ".join(parts) + _also(v, status)
     inc = v.get("incomplete")
     parts = [f"GT VERDICT: {status} ({', '.join(v['reasons'])})"]
     if status == "INCONCLUSIVE":
@@ -626,6 +646,8 @@ def _also(v: Dict[str, Any], status: str) -> str:
         more.append(f"PARTIAL ({inc['missing']} not run, {inc['errors']} with a transient error)")
     if v.get("exploratory") and status != "EXPLORATORY":
         more.append(f"EXPLORATORY ({', '.join(v['exploratory'])})")
+    if v.get("gave_up"):
+        more.append(f"NOTE (gave_up {v['gave_up']})")
     return (" | also " + "; ".join(more)) if more else ""
 
 
@@ -674,6 +696,9 @@ WHY = {
     "reasoning_effort": "o esforco de raciocinio nao e o padrao do modelo",
     "extra_body_overrides_protocol": "o corpo extra do pedido definiu campos do protocolo",
     "usage_missing": "mais da metade das respostas veio sem contagem de tokens: nao da para medir o pensamento nem o custo",
+    "reasoning_hidden": "{hidden} linhas vieram so com a resposta (pelo menos {min_tokens} tokens e nenhum raciocinio visivel): o provedor provavelmente pensa e esconde o raciocinio, e o kit nao consegue conferir que o thinker pensou",
+    "mixed_endpoints": "as linhas vieram de mais de um endpoint: um agregador pode ter mandado cada linha a um upstream ou a uma quantizacao diferente",
+    "reasoning_hidden_or_not_closed": "mais de {share} das linhas que responderam esconderam o raciocinio ou pararam sem fechar o pensamento ({unreadable} de {answered}): o resultado mede o provedor, nao o modelo",
     "thinking_not_detected": "menos da metade das linhas mostra pensamento: o endpoint provavelmente ignorou o pedido de thinking",
     "no_replies": "nenhuma linha pontuada teve resposta do thinker",
     "no_scored_rows": "nenhuma linha do thinker foi pontuada ainda",
@@ -685,8 +710,10 @@ def _why_lines(report: Dict[str, Any]) -> List[str]:
     v, cov = report["verdict"], report["coverage"]
     if v["status"] in OFFICIAL:
         return []
+    st = report.get("thinker_stats") or {}
     fill = {"missing": cov["missing"], "errors": cov["errors"], "attempts": C.DEFAULT_MAX_ATTEMPTS, "registered": C.BOOTSTRAP_B, "seed": C.SEED,
-            "target": f"{C.GT_MIN_DELTA_PTS:g}"}
+            "target": f"{C.GT_MIN_DELTA_PTS:g}", "hidden": st.get("reasoning_hidden", 0), "min_tokens": C.MIN_THINKING_TOKENS,
+            "share": f"{MAX_UNREADABLE_SHARE:.0%}", "unreadable": st.get("reasoning_hidden", 0) + st.get("no_close", 0), "answered": st.get("ok", 0)}
     codes = list(v["reasons"]) + [c for c in (v.get("exploratory") or []) if c not in v["reasons"]]
     if v.get("incomplete") and "rows_not_run" not in codes and "rows_with_transient_error" not in codes:
         codes += (["rows_not_run"] if v["incomplete"]["missing"] else []) + (["rows_with_transient_error"] if v["incomplete"]["errors"] else [])
@@ -764,6 +791,10 @@ def render_markdown(report: Dict[str, Any]) -> str:
         out.append(f"- AVISO: {st['usage_missing']} de {st['ok']} linhas sem contagem de tokens (a resposta do endpoint nao trouxe `usage`); o custo e a mediana de tokens nao dizem tudo.")
     if st.get("no_close"):
         out.append(f"- AVISO: {st['no_close']} linhas pararam sem fechar o pensamento (sem `</think>` nem raciocinio a parte): nao foram lidas como resposta e contam como erro.")
+    if st.get("reasoning_hidden"):
+        out.append(f"- AVISO: {st['reasoning_hidden']} de {st['ok']} linhas vieram so com a resposta, com {C.MIN_THINKING_TOKENS} tokens ou mais e nenhum raciocinio visivel "
+                   "(sem `</think>`, sem raciocinio a parte, sem `reasoning_tokens`): o provedor provavelmente pensa e esconde o raciocinio. As linhas foram lidas como estao, "
+                   "mas o kit nao tem como conferir que o thinker pensou nelas: o veredito sai EXPLORATORY, e INCONCLUSIVE se passarem de 10% das linhas que responderam.")
     if st.get("read_by_fallback"):
         out.append(f"- AVISO: {st['read_by_fallback']} linhas foram lidas sem a linha ANSWER pedida (`resposta e`, `\\boxed` ou o ultimo rotulo solto); confira o leitor se forem muitas.")
     if st.get("gave_up"):

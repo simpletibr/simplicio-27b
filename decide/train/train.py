@@ -13,10 +13,11 @@ The data order, the option order and the reasoning draws depend only on ``--seed
 resumed run (``--resume``) continues exactly where it stopped.  The optimizer keeps fp32 master weights on the CPU
 (``optim.CPUOffloadAdamW``) and only rank 0 steps it; the other ranks receive the new trainable weights.
 
-Output folder: ``run.json`` (arguments and fingerprint), ``events.jsonl`` (progress), ``resume.pt`` (resume state),
-``final/`` (checkpoint with LoRA merged and the fitted temperature) and ``summary.json``.  ``final/`` is written as ``final.tmp``
-and renamed when whole, so a kill during the save never leaves a half checkpoint under the name ``final`` (a ``--resume`` removes a
-stale ``final.tmp``, trains the steps after its last resume state again and saves).  The checkpoint carries the LICENSE and the NOTICE of
+Output folder: ``run.json`` (arguments and fingerprint), ``events.jsonl`` (progress), ``resume.pt`` (resume state, saved every
+``--resume-every`` steps and at the last step, and deleted once ``final/`` is whole), ``final/`` (checkpoint with LoRA merged and the
+fitted temperature) and ``summary.json``.  ``final/`` is written as ``final.tmp`` and renamed when whole, so a kill during the save never
+leaves a half checkpoint under the name ``final`` (a ``--resume`` removes a stale ``final.tmp``, trains the steps after its last resume
+state again and saves).  ``--dtype fp16`` is refused: no loss scaling, so an underflowing gradient would go unnoticed.  The checkpoint carries the LICENSE and the NOTICE of
 the one the run started from, a ``Modifications:`` line, and ``training`` in its ``decision_config.json``: the method, the steps, the
 precision, the corpus provenance of the targets (``corpus``, from ``build_targets``) and the number of requests the length limit dropped.
 """
@@ -93,8 +94,9 @@ def build_parser() -> argparse.ArgumentParser:
     add("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=None, help="default: on when CUDA is available")
     add("--device", default="auto")
     add("--dtype", choices=("auto", "bf16", "fp16", "fp32"), default="auto",
-        help="precision of the model: auto = bf16 on a GPU, fp32 on a CPU.  A T4 has no native bf16 (fp16 or fp32 there; fp16 has no loss scaling "
-             "here, so a nonfinite loss or gradient stops the run); part of the fingerprint of a run, so --resume cannot change it")
+        help="precision of the model: auto = bf16 on a GPU, fp32 on a CPU.  fp16 is refused for training: nothing here scales the loss, and a gradient "
+             "that underflows to zero looks like any other number (a T4 has no native bf16: bf16 there is emulated and slow, UNVERIFIED).  "
+             "Part of the fingerprint of a run, so --resume cannot change it")
     add("--cpu-threads", type=int, default=8)
     add("--dry-run", action="store_true", help="read the data, print the plan and stop (no model is loaded)")
     return parser
@@ -118,6 +120,9 @@ def validate(args: argparse.Namespace) -> None:
         raise ValueError("--grad-clip must be positive")
     if args.lr is not None and (not math.isfinite(args.lr) or args.lr <= 0):
         raise ValueError("--lr must be positive")
+    if args.dtype == "fp16":
+        raise ValueError("--dtype fp16 is refused: there is no loss scaling here, so a gradient that underflows to zero is a finite number that nothing notices "
+                         "and the run learns less than its loss curve says.  Use bf16 (the default on a GPU; emulated and slow on a T4, UNVERIFIED) or fp32")
     ReasoningPolicy(args.reasoning, args.reasoning_fraction)       # validates both
 
 
@@ -210,10 +215,10 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
     run_file = out / "run.json"
     if run_file.exists() and not args.resume:
         raise ValueError(f"{out} already holds a run; pass --resume to continue it or choose a new --out")
-    if args.resume and not (out / "resume.pt").is_file():
-        raise ValueError(f"--resume: {out / 'resume.pt'} does not exist")
     if args.resume and (out / "final").exists():
         raise ValueError(f"--resume: {out / 'final'} already exists, so the run is finished; there is nothing to continue")
+    if args.resume and not (out / "resume.pt").is_file():
+        raise ValueError(f"--resume: {out / 'resume.pt'} does not exist")
     if distributed.primary:
         out.mkdir(parents=True, exist_ok=True)
     distributed.barrier()
@@ -344,7 +349,7 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
                           gpu_peak_gb=(torch.cuda.max_memory_allocated() / 1e9) if cuda else None)
         if args.eval_every and step % args.eval_every == 0 and step < stop and dev:
             distributed.on_primary(lambda: evaluate("periodic"))
-        if optimizer is not None and (step % args.resume_every == 0 or step == stop) and step < plan.total_steps:
+        if optimizer is not None and (step % args.resume_every == 0 or step == stop):        # also at the last step: a death in the final save costs the save, not the run
             save_resume(out / "resume.pt", step, optimizer, fingerprint, {"requests": dropped_requests, "examples": sorted(dropped_examples)})
 
     summary: Dict[str, Any] = {"steps": step, "planned_steps": plan.total_steps, "complete": step == plan.total_steps, "plan": summary_plan,
@@ -372,6 +377,8 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
                        modification=f"fine-tuned with decide.train.train ({args.mode}, {step} steps, seed {args.seed}, {dtype_name}); backbone and readout "
                                     "weights and decision_config.json (temperature, calibration, training record) changed.")
             os.replace(out / "final.tmp", out / "final")                # whole or not at all
+            for leftover in ("resume.pt", "resume.pt.pending"):         # the run is finished: its optimizer state (hundreds of GB in full mode) is of no use
+                (out / leftover).unlink(missing_ok=True)
             saved = out / "final"
             summary.update({"checkpoint": str(saved), "temperature": temperature, "evaluation": {k: brief(v) for k, v in report.items()}})
             events.record("checkpoint_saved", path=str(saved), temperature=temperature)
