@@ -327,10 +327,20 @@ class BudgetContract(unittest.TestCase):
         c.t += 10_000
         self.assertEqual(b.available(), 0.0)
         self.assertLess(b.remaining(), 0)
-        self.assertTrue(b.ok(0.0))
+        self.assertFalse(b.ok(0.0))                # an exhausted budget affords nothing, not even a step whose cost is not known yet
         self.assertFalse(b.ok(1.0))
         with self.assertRaisesRegex(B.BudgetExceeded, "step"):
             b.guard(5.0)
+
+    def test_inside_the_reserve_nothing_is_affordable_and_a_free_step_is_while_time_is_left(self):
+        c = self.Clock()
+        b = B.Budget(1.0, 10.0, clock=c)
+        c.t += 3000 - 1                            # one second of work time left
+        self.assertTrue(b.ok(0.0))
+        self.assertTrue(b.ok(1.0))
+        c.t += 1
+        self.assertEqual(b.available(), 0.0)       # exactly at the reserve
+        self.assertFalse(b.ok(0.0))
 
     def test_start_offset_counts_earlier_work(self):
         c = self.Clock()

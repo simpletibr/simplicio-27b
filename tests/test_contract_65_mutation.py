@@ -89,7 +89,8 @@ class TheTableFitsTheCode(unittest.TestCase):
     def test_the_mutated_files_are_the_modules_the_kit_stands_on(self):
         files = {m.file for m in mu.MUTATIONS}
         self.assertEqual(files, {"decide/sd/merge.py", "decide/sd/tta.py", "decide/sd/calibrate.py", "decide/sd/engine.py", "decide/sd/loader.py",
-                                 "decide/sd/config.py", "decide/sd/api.py", "decide/sd/remote.py"})
+                                 "decide/sd/config.py", "decide/sd/api.py", "decide/sd/remote.py", "decide/sd/budget.py",
+                                 "decide/sd/evaluate.py"})
 
     def test_the_tests_named_in_the_table_exist(self):
         for m in mu.MUTATIONS:

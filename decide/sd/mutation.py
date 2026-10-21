@@ -5,7 +5,7 @@ merge math, the option-order inverse mapping, the temperature fit, the engine wi
 meant to guard that code, and reports KILLED (some test failed) or SURVIVED (every test passed: a hole in the tests).
 
     python -m decide.sd.mutation                      # every mutation
-    python -m decide.sd.mutation --only tta           # one group (merge, tta, calibrate, engine, loader, config, api, remote)
+    python -m decide.sd.mutation --only tta           # one group (merge, tta, calibrate, engine, loader, config, api, remote, budget)
     python -m decide.sd.mutation --id k-bucket-boundary --id ta-sign-flip      # chosen mutations (to re-check a survivor)
     python -m decide.sd.mutation --list
     python -m decide.sd.mutation --json evidence.json
@@ -41,7 +41,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 ROOT = Path(__file__).resolve().parents[2]
 COPIED = ("decide", "tests", "notebooks/decide/requirements.txt")
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache")
-GROUPS = ("merge", "tta", "calibrate", "engine", "loader", "config", "api", "remote")
+GROUPS = ("merge", "tta", "calibrate", "engine", "loader", "config", "api", "remote", "budget")
 
 
 @dataclass(frozen=True)
@@ -60,6 +60,7 @@ TTA_TESTS = ("test_contract_65.TtaContract", "test_flow_65.EngineFlow")
 CAL_TESTS = ("test_contract_65.CalibrateContract",)
 ENGINE_TESTS = ("test_flow_65.EngineFlow", "test_flow_65_api.EngineExtrasFlow")
 LOADER_TESTS = ("test_flow_65.LoaderFlow",)
+BUDGET_TESTS = ("test_contract_65.BudgetContract", "test_contract_65_evaluate", "test_flow_65_evaluate.EvaluateFlow")
 CONFIG_TESTS = ("test_contract_65.ConfigContract",)
 API_TESTS = ("test_contract_65_api.NormalizeSpecContract", "test_contract_65_api.SpecForContract")
 REMOTE_TESTS = ("test_flow_65.RemoteFlow",)
@@ -68,6 +69,8 @@ M = "decide/sd/merge.py"
 T = "decide/sd/tta.py"
 C = "decide/sd/calibrate.py"
 E = "decide/sd/engine.py"
+BU = "decide/sd/budget.py"
+EV = "decide/sd/evaluate.py"
 L = "decide/sd/loader.py"
 CF = "decide/sd/config.py"
 AP = "decide/sd/api.py"
@@ -193,6 +196,12 @@ MUTATIONS: Tuple[Mutation, ...] = (
              "the config accepts Simplicio-27B as an enabled donor with the LoRA on"),
     Mutation("config", "config-anchor-as-its-own-donor", CF, 'need(not (d.get("enabled", True) and str(d.get("repo", "")).lower() == anchor_repo),',
              'need(not (False and d.get("enabled", True) and str(d.get("repo", "")).lower() == anchor_repo),', CONFIG_TESTS, "the config accepts the anchor as a donor"),
+
+    # ---- the time budget: a session that is over must not start another step
+    Mutation("budget", "spent-budget-still-affords-a-free-step", BU, "return left > 0.0 and left >= float(next_cost)",
+             "return left >= float(next_cost)", BUDGET_TESTS, "a chunk of unknown cost runs although the session is inside its reserve"),
+    Mutation("budget", "first-chunk-not-priced", EV, "cost = sum(i.tokens() for i in piece) / tokens_per_second if tokens_per_second else 0.0",
+             "cost = 0.0", BUDGET_TESTS, "the plan's measured throughput is ignored and the first chunk is always free"),
 
     # ---- the loader: which tensors are merged with which weights
     Mutation("loader", "donor-weights-misaligned", L, "[weights[i] for i in plan.donors]", "[weights[i] for i in reversed(plan.donors)]",

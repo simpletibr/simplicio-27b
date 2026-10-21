@@ -54,7 +54,9 @@ class Budget:
         return max(0.0, self.remaining() - self.reserve)
 
     def ok(self, next_cost: float = 0.0) -> bool:
-        return self.available() >= float(next_cost)
+        """True when `next_cost` seconds fit in what is left.  With nothing left (inside the reserve) not even a step of unknown cost is affordable."""
+        left = self.available()
+        return left > 0.0 and left >= float(next_cost)
 
     def guard(self, next_cost: float, what: str = "step") -> None:
         if not self.ok(next_cost):

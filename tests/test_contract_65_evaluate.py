@@ -310,6 +310,36 @@ class RunRequestsContract(HermeticTestCase):
         self.assertEqual(asked[0], 0.0)                          # nothing measured yet
         self.assertTrue(all(c > 0 for c in asked[1:]))           # afterwards: tokens of the chunk / measured tokens per second
 
+    def test_a_budget_that_is_spent_runs_no_chunk_at_all(self):
+        from decide.sd.budget import Budget as RealBudget
+
+        clock = Clock(step=0.0)
+        spent = RealBudget(1.0, 10.0, clock=clock, start=clock() - 3000)            # exactly at the reserve: nothing left to spend
+        engine, out = self.go(chunk=2, budget=spent)
+        self.assertEqual((out["status"], out["rows"]), ("budget", 0))
+        self.assertEqual(engine.seen, [])
+
+    def test_the_first_chunk_is_priced_with_the_throughput_of_the_plan(self):
+        asked = []
+
+        class Budget:
+            def ok(self, cost=0.0):
+                asked.append(cost)
+                return cost <= 5.0
+
+        engine, out = self.go(chunk=2, budget=Budget(), tokens_per_second=1.0, clock=Clock(step=1.0))
+        self.assertGreater(asked[0], 5.0)                                       # tokens of the first two rows / 1 token per second
+        self.assertEqual((out["status"], out["rows"], engine.seen), ("budget", 0, []))
+        asked.clear()
+        engine, out = self.go(chunk=2, budget=Budget(), tokens_per_second=10_000.0, clock=Clock(step=1.0))
+        self.assertLess(asked[0], 5.0)
+        self.assertGreater(out["rows"], 0)
+
+    def test_a_throughput_that_is_not_a_positive_number_is_refused(self):
+        for bad in (0, -1.0, float("nan"), float("inf"), "fast"):
+            with self.subTest(bad), self.assertRaisesRegex(ev.EvaluateError, "tokens_per_second"):
+                self.go(tokens_per_second=bad)
+
     def test_limit_stops_after_that_many_new_rows(self):
         engine, out = self.go(limit=3, chunk=2)
         self.assertEqual((out["status"], out["rows"], out["total"]), ("limit", 3, 3))

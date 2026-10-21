@@ -314,14 +314,20 @@ def _row_from(item: Item, got: Any, engine_name: str, started: str, finished: st
 def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: Union[str, os.PathLike], *,
                  budget: Any = None, resume: bool = True, chunk: int = 16, limit: Optional[int] = None,
                  log: Optional[Callable[[str], None]] = print, state: Any = None, state_prefix: Optional[str] = None,
-                 clock: Callable[[], float] = time.monotonic, table: bool = True) -> Dict[str, Any]:
+                 clock: Callable[[], float] = time.monotonic, table: bool = True, tokens_per_second: Optional[float] = None) -> Dict[str, Any]:
     """Answer every request of `requests_path` that has no final result yet.  See the module docstring.
+
+    `tokens_per_second` (proxy tokens, as `measure_throughput` and `plan.json` give it) prices the first chunk before this run has measured
+    anything; without it the first chunk is priced at zero and only runs if the budget has time left at all.
 
     Returns `{"rows": new rows, "total": rows with a result, "tokens": input tokens of the new rows, "seconds", "status":
     "complete" | "budget" | "limit", "counts": statuses of the new rows, "skipped": rows kept from before, "files": {...}}`.
     """
     if chunk < 1:
         raise EvaluateError("chunk must be at least 1")
+    if tokens_per_second is not None and not (isinstance(tokens_per_second, (int, float)) and not isinstance(tokens_per_second, bool)
+                                              and math.isfinite(tokens_per_second) and tokens_per_second > 0):
+        raise EvaluateError(f"tokens_per_second must be a positive number, got {tokens_per_second!r}")
     say = log or (lambda text: None)
     out_dir, table_path = _paths(out_path)
     items = read_items(requests_path)                            # refuses duplicates before any work is done
@@ -374,7 +380,10 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
             break
         piece = todo[position:position + size]
         if budget is not None:
-            cost = (sum(i.tokens() for i in piece) / (done_tokens / done_seconds)) if done_seconds > 0 and done_tokens > 0 else 0.0
+            if done_seconds > 0 and done_tokens > 0:
+                cost = sum(i.tokens() for i in piece) / (done_tokens / done_seconds)
+            else:
+                cost = sum(i.tokens() for i in piece) / tokens_per_second if tokens_per_second else 0.0
             if not budget.ok(cost):
                 stop = "budget"
                 say(f"[evaluate] stopping before the next chunk: it needs about {cost / 60:.1f} min and the budget has less")
@@ -795,8 +804,10 @@ def evaluate_sample(engine: Any, sample_dir: Union[str, os.PathLike], out_dir: U
                                   max_proxy_tokens=manifest.get("max_proxy_tokens"), edition=manifest.get("edition"))
     subset_dir = out / SUBSET_DIR
     sample_mod.write(selection, subset_dir)
+    measured = plan.get("tokens_per_second")
     run = run_requests(engine, subset_dir / sample_mod.ROWS_NAME, out / "run", budget=budget, resume=resume, chunk=chunk, state=state,
-                       state_prefix=f"runs/{name or out.name}", log=log, clock=clock)
+                       state_prefix=f"runs/{name or out.name}", log=log, clock=clock,
+                       tokens_per_second=measured if isinstance(measured, (int, float)) and measured > 0 else None)
     metrics: Dict[str, Any] = {"name": name or out.name, "plan": plan, "run": {k: run[k] for k in ("rows", "total", "tokens", "seconds", "status", "counts")},
                                "sample": selection.manifest["totals"], "edition": manifest.get("edition")}
     if score and run["status"] == "complete":

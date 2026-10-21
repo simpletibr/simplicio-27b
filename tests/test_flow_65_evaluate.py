@@ -188,6 +188,23 @@ class EvaluateFlow(HermeticTestCase):
         self.assertEqual(second["plan"], first["plan"])
         self.assertEqual(second["run"]["rows"], 0)
 
+    def test_the_measured_throughput_of_the_plan_prices_the_first_chunk_of_every_call(self):
+        sample.write(sample.select(self.rows, per_benchmark=6, seed=7, edition="0.3"), self.dir / "sample")
+        budget = budget_mod.Budget(session_hours=0.1, reserve_minutes=0)
+        slow = {"tokens_per_second": 4.0, "n": 8, "seconds": 1.0, "proxy_tokens": 4, "requests_per_second": 1.0, "run_ids": [], "failed": 0}
+        seen = []
+        real = self.ev.run_requests
+
+        def spy(*args, **kw):
+            seen.append(kw.get("tokens_per_second"))
+            return real(*args, **kw)
+
+        with mock.patch.object(self.ev, "measure_throughput", return_value=slow), mock.patch.object(self.ev, "run_requests", side_effect=spy):
+            self.ev.evaluate_sample(self.engine(), self.dir / "sample", self.dir / "eval", budget=budget, safety=0.5, log=None, name="tiny", score=False)
+            self.ev.evaluate_sample(self.engine(), self.dir / "sample", self.dir / "eval", budget=budget, log=None, name="tiny", score=False)
+            self.ev.evaluate_sample(self.engine(), self.dir / "sample", self.dir / "forced", per_benchmark=1, log=None, name="forced", score=False)
+        self.assertEqual(seen, [4.0, 4.0, None])                                  # a forced size has no measurement to price with
+
     @needs_kit
     def test_evaluate_sample_scores_with_the_kit(self):
         sample.write(sample.select(self.rows, per_benchmark=6, seed=7, edition="0.3"), self.dir / "sample")
