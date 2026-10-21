@@ -1,9 +1,15 @@
 """Calibration of the decision head: temperature per question type, NLL / Brier / ECE, holdout protocol.
 
-The model returns one logit per option.  Dividing the logits by a temperature T before the softmax changes how
-confident the probabilities are but never which option wins, so a better T improves the probability metrics
-(NLL, Brier, ECE) and leaves argmax-based benchmark scores alone.  With option-order TTA the probabilities are the
-mean of one softmax per view, so T also decides how the views are weighed against each other.
+The model returns one logit per option.  Dividing the logits of ONE view by a temperature T before the softmax changes how
+confident the probabilities are but not which option wins.  With option-order TTA the probabilities are the mean of one softmax
+per view, and T decides how much each view weighs against the others, so T can change which option wins: with the views
+[[6, 0, 5], [0, 2, 0]] option 1 wins at T=0.5 (0.482 against 0.449) and option 0 wins at T=4 (0.387 against 0.332).  So with TTA a
+temperature moves argmax-based scores as well as NLL, Brier and ECE: it is a model parameter, to be fitted on data that is not
+evaluation data (ADR 0004, item 6; `api.fit_temperature` enforces it) and to be reported with the score.
+
+Teacher labels follow from the same fact.  A teacher's probabilities are made from the per-view raw logits that the engine keeps in
+`raw["logits"]` (`reprobabilities(raw["logits"][qid], T)`: one softmax per view at the teacher's T, then the mean), not by
+re-temperaturing the probabilities in the response, which are already a mean at one T and cannot be turned into the mean at another.
 
 Everything here works on :class:`Item` records (raw logits per view, original option order, gold index) and uses
 only numpy, so it runs anywhere.  The caller decides where the logits and gold labels come from.

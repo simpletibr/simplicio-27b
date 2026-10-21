@@ -8,7 +8,9 @@ vendored upstream code, unchanged.
 `DecisionEngine` is what the scoring kit calls: `engine(state, questions) -> (response, raw)`.  With option-order
 TTA it runs the request once per view, maps every view's logits back to the original option order with the exact
 inverse permutation (`tta.py`), and reports the mean over views of softmax(logits / temperature).  The raw logits of
-every view are kept in `raw` so calibration and teacher labels can be computed later without running the model.
+every view are kept in `raw` so calibration and teacher labels can be computed later without running the model.  Both must start
+from those per-view raw logits, never from the probabilities in the response (a mean over views at one temperature): with TTA the
+temperature can change which option wins, and a teacher label at another temperature is `calibrate.reprobabilities(raw["logits"][qid], T)`.
 """
 from __future__ import annotations
 
@@ -110,6 +112,10 @@ def _check_request(request: Mapping[str, Any], types: Sequence[str] = SUPPORTED_
             raise Unsupported(f"question {key!r}: this engine serves only {tuple(types)} questions (the kit scores {SUPPORTED_TYPES})")
     if request.get("images"):
         raise Unsupported("this engine loads the text tower only; image requests are not supported")
+    if request.get("reasoning") is not None:
+        raise Unsupported("this engine does not render 'reasoning': the v1.2 joint prompt has no place for it, and dropping it would answer a "
+                          "different question than the one asked.  It is served once the thinking track passes its gate and the training "
+                          "protocol's fold_reasoning() is integrated")
 
 
 class DecisionEngine(Engine):
@@ -200,24 +206,38 @@ class DecisionEngine(Engine):
                 continue
             jobs.append((i, request, plans, encoded, view_requests))
         if jobs:
-            flat = [chunks for _i, _r, _p, encoded, _v in jobs for chunks in encoded]
-            flat_requests = [view for _i, _r, _p, _e, views in jobs for view in views]
-            try:
-                logits = self.decider.run_batch(flat, flat_requests)
-            except Unsupported as exc:
-                for i, *_ in jobs:
-                    results[i] = exc
-                return results
-            cursor = 0
-            for i, request, plans, encoded, _views in jobs:
-                mine = logits[cursor:cursor + len(encoded)]
-                cursor += len(encoded)
+            for (i, request, plans, encoded, _views), mine in zip(jobs, self._run_jobs(jobs)):
+                if isinstance(mine, BaseException):
+                    results[i] = mine
+                    continue
                 tokens = sum(c.length for chunks in encoded for c in chunks)
                 try:
                     results[i] = self._finish(request, plans, mine, tokens)
                 except FloatingPointError as exc:
                     results[i] = exc
         return results
+
+    def _run_jobs(self, jobs: Sequence[Tuple[Any, ...]]) -> List[Any]:
+        """The logits of every view of every job, or the `Unsupported` that job raised when it ran alone.
+
+        The jobs go to the model together.  If that fails with `Unsupported` (a lone sequence ran out of memory) and there is
+        more than one job, the failure is not the batch's: every job is run again by itself, so only the request that cannot
+        fit alone is lost.  Without this one long request would turn up to `chunk - 1` neighbours that fit into permanent errors.
+        """
+        flat = [chunks for _i, _r, _p, encoded, _v in jobs for chunks in encoded]
+        flat_requests = [view for _i, _r, _p, _e, views in jobs for view in views]
+        try:
+            logits = self.decider.run_batch(flat, flat_requests)
+        except Unsupported as exc:
+            if len(jobs) == 1:
+                return [exc]
+            return [out for job in jobs for out in self._run_jobs([job])]
+        out: List[Any] = []
+        cursor = 0
+        for _i, _r, _p, encoded, _v in jobs:
+            out.append(logits[cursor:cursor + len(encoded)])
+            cursor += len(encoded)
+        return out
 
     # ---- bookkeeping the kit's runner reads
     def synchronize(self) -> None:

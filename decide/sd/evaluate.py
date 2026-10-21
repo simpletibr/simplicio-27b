@@ -45,7 +45,10 @@ METRICS_NAME = "metrics.json"
 PLAN_NAME = "plan.json"
 SUBSET_DIR = "subset"
 JSONL_SUFFIXES = (".jsonl", ".jsonl.gz", ".ndjson", ".ndjson.gz")
-META_KEYS = ("example_id", "source", "license", "split", "lang", "catalog_id", "group_id", "track", "proxy_tokens", "dataset")
+META_KEYS = ("example_id", "source", "license", "split", "lang", "catalog_id", "group_id", "track", "proxy_tokens", "dataset", "origin")
+ORIGIN_SUITE, ORIGIN_REQUESTS, ORIGIN_UNKNOWN = "public-suite", "requests", "unknown"
+EVALUATION_ORIGINS = (ORIGIN_SUITE, "gt-sample")                 # ADR 0004, item 6: evaluation data, never training or fitting data
+TERMINAL_ERRORS = ("FloatingPointError",)                        # the same request gives the same non-finite logits: an error row that is final
 DEVICE_ERRORS = ("OutOfMemoryError", "AcceleratorError")
 DEVICE_MARKERS = ("device-side assert", "CUDA error", "CUDA out of memory", "HIP error")
 NOTE = ("Sample index: computed with the scoring kit's own scorer on the sampled rows only; benchmarks that are not in the "
@@ -55,6 +58,16 @@ NOTE = ("Sample index: computed with the scoring kit's own scorer on the sampled
 
 class EvaluateError(RuntimeError):
     pass
+
+
+STATUS_NONFINITE = "error-nonfinite"
+
+
+def _final_status(row: Mapping[str, Any], retry_nonfinite: bool = False) -> str:
+    """The status a resume goes by: an `error` row is redone unless its error is one that repeats."""
+    if row["status"] == "error" and row.get("exception") in TERMINAL_ERRORS and not retry_nonfinite:
+        return STATUS_NONFINITE
+    return row["status"]
 
 
 def _utc() -> str:
@@ -80,6 +93,11 @@ class Item:
     def proxy_tokens(self) -> int:
         return int(self.meta.get("proxy_tokens") or 0)
 
+    @property
+    def origin(self) -> str:
+        """Where the row comes from: `public-suite` (a Decision Index suite row), `gt-sample`, or whatever the row declares; else `requests`."""
+        return str(self.meta.get("origin") or ORIGIN_REQUESTS)
+
     def tokens(self) -> int:
         """Proxy tokens when the row has them, else a rough count (a third of the JSON characters)."""
         return self.proxy_tokens or max(1, len(json.dumps(self.inputs, ensure_ascii=False)) // 3)
@@ -99,7 +117,7 @@ def item_from_row(row: Any, where: str = "row") -> Item:
         raise EvaluateError(f"{where}: a request row is a JSON object")
     marker = row.get("_evaluation")
     if isinstance(marker, Mapping):                              # a row of the Decision Index suite
-        meta = dict(marker)
+        meta = {**marker, "origin": ORIGIN_SUITE}                # a suite row says so itself: its marker cannot declare another origin
         run_id = meta.get("run_id")
         request = {k: row[k] for k in ("state", "questions", "images") if k in row}
         gold = row.get("expected")
@@ -113,9 +131,12 @@ def item_from_row(row: Any, where: str = "row") -> Item:
         else:
             request = _json_field(request, where, "request")
         gold = _json_field(row.get("gold"), where, "gold")
-        meta = {"run_id": run_id, **{k: row[k] for k in META_KEYS if k in row and row[k] is not None}}
+        meta = {"run_id": run_id, "origin": ORIGIN_REQUESTS, **{k: row[k] for k in META_KEYS if k in row and row[k] is not None}}
     if not isinstance(run_id, str) or not run_id:
         raise EvaluateError(f"{where}: no run_id (or example_id)")
+    origin = meta.get("origin")
+    if origin is not None and (not isinstance(origin, str) or not origin):
+        raise EvaluateError(f"{where} ({run_id}): origin must be a non-empty string such as {ORIGIN_REQUESTS!r} or 'gt-sample', got {origin!r}")
     questions = request.get("questions") if isinstance(request, Mapping) else None
     if not isinstance(questions, Mapping) or not questions or "state" not in request:
         raise EvaluateError(f"{where} ({run_id}): the request needs 'state' and a non-empty 'questions' object")
@@ -314,14 +335,25 @@ def _row_from(item: Item, got: Any, engine_name: str, started: str, finished: st
 def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: Union[str, os.PathLike], *,
                  budget: Any = None, resume: bool = True, chunk: int = 16, limit: Optional[int] = None,
                  log: Optional[Callable[[str], None]] = print, state: Any = None, state_prefix: Optional[str] = None,
-                 clock: Callable[[], float] = time.monotonic, table: bool = True) -> Dict[str, Any]:
+                 clock: Callable[[], float] = time.monotonic, table: bool = True, tokens_per_second: Optional[float] = None,
+                 retry_nonfinite: bool = False) -> Dict[str, Any]:
     """Answer every request of `requests_path` that has no final result yet.  See the module docstring.
+
+    `tokens_per_second` (proxy tokens, as `measure_throughput` and `plan.json` give it) prices the first chunk before this run has measured
+    anything; without it the first chunk is priced at zero and only runs if the budget has time left at all.
+
+    A row whose logits were not finite (`FloatingPointError`, fp16 overflow) stays an `error` row but is final: the same request gives the
+    same logits, so a resume does not redo it.  `retry_nonfinite=True` asks again (after a change of `compute_dtype`, say).  Any other
+    `error` row is retried on every resume.
 
     Returns `{"rows": new rows, "total": rows with a result, "tokens": input tokens of the new rows, "seconds", "status":
     "complete" | "budget" | "limit", "counts": statuses of the new rows, "skipped": rows kept from before, "files": {...}}`.
     """
     if chunk < 1:
         raise EvaluateError("chunk must be at least 1")
+    if tokens_per_second is not None and not (isinstance(tokens_per_second, (int, float)) and not isinstance(tokens_per_second, bool)
+                                              and math.isfinite(tokens_per_second) and tokens_per_second > 0):
+        raise EvaluateError(f"tokens_per_second must be a positive number, got {tokens_per_second!r}")
     say = log or (lambda text: None)
     out_dir, table_path = _paths(out_path)
     items = read_items(requests_path)                            # refuses duplicates before any work is done
@@ -342,7 +374,7 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
                 os.replace(path, path.with_name(f"{path.name}.old-{stamp}"))
     for path in (results_path, raw_path):
         _drop_partial_tail(path)
-    final = {run_id: row["status"] for run_id, row in read_results(results_path).items()}
+    final = {run_id: _final_status(row, retry_nonfinite) for run_id, row in read_results(results_path).items()}
     engine_name = str(getattr(engine, "name", type(engine).__name__))
     started_at = clock()
     event_base = {"engine": engine_name, "requests": len(items)}
@@ -350,13 +382,16 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
     def event(**kw: Any) -> None:
         _atomic_json(out_dir / STATUS_NAME, {"time": _utc(), **event_base, **kw})
 
+    origins = dict(collections.Counter(item.origin for item in items))
     environment: Dict[str, Any] = {"engine": engine_name, "model_source": dict(getattr(engine, "provenance", {}) or {}),
-                                   "requests_file": Path(requests_path).name, "started_utc": _utc()}
+                                   "requests_file": Path(requests_path).name, "started_utc": _utc(), "origins": origins}
     try:
         environment.update(engine.runtime())
     except Exception as exc:                                     # noqa: BLE001 - bookkeeping must not stop the run
         environment["runtime_error"] = f"{type(exc).__name__}: {exc}"
     _atomic_json(out_dir / ENVIRONMENT_NAME, environment)
+    if state is not None:
+        state.set_meta(f"{prefix}/origins", origins)
 
     todo = [item for item in items if final.get(item.run_id) in (None, "error")]
     skipped = len(items) - len(todo)
@@ -365,6 +400,10 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
     done_tokens = done_seconds = 0.0
     stop = "complete"
     say(f"[evaluate] {len(items)} requests: {skipped} already done, {len(todo)} to run")
+    stuck = sum(1 for item in items if final.get(item.run_id) == STATUS_NONFINITE)
+    if stuck:
+        say(f"[evaluate] {stuck} row{'s' if stuck != 1 else ''} ended with non-finite logits in an earlier run and are not retried "
+            "(retry_nonfinite=True asks again, e.g. after a change of compute_dtype)")
     event(event="ready", todo=len(todo), skipped=skipped)
     position = 0
     while position < len(todo):
@@ -374,7 +413,10 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
             break
         piece = todo[position:position + size]
         if budget is not None:
-            cost = (sum(i.tokens() for i in piece) / (done_tokens / done_seconds)) if done_seconds > 0 and done_tokens > 0 else 0.0
+            if done_seconds > 0 and done_tokens > 0:
+                cost = sum(i.tokens() for i in piece) / (done_tokens / done_seconds)
+            else:
+                cost = sum(i.tokens() for i in piece) / tokens_per_second if tokens_per_second else 0.0
             if not budget.ok(cost):
                 stop = "budget"
                 say(f"[evaluate] stopping before the next chunk: it needs about {cost / 60:.1f} min and the budget has less")
@@ -435,7 +477,7 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
 
 # --------------------------------------------------------------------------- the probability table
 
-TABLE_COLUMNS = ("run_id", "catalog_id", "group_id", "track", "question_id", "qtype", "status", "n_options", "option_keys", "codes",
+TABLE_COLUMNS = ("run_id", "catalog_id", "group_id", "track", "origin", "question_id", "qtype", "status", "n_options", "option_keys", "codes",
                  "probs", "logits", "views", "temperature", "applied_temperature", "tokens", "gold", "error")
 
 
@@ -453,7 +495,7 @@ def table_rows(run_dir: Union[str, os.PathLike], golds: Optional[Mapping[str, Ma
     raws = read_raw(run_dir)
     golds = golds or {}
     for run_id, row in results.items():
-        base = {k: row.get(k) for k in ("run_id", "catalog_id", "group_id", "track", "status")}
+        base = {k: row.get(k) for k in ("run_id", "catalog_id", "group_id", "track", "origin", "status")}
         answers = (row.get("response") or {}).get("answers") if row.get("status") == "ok" else None
         if not answers:
             yield {**base, "question_id": None, "qtype": None, "n_options": 0, "option_keys": [], "codes": [], "probs": [], "logits": [],
@@ -484,7 +526,7 @@ def write_table(run_dir: Union[str, os.PathLike], golds: Optional[Mapping[str, M
         raise EvaluateError("writing the probability table needs pyarrow (pyarrow is in notebooks/decide/requirements.txt)") from exc
     out = Path(path) if path else Path(run_dir) / TABLE_NAME
     schema = pa.schema([
-        ("run_id", pa.string()), ("catalog_id", pa.int64()), ("group_id", pa.string()), ("track", pa.string()),
+        ("run_id", pa.string()), ("catalog_id", pa.int64()), ("group_id", pa.string()), ("track", pa.string()), ("origin", pa.string()),
         ("question_id", pa.string()), ("qtype", pa.string()), ("status", pa.string()), ("n_options", pa.int32()),
         ("option_keys", pa.list_(pa.string())), ("codes", pa.list_(pa.string())), ("probs", pa.list_(pa.float64())),
         ("logits", pa.list_(pa.list_(pa.float64()))),
@@ -515,20 +557,39 @@ def _table_batches(path: Union[str, os.PathLike], columns: Sequence[str]) -> Ite
         yield from batch.to_pylist()
 
 
-def table_items(path: Union[str, os.PathLike]) -> List[calibrate.Item]:
-    """`calibrate.Item`s from a probability table (the file, or the run directory that holds it).
+def _table_columns(path: Union[str, os.PathLike]) -> List[str]:
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise EvaluateError("reading the probability table needs pyarrow (pyarrow is in notebooks/decide/requirements.txt)") from exc
+    return list(pq.ParquetFile(str(_table_file(path))).schema_arrow.names)
 
-    Rows that are not `ok`, have no gold label, or whose gold is not one of the option keys are left out.
-    """
-    items: List[calibrate.Item] = []
-    for row in _table_batches(path, ("run_id", "question_id", "qtype", "status", "option_keys", "logits", "gold")):
+
+def _table_records(path: Union[str, os.PathLike]) -> Iterator[Tuple[calibrate.Item, str]]:
+    """(item, origin) for every question of the table that can be fitted on.  A table without an origin column says `unknown`."""
+    wanted = ["run_id", "question_id", "qtype", "status", "option_keys", "logits", "gold", "origin"]
+    have = _table_columns(path)
+    for row in _table_batches(path, [c for c in wanted if c in have]):
         keys, gold, views = row.get("option_keys") or [], row.get("gold"), row.get("logits") or []
         if row.get("status") != "ok" or row.get("question_id") is None or gold is None or gold not in keys:
             continue
         if not views or any(len(view) != len(keys) for view in views):
             continue
-        items.append(calibrate.Item(row["run_id"], row["question_id"], str(row["qtype"]), [[float(x) for x in v] for v in views], keys.index(gold)))
-    return items
+        item = calibrate.Item(row["run_id"], row["question_id"], str(row["qtype"]), [[float(x) for x in v] for v in views], keys.index(gold))
+        yield item, str(row.get("origin") or ORIGIN_UNKNOWN)
+
+
+def table_items(path: Union[str, os.PathLike]) -> List[calibrate.Item]:
+    """`calibrate.Item`s from a probability table (the file, or the run directory that holds it).
+
+    Rows that are not `ok`, have no gold label, or whose gold is not one of the option keys are left out.
+    """
+    return [item for item, _ in _table_records(path)]
+
+
+def table_origins(path: Union[str, os.PathLike]) -> Dict[str, int]:
+    """How many of the items `table_items` returns come from each origin (`public-suite`, `gt-sample`, `requests`, ..., `unknown`)."""
+    return dict(collections.Counter(origin for _, origin in _table_records(path)))
 
 
 def table_temperature(path: Union[str, os.PathLike]) -> Optional[float]:
@@ -795,8 +856,10 @@ def evaluate_sample(engine: Any, sample_dir: Union[str, os.PathLike], out_dir: U
                                   max_proxy_tokens=manifest.get("max_proxy_tokens"), edition=manifest.get("edition"))
     subset_dir = out / SUBSET_DIR
     sample_mod.write(selection, subset_dir)
+    measured = plan.get("tokens_per_second")
     run = run_requests(engine, subset_dir / sample_mod.ROWS_NAME, out / "run", budget=budget, resume=resume, chunk=chunk, state=state,
-                       state_prefix=f"runs/{name or out.name}", log=log, clock=clock)
+                       state_prefix=f"runs/{name or out.name}", log=log, clock=clock,
+                       tokens_per_second=measured if isinstance(measured, (int, float)) and measured > 0 else None)
     metrics: Dict[str, Any] = {"name": name or out.name, "plan": plan, "run": {k: run[k] for k in ("rows", "total", "tokens", "seconds", "status", "counts")},
                                "sample": selection.manifest["totals"], "edition": manifest.get("edition")}
     if score and run["status"] == "complete":

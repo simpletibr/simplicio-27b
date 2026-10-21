@@ -69,6 +69,8 @@ class StubEngine:
             return Unsupported("too long for this double")
         if mode == "error":
             return RuntimeError("boom")
+        if mode == "nonfinite":
+            return FloatingPointError("non-finite logits for question 'q1'")
         if mode == "abstain":
             return NativeAbstention({"why": "test"})
         answers, logits = {}, {}
@@ -255,6 +257,26 @@ class RunRequestsContract(HermeticTestCase):
         self.assertEqual([r["run_id"] for r in self.results()], [r["_evaluation"]["run_id"] for r in self.rows])
         self.assertEqual(out["total"], 7)
 
+    def test_a_row_with_non_finite_logits_is_final_like_unsupported_not_redone_on_every_resume(self):
+        engine, out = self.go(StubEngine({"state-2": "nonfinite", "state-3": "error"}))
+        self.assertEqual(out["counts"], {"ok": 5, "error": 2})
+        row = next(r for r in self.results() if r["run_id"].endswith(":2"))
+        self.assertEqual((row["status"], row["exception"]), ("error", "FloatingPointError"))
+        lines = []
+        again, out = self.go(StubEngine(), log=lines.append)
+        self.assertEqual(again.seen, ["state-3"])                       # the transient error is redone, the deterministic one is not
+        self.assertEqual((out["rows"], out["skipped"]), (1, 6))
+        self.assertTrue(any("1 row" in t and "non-finite" in t and "not retried" in t for t in lines), lines)
+        statuses = {r["run_id"][-1]: r["status"] for r in self.results()}
+        self.assertEqual((statuses["2"], statuses["3"]), ("error", "ok"))
+
+    def test_retry_nonfinite_asks_the_engine_again(self):
+        self.go(StubEngine({"state-2": "nonfinite"}))
+        again, out = self.go(StubEngine(), retry_nonfinite=True)
+        self.assertEqual(again.seen, ["state-2"])
+        self.assertEqual({r["run_id"][-1]: r["status"] for r in self.results()}["2"], "ok")
+        self.assertEqual(out["counts"], {"ok": 1})
+
     def test_error_rows_are_retried_and_unsupported_rows_are_final(self):
         engine, out = self.go(StubEngine({"state-2": "error", "state-4": "unsupported"}))
         self.assertEqual(out["counts"], {"ok": 5, "error": 1, "unsupported": 1})
@@ -309,6 +331,36 @@ class RunRequestsContract(HermeticTestCase):
         self.go(chunk=2, budget=Budget(), clock=Clock(step=1.0))
         self.assertEqual(asked[0], 0.0)                          # nothing measured yet
         self.assertTrue(all(c > 0 for c in asked[1:]))           # afterwards: tokens of the chunk / measured tokens per second
+
+    def test_a_budget_that_is_spent_runs_no_chunk_at_all(self):
+        from decide.sd.budget import Budget as RealBudget
+
+        clock = Clock(step=0.0)
+        spent = RealBudget(1.0, 10.0, clock=clock, start=clock() - 3000)            # exactly at the reserve: nothing left to spend
+        engine, out = self.go(chunk=2, budget=spent)
+        self.assertEqual((out["status"], out["rows"]), ("budget", 0))
+        self.assertEqual(engine.seen, [])
+
+    def test_the_first_chunk_is_priced_with_the_throughput_of_the_plan(self):
+        asked = []
+
+        class Budget:
+            def ok(self, cost=0.0):
+                asked.append(cost)
+                return cost <= 5.0
+
+        engine, out = self.go(chunk=2, budget=Budget(), tokens_per_second=1.0, clock=Clock(step=1.0))
+        self.assertGreater(asked[0], 5.0)                                       # tokens of the first two rows / 1 token per second
+        self.assertEqual((out["status"], out["rows"], engine.seen), ("budget", 0, []))
+        asked.clear()
+        engine, out = self.go(chunk=2, budget=Budget(), tokens_per_second=10_000.0, clock=Clock(step=1.0))
+        self.assertLess(asked[0], 5.0)
+        self.assertGreater(out["rows"], 0)
+
+    def test_a_throughput_that_is_not_a_positive_number_is_refused(self):
+        for bad in (0, -1.0, float("nan"), float("inf"), "fast"):
+            with self.subTest(bad), self.assertRaisesRegex(ev.EvaluateError, "tokens_per_second"):
+                self.go(tokens_per_second=bad)
 
     def test_limit_stops_after_that_many_new_rows(self):
         engine, out = self.go(limit=3, chunk=2)
@@ -642,6 +694,131 @@ class CalibrationItemsContract(HermeticTestCase):
         write_jsonl(self.dir / "req.jsonl", rows)
         ev.run_requests(StubEngine({"state-0": "unsupported"}), self.dir / "req.jsonl", self.dir / "out", log=lambda t: None)
         self.assertEqual(ev.calibration_items(self.dir / "out", rows), [])
+
+
+class SpecSourcesContract(HermeticTestCase):
+    """A `dir:PATH` repo reads a folder of this machine with no confinement, on purpose: it is a path its owner typed.  So a model spec may come
+    from the caller of `load_engine` and from the config files, and from nothing that travels with a run: a request row, a result row or the
+    remote `state.json` cannot build one.  If a later change makes a spec out of such data, it has to refuse `dir:` or confine it to the workdir."""
+
+    HOSTILE = {"anchor": "dir:/etc", "anchor_revision": None, "donors": [{"repo": "dir:/etc", "weight": 1.0}], "lora": {"repo": "dir:/etc", "weight": 1.0},
+               "spec": {"anchor": "dir:/etc"}, "model": "dir:/etc"}
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+
+    def test_the_modules_a_run_goes_through_never_name_the_spec_or_the_repo_readers(self):
+        root = Path(ev.__file__).parent
+        for module in ("evaluate.py", "state.py", "sample.py", "budget.py", "calibrate.py"):
+            text = (root / module).read_text(encoding="utf-8")
+            for name in ("normalize_spec", "load_engine", "load_decider", "HubRepo", "spec_for", "repo_key", "is_local"):
+                with self.subTest(f"{module}: {name}"):
+                    self.assertNotIn(name, text)
+
+    def test_hostile_keys_in_a_request_a_result_and_the_remote_state_never_reach_a_spec(self):
+        from unittest import mock
+
+        from decide.sd import api, loader, remote
+
+        store = MemoryStore()
+        first = State.open(self.dir / "s1", store)
+        first.set_meta("note", "x")
+        first.push(files_now=True)
+        doc = json.loads(store.files["state.json"].decode("utf-8"))
+        doc.update(self.HOSTILE)
+        doc["meta"].update(self.HOSTILE)
+        doc["rows"]["r"] = dict(self.HOSTILE)
+        store.files["state.json"] = json.dumps(doc).encode("utf-8")
+        questions = {"q1": {"type": "choice", "instructions": "pick", "criteria": {"A": "a", "B": "b"}}}
+        rows = [{"example_id": "e0", "request": {"state": "s0", "questions": questions}, "gold": {"q1": "A"}, **self.HOSTILE},
+                {"example_id": "e1", "state": "s1", "questions": questions, "gold": {"q1": "A"}, **self.HOSTILE}]
+        write_jsonl(self.dir / "req.jsonl", rows)
+        boom = AssertionError("a model spec or a repo reader was reached from run data")
+        with mock.patch.object(api, "normalize_spec", side_effect=boom), mock.patch.object(loader, "load_decider", side_effect=boom), \
+                mock.patch.object(remote.HubRepo, "__init__", side_effect=boom):
+            second = State.open(self.dir / "s2", store)
+            info = ev.run_requests(StubEngine(), self.dir / "req.jsonl", self.dir / "s2" / "runs" / "x", state=second, log=lambda t: None, table=False)
+        self.assertEqual(info["counts"], {"ok": 2})
+        for row in ev.read_results(self.dir / "s2" / "runs" / "x").values():
+            self.assertFalse(set(self.HOSTILE) & set(row), sorted(set(self.HOSTILE) & set(row)))
+
+
+class OriginContract(HermeticTestCase):
+    """Where the rows of a run come from is written down with the run, so a temperature is not fitted on evaluation data by mistake
+    (ADR 0004, item 6: the GT sample and the public suite are evaluation data, not training data)."""
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+
+    @staticmethod
+    def plain(i, **extra):
+        return {"example_id": f"e{i}", "request": {"state": f"state-{i}", "questions": {"q1": {"type": "choice", "instructions": "pick",
+                "criteria": {"A": "a", "B": "b"}}}}, "gold": {"q1": "A"}, **extra}
+
+    def test_a_row_of_the_public_suite_is_marked_so(self):
+        self.assertEqual(ev.item_from_row(kit_row(0)).origin, "public-suite")
+
+    def test_a_suite_row_cannot_hide_behind_its_own_marker(self):
+        row = kit_row(0)
+        row["_evaluation"]["origin"] = "requests"
+        self.assertEqual(ev.item_from_row(row).origin, "public-suite")
+
+    def test_a_plain_request_row_is_marked_requests(self):
+        self.assertEqual(ev.item_from_row(self.plain(0)).origin, "requests")
+
+    def test_a_row_can_say_it_is_the_gt_sample(self):
+        self.assertEqual(ev.item_from_row(self.plain(0, origin="gt-sample")).origin, "gt-sample")
+
+    def test_an_origin_that_is_not_a_name_is_refused(self):
+        for bad in (5, "", ["gt-sample"]):
+            with self.assertRaisesRegex(ev.EvaluateError, "origin"):
+                ev.item_from_row(self.plain(0, origin=bad))
+
+    def test_evaluation_origins_are_the_ones_the_adr_names(self):
+        self.assertEqual(sorted(ev.EVALUATION_ORIGINS), ["gt-sample", "public-suite"])
+
+    def test_the_origin_goes_to_the_result_rows_the_environment_and_the_state(self):
+        rows = [kit_row(0), kit_row(1), self.plain(2), self.plain(3, origin="gt-sample")]
+        write_jsonl(self.dir / "req.jsonl", rows)
+        state = State(self.dir / "work", MemoryStore())
+        ev.run_requests(StubEngine(), self.dir / "req.jsonl", self.dir / "work" / "run", log=lambda t: None, state=state, table=False)
+        results = [json.loads(line) for line in (self.dir / "work" / "run" / ev.RESULTS_NAME).read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([r["origin"] for r in results], ["public-suite", "public-suite", "requests", "gt-sample"])
+        env = json.loads((self.dir / "work" / "run" / ev.ENVIRONMENT_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(env["origins"], {"public-suite": 2, "requests": 1, "gt-sample": 1})
+        self.assertEqual(state.meta("runs/run/origins"), {"public-suite": 2, "requests": 1, "gt-sample": 1})
+
+    @needs_pyarrow
+    def test_the_probability_table_has_an_origin_column_and_says_how_many_rows_of_each(self):
+        rows = [kit_row(0, gold="B"), kit_row(1, gold="A"), kit_row(2, gold="A", catalog_id=30)]
+        write_jsonl(self.dir / "req.jsonl", rows)
+        ev.run_requests(StubEngine(), self.dir / "req.jsonl", self.dir / "out", log=lambda t: None)
+        self.assertEqual(ev.table_origins(self.dir / "out"), {"public-suite": 3})
+
+    @needs_pyarrow
+    def test_only_the_rows_that_can_be_fitted_on_are_counted(self):
+        rows = [kit_row(0, gold="B"), kit_row(1, gold="Z"), self.plain(2), self.plain(3, origin="gt-sample")]
+        write_jsonl(self.dir / "req.jsonl", rows)
+        ev.run_requests(StubEngine({"state-3": "unsupported"}), self.dir / "req.jsonl", self.dir / "out", log=lambda t: None)
+        # row 1 has a gold that is not an option, row 3 has no answer: neither would be fitted on, neither is counted
+        self.assertEqual(ev.table_origins(self.dir / "out"), {"public-suite": 1, "requests": 1})
+
+    @needs_pyarrow
+    def test_a_table_that_does_not_say_where_its_rows_came_from_is_unknown_not_clean(self):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        table = pa.Table.from_pylist([{"run_id": "r", "question_id": "q", "qtype": "choice", "status": "ok", "option_keys": ["A", "B"],
+                                       "logits": [[1.0, 0.0]], "gold": "A", "temperature": 1.0}])
+        pq.write_table(table, str(self.dir / "t.parquet"))
+        self.assertEqual(ev.table_origins(self.dir / "t.parquet"), {"unknown": 1})
+        self.assertEqual(len(ev.table_items(self.dir / "t.parquet")), 1)
 
 
 if __name__ == "__main__":

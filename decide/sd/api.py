@@ -1,6 +1,6 @@
 """The interface the rest of the project calls: load a model, run requests, score them, fit a temperature.
 
-    engine = load_engine(spec_for(cfg, "ta_l0.25"), quant="nf4", tta_rotations=2)
+    engine = load_engine(spec_for(cfg, "ta_l0.25"), quant="nf4")                        # option-order views: the config's tta.rotations
     info   = run_requests(engine, "requests.jsonl", "work/run", budget=budget)       # per-row probabilities, resumable
     scores = score("work/run", subset_manifest="work/sample")                        # the kit's own scorer, on a sample
     fit    = fit_temperature("work/run/results.parquet")                             # per question type, holdout by request
@@ -8,6 +8,18 @@
 A `spec` names a model by recipe, never by file: the anchor checkpoint, the donors whose backbones are merged into it,
 an optional LoRA adapter, the merge method.  Nothing is written to disk; the loader merges while it streams the weights
 (`loader.py`).  Heads are never merged.
+
+Requests are the Decision Index's: a state text and questions (choice, noul).  A request with a `reasoning` key is refused with
+`Unsupported` (a `unsupported` row), never answered without it: the v1.2 joint prompt has no place for the text, and the engine
+would otherwise answer a question that is not the one asked.  Reasoning is served once the thinking track passes its gate and the
+training protocol's `fold_reasoning()` is integrated here.
+
+A repo is named `org/name` and read at a full commit hash (`anchor_revision`, `revision`), or `dir:PATH` for a checkpoint folder on this
+machine (the model that was just trained): no Hub, no network, and no revision, since a folder has none (one is refused).
+A `dir:` path is read as it is: there is no confinement to a work directory, because it is a path its owner typed.  So a spec comes from the
+caller of `load_engine` and from the config files (`config.yaml`, `decide/config.*.yaml`, `SD_CONFIG`), never from data that travels with a run
+(a request row, a result row, the remote `state.json`: tests/test_contract_65_evaluate.py `SpecSourcesContract` keeps it so).  Code that builds a
+spec from such data must refuse `dir:` or confine it.
 
 Importing this module does not import torch: the pure helpers (`normalize_spec`, `spec_for`, `parse_device`,
 `quant_settings`) work anywhere, and `load_engine` imports the heavy parts when it is called.
@@ -18,7 +30,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
-from decide.sd import calibrate, env, evaluate
+from decide.sd import calibrate, env, evaluate, remote
 from decide.sd import config as C
 
 __all__ = ["ApiError", "normalize_spec", "spec_for", "spec_names", "parse_device", "quant_settings", "load_options", "load_engine",
@@ -48,8 +60,22 @@ def _number(value: Any, what: str) -> float:
 
 def _repo(value: Any, what: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise ApiError(f"{what} must be a Hugging Face repo id such as 'org/name'")
-    return value.strip()
+        raise ApiError(f"{what} must be a Hugging Face repo id such as 'org/name' (or 'dir:PATH' for a checkpoint folder on this machine)")
+    value = value.strip()
+    if remote.is_local(value) and not value[len(remote.LOCAL_PREFIX):].strip():
+        raise ApiError(f"{what}: 'dir:' needs the path of a folder")
+    return value
+
+
+def _revision(value: Any, what: str, repo: Optional[str] = None) -> Optional[str]:
+    """A Hub repo is read at a full commit hash.  A checkpoint folder on this machine (`dir:PATH`) is not on the Hub: it has none, and is given none."""
+    if repo is not None and remote.is_local(repo):
+        if value is not None:
+            raise ApiError(f"{what} is a folder on this machine and has no revision, got {value!r}")
+        return None
+    if not C.is_revision(value):
+        raise ApiError(f"{what} must be a full 40-hex commit hash, got {value!r}: a branch moves, so the weights could change between two reads")
+    return value
 
 
 def _checked_part(raw: Any, what: str, forbid: bool) -> Optional[Dict[str, Any]]:
@@ -70,7 +96,7 @@ def _checked_part(raw: Any, what: str, forbid: bool) -> Optional[Dict[str, Any]]
         raise ApiError(f"donor {repo} is not allowed (license or incompatible readout; see fase0b)")
     if weight == 0:
         return None
-    return {"repo": repo, "weight": weight, "revision": raw.get("revision")}
+    return {"repo": repo, "weight": weight, "revision": _revision(raw.get("revision"), f"{what} ({repo}): revision", repo)}
 
 
 def normalize_spec(spec: Any, cfg: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
@@ -93,14 +119,19 @@ def normalize_spec(spec: Any, cfg: Optional[Mapping[str, Any]] = None) -> Dict[s
     for raw in donors_in:
         part = _checked_part(raw, "donor", True)
         repo = _repo(raw.get("repo"), "donor.repo")
-        if repo in seen:
+        if remote.repo_key(repo) in seen:
             raise ApiError(f"donor {repo} is listed twice")
-        seen.add(repo)
+        seen.add(remote.repo_key(repo))
         if part is not None:
             donors.append(part)
     lora = None
     if spec.get("lora"):
         lora = _checked_part(spec["lora"], "lora", False)
+    for part in donors:
+        if lora is not None and remote.repo_key(part["repo"]) == remote.repo_key(lora["repo"]):
+            raise ApiError(f"{part['repo']} is both a donor and the LoRA: its delta would be counted twice")
+        if remote.repo_key(part["repo"]) == remote.repo_key(anchor):
+            raise ApiError(f"donor {part['repo']} is the anchor: its task vector is zero, so the 'merge' would be the anchor")
     method = spec.get("method")
     if method is not None and method not in (*C.METHODS, "anchor"):
         raise ApiError(f"spec.method must be one of {[*C.METHODS, 'anchor']}, got {method!r}")
@@ -125,16 +156,17 @@ def normalize_spec(spec: Any, cfg: Optional[Mapping[str, Any]] = None) -> Dict[s
     if reference == "base":
         given = spec.get("base")
         if given:
-            base = {"repo": _repo(given.get("repo") if isinstance(given, Mapping) else None, "spec.base.repo"), "revision": given.get("revision")}
+            base_repo = _repo(given.get("repo") if isinstance(given, Mapping) else None, "spec.base.repo")
+            base = {"repo": base_repo, "revision": _revision(given.get("revision"), f"spec.base ({base_repo}): revision", base_repo)}
         elif cfg is not None and (cfg.get("models") or {}).get("base"):
             entry = cfg["models"]["base"]
-            base = {"repo": entry["repo"], "revision": entry.get("revision")}
+            base = {"repo": entry["repo"], "revision": _revision(entry.get("revision"), f"models.base ({entry['repo']}): revision", entry["repo"])}
         else:
             raise ApiError("spec.reference is 'base' but there is no base: pass spec.base or a config with models.base")
     name = spec.get("name")
     if name is not None and not isinstance(name, str):
         raise ApiError("spec.name must be text")
-    return {"anchor": anchor, "anchor_revision": spec.get("anchor_revision"), "donors": donors, "lora": lora, "method": method,
+    return {"anchor": anchor, "anchor_revision": _revision(spec.get("anchor_revision"), f"spec.anchor_revision ({anchor})", anchor), "donors": donors, "lora": lora, "method": method,
             "density": density, "protocol": protocol, "reference": reference, "base": base, "name": name}
 
 
@@ -295,7 +327,7 @@ def attach_fast(decider: Any, *, fp8: bool = False) -> None:
         raise ApiError(f"the fast path could not start: {exc}") from exc
 
 
-def load_engine(spec: Mapping[str, Any], *, quant: Optional[str] = None, device: Any = "auto", tta_rotations: int = 1,
+def load_engine(spec: Mapping[str, Any], *, quant: Optional[str] = None, device: Any = "auto", tta_rotations: Optional[int] = None,
                 tta_mode: Optional[str] = None, temperature: Optional[float] = None, temperatures: Optional[Mapping[str, float]] = None,
                 cfg: Optional[Mapping[str, Any]] = None, hardware: Optional[env.Hardware] = None, allow_cpu_offload: bool = False,
                 name: Optional[str] = None, token: Optional[str] = None, progress: Optional[Callable[[int, int, str], None]] = None,
@@ -304,7 +336,8 @@ def load_engine(spec: Mapping[str, Any], *, quant: Optional[str] = None, device:
     """A kit-compatible engine (`engine(state, questions) -> (response, raw)`, plus `batch`) for the model `spec` describes.
 
     `quant` is nf4 | fp16 | bf16 | none (default: the config's `eval.quant`); `tta_rotations` is the number of option orders
-    averaged per choice question; `temperatures` maps a question type (or `type:k-bucket`, or `default`) to the divisor
+    averaged per choice question (default: the config's `tta.rotations`, so an engine and a plan made from the same config agree;
+    0 or 1 mean a single view); `temperatures` maps a question type (or `type:k-bucket`, or `default`) to the divisor
     used instead of the model's own.  `fast`/`fp8` attach pplx-decider's packed path: `fp8` changes the probabilities
     (the evaluated model is no longer the published one) and is recorded as such in the engine's provenance.
     `factories` (repo, processor, tokenizer) are test hooks.  Other keyword arguments override `LoadOptions` fields.
@@ -322,7 +355,7 @@ def load_engine(spec: Mapping[str, Any], *, quant: Optional[str] = None, device:
     factories = dict(factories or {})
     secret = token or env.get_secret("HF_TOKEN")
     endpoint = cfg["hub"].get("endpoint", "https://huggingface.co")
-    make_repo = factories.get("repo") or (lambda repo, revision=None: HubRepo(repo, revision, endpoint=endpoint, token=secret))
+    make_repo = factories.get("repo") or (lambda repo, revision: HubRepo(repo, revision, endpoint=endpoint, token=secret))
     quant_name = quant or cfg["eval"]["quant"]
     loader_quant, compute = quant_settings(quant_name, cfg["eval"]["compute_dtype"])
     model_gb = None
@@ -340,7 +373,8 @@ def load_engine(spec: Mapping[str, Any], *, quant: Optional[str] = None, device:
     provenance = loader.describe(spec, options)
     provenance["fast"] = {"enabled": bool(fast), "fp8": bool(fp8), "changes_the_model": bool(fp8)}
     types = tuple(question_types) if question_types else engine_mod.SUPPORTED_TYPES
-    return engine_mod.DecisionEngine(decider, tta_rotations=tta_rotations, tta_mode=tta_mode or cfg["tta"].get("mode", "reverse"),
+    rotations = cfg["tta"].get("rotations", 1) if tta_rotations is None else tta_rotations
+    return engine_mod.DecisionEngine(decider, tta_rotations=rotations, tta_mode=tta_mode or cfg["tta"].get("mode", "reverse"),
                                      temperature=temperature, temperatures=temperatures, provenance=provenance,
                                      name=name or spec.get("name") or "simplicio-decide", question_types=types)
 
@@ -390,11 +424,18 @@ def score(results_path: Union[str, Path], *, subset_manifest: Union[str, Path, N
 
 def fit_temperature(results_path: Union[str, Path], *, by: str = "question_type", holdout: float = 0.5, seed: Optional[int] = None,
                     grid: Optional[Sequence[float]] = None, min_items: int = 30, baseline: Optional[float] = None,
-                    cfg: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+                    cfg: Optional[Mapping[str, Any]] = None, allow_evaluation_data: bool = False) -> Dict[str, Any]:
     """One temperature per question group, fitted by NLL on half of the requests and judged on the other half.
 
     Reads the probability table of a run (the `.parquet` file, or its folder): it needs the raw logits and the gold labels.
     `temperatures` in the result can be passed to `load_engine(temperatures=...)`; `holdout` says whether it helped.
+
+    With option-order TTA the temperature can change which option wins (see `calibrate`), so it is a model parameter and not only a
+    probability metric.  ADR 0004 (item 6) keeps the GT sample and the public suite out of anything that is fitted: a table whose rows
+    are marked `public-suite` or `gt-sample` (the mark `run_requests` writes into the table) is refused unless
+    `allow_evaluation_data=True`, for a diagnostic, and then the result says so (`evaluation_rows`, `warning`) and must not be shipped.
+    The mark follows the rows: it guards against a mistake, not against rows that were relabelled.  `fitted_on` counts the fitted
+    questions by origin; a table with no origin column counts as `unknown`.
     """
     if by not in calibrate.GROUPINGS:
         raise ApiError(f"by must be one of {list(calibrate.GROUPINGS)}, got {by!r}")
@@ -410,9 +451,24 @@ def fit_temperature(results_path: Union[str, Path], *, by: str = "question_type"
         raise ApiError(str(exc)) from exc
     if not items:
         raise ApiError(f"{table}: no question has a gold label, so there is nothing to fit on")
+    try:
+        origins = evaluate.table_origins(table)
+    except evaluate.EvaluateError as exc:
+        raise ApiError(str(exc)) from exc
+    evaluation = {name: n for name, n in sorted(origins.items()) if name in evaluate.EVALUATION_ORIGINS}
+    if evaluation and allow_evaluation_data is not True:
+        raise ApiError(f"{table}: {sum(evaluation.values())} of the {len(items)} questions come from evaluation data "
+                       f"({', '.join(f'{n} from {name}' for name, n in evaluation.items())}); ADR 0004 (item 6) keeps the GT sample and the public "
+                       "suite out of anything that is fitted, and a temperature changes the answers when TTA is on. Fit on a dev split of the "
+                       "training corpus, or pass allow_evaluation_data=True for a diagnostic that will not be shipped")
     window = tuple(float(x) for x in (grid if grid is not None else cfg["calibration"].get("grid", calibrate.DEFAULT_GRID)))
     out = calibrate.fit_groups(items, by=by, holdout=holdout, seed=int(cfg["eval"].get("seed", 0)) if seed is None else int(seed),
                                baseline=float(baseline if baseline is not None else (own or 1.0)), grid=window, min_items=min_items)
     out["source"] = str(table)
     out["n_items"] = len(items)
+    out["fitted_on"] = origins
+    out["evaluation_rows"] = sum(evaluation.values())
+    if evaluation:
+        out["warning"] = ("fitted on evaluation data (ADR 0004, item 6): a diagnostic, not a calibration to ship; scores on these "
+                          "rows are no longer clean evidence once the temperature is used")
     return out

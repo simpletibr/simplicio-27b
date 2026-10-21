@@ -17,12 +17,15 @@ from decide.sd import api, env, remote
 from decide.sd import config as C
 
 
+A, D, L, X = "a" * 40, "b" * 40, "c" * 40, "d" * 40         # commit hashes of the repos of these tests (the fake Hub ignores the revision in the URL)
+
+
 def make_cfg(**overrides):
     return C.load_config(C.DEFAULT_PATH, overrides=overrides or None)
 
 
 def hub_repos(hub):
-    return lambda repo_id, revision=None: remote.HubRepo(repo_id, revision, endpoint=hub.base_url, sleep=lambda s: None, probe=4096)
+    return lambda repo_id, revision: remote.HubRepo(repo_id, revision, endpoint=hub.base_url, sleep=lambda s: None, probe=4096)
 
 
 @needs_transformers
@@ -180,13 +183,15 @@ class ApiFlow(HermeticTestCase):
         self.addCleanup(self._tmp.cleanup)
         self.dir = Path(self._tmp.name)
         self.hub.log.clear()
+        self.hub.requested.clear()
 
     def cfg(self, **over):
         base = {"hub": {"endpoint": self.hub.base_url},
-                "models": {"anchor": {"repo": "org/anchor"},
-                           "donors": [{"name": "d3", "repo": "org/donor", "weight": 1.0, "enabled": True, "revision": None}],
-                           "lora": {"repo": "org/lora", "weight": 0.1, "weight_grid": [0.1], "enabled": True},
-                           "rehearsal": {"d3_mini": {"repo": "org/d3x", "protocol": "d3"}}, "d3": {"repo": "org/d3x", "protocol": "d3"}}}
+                "models": {"anchor": {"repo": "org/anchor", "revision": A},
+                           "donors": [{"name": "d3", "repo": "org/donor", "weight": 1.0, "enabled": True, "revision": D}],
+                           "lora": {"repo": "org/lora", "revision": L, "weight": 0.1, "weight_grid": [0.1], "enabled": True},
+                           "rehearsal": {"d3_mini": {"repo": "org/d3x", "revision": X, "protocol": "d3"}, "pplx_flash": {"repo": "org/flash", "revision": X}},
+                           "d3": {"repo": "org/d3x", "revision": X, "protocol": "d3"}}}
         C._merge(base, over)
         return make_cfg(**base)
 
@@ -195,7 +200,19 @@ class ApiFlow(HermeticTestCase):
         spec = name if isinstance(name, dict) else api.spec_for(cfg, name)
         kw.setdefault("quant", "none")
         kw.setdefault("device", "cpu")
+        kw.setdefault("tta_rotations", 1)                         # the tests below count on one view unless they ask for more
         return api.load_engine(spec, cfg=cfg, factories=self.factories, **kw)
+
+    def test_the_number_of_views_follows_the_config_unless_the_caller_says_otherwise(self):
+        spec = api.spec_for(self.cfg(), "anchor")
+        for cfg, passed, want in ((self.cfg(), None, 2),                                # the shipped config: tta.rotations is 2
+                                  (self.cfg(tta={"rotations": 3}), None, 3),
+                                  (self.cfg(tta={"rotations": 0}), None, 1),            # 0 means no TTA, which is one view
+                                  (self.cfg(), 1, 1), (self.cfg(), 4, 4), (self.cfg(tta={"rotations": 3}), 1, 1)):
+            with self.subTest(config=cfg["tta"]["rotations"], passed=passed):
+                kw = {} if passed is None else {"tta_rotations": passed}
+                eng = api.load_engine(spec, cfg=cfg, factories=self.factories, quant="none", device="cpu", **kw)
+                self.assertEqual(eng.views, want)
 
     def dense(self, state):
         return self.tm.dense_decider(state, self.reference_head)
@@ -238,11 +255,39 @@ class ApiFlow(HermeticTestCase):
         _response, raw = eng(**self.tm.REQUEST)
         self.assert_logits(raw["logits"], self.dense(self.merged_state(lora=0.1)).logits([self.tm.REQUEST])[0])
 
+    def test_each_repo_is_read_at_the_commit_the_spec_names_and_at_no_other(self):
+        """The fake Hub used to ignore the revision in the URL, so a loader that passed None for a donor, or a repo that read `main`, went unnoticed."""
+        self.hub.requested.clear()
+        self.engine("ta_l0.5")                                                           # the anchor and a donor
+        self.assertEqual(self.hub.requested, {("org/anchor", A), ("org/donor", D)})
+        self.engine("anchor+lora0.1")                                                    # the anchor and the adapter
+        self.assertEqual(self.hub.requested, {("org/anchor", A), ("org/donor", D), ("org/lora", L)})
+
+    def test_a_checkpoint_folder_is_served_by_load_engine_without_a_revision_and_without_the_network(self):
+        """The model that was just trained (`proxy_eval run --model novo=dir:...`) is not on the Hub: no commit, no request to it."""
+        import shutil
+
+        folder = Path(tempfile.mkdtemp(prefix="sd-folder-"))
+        self.addCleanup(shutil.rmtree, folder, True)
+        for key, data in self.hub.files.items():
+            if key.startswith("org/anchor/"):
+                (folder / key[len("org/anchor/"):]).write_bytes(data)
+        self.hub.requested.clear()
+        local = api.load_engine({"anchor": f"dir:{folder}"}, cfg=self.cfg(), quant="none", device="cpu", tta_rotations=1,
+                                factories={"processor": self.tm.processor_factory})
+        self.assertEqual(self.hub.requested, set())
+        self.assertIsNone(local.provenance["spec"]["anchor_revision"])
+        hub_logits = self.engine("anchor")(**self.tm.REQUEST)[1]["logits"]
+        self.assert_logits(local(**self.tm.REQUEST)[1]["logits"], {key: views[0] for key, views in hub_logits.items()})
+        with self.assertRaisesRegex(api.ApiError, "40-hex"):
+            api.load_engine({"anchor": "org/anchor"}, cfg=self.cfg(), quant="none", device="cpu", factories=self.factories)
+
     def test_provenance_records_the_recipe_and_never_the_token(self):
         secret = "hf_" + "a1b2c3d4e5f6a7b8c9d0"
         eng = self.engine("ta_l0.5", tta_rotations=2, temperatures={"choice": 1.7})
         text = json.dumps(eng.provenance)
-        self.assertEqual(eng.provenance["spec"]["donors"], [{"repo": "org/donor", "weight": 0.5, "revision": None}])
+        self.assertEqual(eng.provenance["spec"]["donors"], [{"repo": "org/donor", "weight": 0.5, "revision": D}])
+        self.assertEqual(eng.provenance["spec"]["anchor_revision"], A)                  # the commit that was read, not "main"
         self.assertEqual(eng.provenance["options"]["quant"], "none")
         self.assertEqual(eng.provenance["fast"], {"enabled": False, "fp8": False, "changes_the_model": False})
         self.assertEqual(eng.provenance["tta"], {"views": 2, "mode": "reverse"})
@@ -268,7 +313,7 @@ class ApiFlow(HermeticTestCase):
 
     def test_a_donor_that_may_not_ship_is_refused_before_anything_is_downloaded(self):
         with self.assertRaisesRegex(api.ApiError, "not allowed"):
-            api.load_engine({"anchor": "org/anchor", "donors": [{"repo": "x/lychee-27b", "weight": 1.0}]}, cfg=self.cfg(),
+            api.load_engine({"anchor": "org/anchor", "anchor_revision": A, "donors": [{"repo": "x/lychee-27b", "weight": 1.0, "revision": D}]}, cfg=self.cfg(),
                             factories=self.factories, quant="none", device="cpu")
         self.assertEqual(self.hub.log, [])
 
@@ -286,7 +331,7 @@ class ApiFlow(HermeticTestCase):
             self.engine("anchor", fast=True)
 
     def test_stored_bytes_counts_the_text_tower_only(self):
-        repo = hub_repos(self.hub)("org/anchor")
+        repo = hub_repos(self.hub)("org/anchor", A)
         want = sum(t.numel() * t.element_size() for n, t in self.pa.items() if not n.startswith("visual."))
         self.assertEqual(self.L.stored_bytes(repo), want)
         self.assertGreater(self.L.stored_bytes(repo, skip=()), want)
@@ -346,7 +391,7 @@ class ApiFlow(HermeticTestCase):
         rows = self.gold_rows(40)
         eng = self.engine("anchor", tta_rotations=2)
         api.run_requests(eng, self.write_requests(rows), self.dir / "run", log=None)
-        fit = api.fit_temperature(self.dir / "run" / self.ev.TABLE_NAME, min_items=5, seed=3)
+        fit = api.fit_temperature(self.dir / "run" / self.ev.TABLE_NAME, min_items=5, seed=3, allow_evaluation_data=True)      # suite rows
         items = self.ev.calibration_items(self.dir / "run", rows)
         direct = self.cal.fit_groups(items, by="question_type", holdout=0.5, seed=3, baseline=self.tm.TEMPERATURE, grid=(0.5, 4.0), min_items=5)
         for key in ("temperatures", "default", "n_fit", "n_holdout", "fit_counts", "holdout", "baseline"):
@@ -354,11 +399,29 @@ class ApiFlow(HermeticTestCase):
         self.assertEqual(sorted(fit["temperatures"]), ["choice", "noul"])
         self.assertEqual(fit["n_items"], len(items))
         self.assertTrue(fit["source"].endswith(self.ev.TABLE_NAME))
-        self.assertEqual(api.fit_temperature(self.dir / "run", min_items=5, seed=3)["temperatures"], fit["temperatures"])
+        self.assertEqual(api.fit_temperature(self.dir / "run", min_items=5, seed=3, allow_evaluation_data=True)["temperatures"],
+                         fit["temperatures"])
+        self.assertEqual((fit["fitted_on"], fit["evaluation_rows"]), ({"public-suite": 80}, 80))
+
+    def dev_rows(self, count=30):
+        """The same questions as plain request rows (a dev split of a training corpus), not rows of the public suite."""
+        return [{"example_id": f"dev{i}", "request": {k: row[k] for k in ("state", "questions")}, "gold": row["expected"]}
+                for i, row in enumerate(self.gold_rows(count))]
+
+    @needs_pyarrow
+    def test_a_run_on_the_public_suite_cannot_be_fitted_but_a_run_on_dev_rows_can(self):
+        api.run_requests(self.engine("anchor"), self.write_requests(self.gold_rows(12), "suite.jsonl"), self.dir / "suite", log=None)
+        api.run_requests(self.engine("anchor"), self.write_requests(self.dev_rows(12), "dev.jsonl"), self.dir / "dev", log=None)
+        with self.assertRaisesRegex(api.ApiError, "public-suite"):
+            api.fit_temperature(self.dir / "suite", min_items=3)
+        fit = api.fit_temperature(self.dir / "dev", min_items=3)
+        self.assertEqual((fit["fitted_on"], fit["evaluation_rows"]), ({"requests": 24}, 0))
+        env = json.loads((self.dir / "suite" / self.ev.ENVIRONMENT_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(env["origins"], {"public-suite": 12})
 
     @needs_pyarrow
     def test_the_fitted_temperatures_go_back_into_an_engine(self):
-        rows = self.gold_rows(40)
+        rows = self.dev_rows(40)
         api.run_requests(self.engine("anchor"), self.write_requests(rows), self.dir / "run", log=None)
         fit = api.fit_temperature(self.dir / "run", min_items=5)
         eng = self.engine("anchor", temperatures=fit["temperatures"])

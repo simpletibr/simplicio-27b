@@ -20,30 +20,31 @@ models:
   anchor:
     name: pplx
     repo: perplexity-ai/pplx-decider-v1.2
-    revision: null
+    revision: cce0f3f80033e9d89d80831d5281fd72124aacce       # pplx-decider-v1.2, main em 2026-10-19
     protocol: pplx_joint
   # Doadores de BACKBONE (Apache-2.0). weight = peso relativo entre doadores; lambda (grade abaixo)
   # escala o total. Cabecas nunca sao mediadas (fase0b). Lychee (CC BY-NC) e amos (cabeca incompativel)
   # ficam de fora de proposito.
   donors:
-    - {name: d3,       repo: vllm-sr/d3,       weight: 1.0, enabled: true,  revision: null}
+    - {name: d3,       repo: vllm-sr/d3,       weight: 1.0, enabled: true,  revision: cf15549a78fc52598ddd1951f321c58372bbd64f}
     # d3-turbo usa mascara prefix_bidir (diferente da ancora): opcional e sinalizado, desligado por padrao
-    - {name: d3-turbo, repo: vllm-sr/d3-turbo, weight: 0.5, enabled: false, revision: null}
+    - {name: d3-turbo, repo: vllm-sr/d3-turbo, weight: 0.5, enabled: false, revision: a0f3e9e59ebd1202fe1d4de1c4c0f9a986758cbb}
   # LoRA do usuario (adapter sobre Qwen/Qwen3.8-27B). delta = (alpha/r) * B@A, somado com peso pequeno.
   # Vem SO do adapter, nunca tambem dos shards ja mesclados (contaria duas vezes).
   lora:
     repo: wesleysimplicio/Simplicio-27B
-    revision: null
+    revision: 3c725e4fa45ca857a91e3e77c0156c36edbf7052       # adaptador LoRA, main em 2026-10-12
     weight: 0.1
     weight_grid: [0.1, 0.25]
     enabled: true
   # Modelos 4B para o ensaio (F1/F4): fp16 no T4, sem NF4
   rehearsal:
-    pplx_flash: {repo: perplexity-ai/pplx-decider-flash-v1.2, protocol: pplx_joint}
-    d3_mini:    {repo: vllm-sr/d3-mini,                       protocol: d3}
+    pplx_flash: {repo: perplexity-ai/pplx-decider-flash-v1.2, revision: 9ff7cf9838e59df461c276b7699d56b244d2af58, protocol: pplx_joint}
+    d3_mini:    {repo: vllm-sr/d3-mini,                       revision: bd0090dd758d32ba59ef5c749910a8e87fc4391f, protocol: d3}
   # d3 com o protocolo proprio dele (uma pergunta por passada, leitura no ultimo token): so para a fidelidade
   d3:
     repo: vllm-sr/d3
+    revision: cf15549a78fc52598ddd1951f321c58372bbd64f
     protocol: d3
 
 merge:
@@ -67,7 +68,6 @@ eval:
   max_proxy_tokens: 6000           # linhas maiores ficam fora da amostra (T4 16 GB); contadas no manifest
   quant: nf4                       # nf4 | fp16 | bf16 | none
   compute_dtype: float16           # T4 nao tem bf16
-  double_quant: true
   max_gpu_gb: null                 # teto opcional de memoria por GPU (GB) no planejamento; vazio = a que a placa tem
   batch_tokens: 4096
   min_per_benchmark: 4             # piso de grupos por benchmark ao encolher a amostra por orcamento
@@ -90,8 +90,8 @@ fidelity:                          # F1: argmax igual ao resultado bf16 publicad
   min_rows: 500
   seed: 20261021
   published:
-    d3_mini: {dataset: vllm-sr/d3-mini-decision-index, run: d3-mini}
-    d3:      {dataset: vllm-sr/d3-decision-index,      run: d3}
+    d3_mini: {dataset: vllm-sr/d3-mini-decision-index, revision: 5f7068bacba93972219f721eb3e2b09cb33caf91, run: d3-mini}
+    d3:      {dataset: vllm-sr/d3-decision-index,      revision: 0cfbfd61699fd4c614658d0112616cd5fea11a89, run: d3}
 
 gates:                             # criterios do report.py
   g0_agree_4b: 0.98                # G0 (#66): 4B, argmax igual >= 98% em >= 500 linhas

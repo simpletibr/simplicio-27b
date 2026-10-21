@@ -122,6 +122,27 @@ class EvaluateFlow(HermeticTestCase):
         out = self.ev.run_requests(self.engine(), self.dir / "mixed.jsonl", self.dir / "mixed", log=None)
         self.assertEqual(out["counts"], {"ok": 3, "unsupported": 1})
 
+    def test_a_row_too_long_for_the_memory_is_the_only_unsupported_row_of_its_chunk(self):
+        rows = tiny_rows(3)
+        rows[1]["state"] = "x " * 60                              # the only one that does not fit
+        write_rows(self.dir / "oom.jsonl", rows)
+        decider = self.tm.dense_decider(self.state, self.head)
+        sizes = [max(c.length for c in decider.encoder.plan(r, decider.max_length)) for r in
+                 ({"state": rows[0]["state"], "questions": rows[0]["questions"]}, {"state": rows[1]["state"], "questions": rows[1]["questions"]})]
+        limit = (sizes[0] + sizes[1]) // 2
+        real = decider.reference_logits
+
+        def flaky(chunks):
+            if any(c.length > limit for c in chunks):
+                raise self.E.OOM_ERRORS[0]("CUDA out of memory (simulated)")
+            return real(chunks)
+
+        decider.reference_logits = flaky
+        out = self.ev.run_requests(self.E.DecisionEngine(decider), self.dir / "oom.jsonl", self.dir / "oom", chunk=16, log=None)
+        self.assertEqual(out["counts"], {"ok": 2, "unsupported": 1})
+        resumed = self.ev.run_requests(self.E.DecisionEngine(decider), self.dir / "oom.jsonl", self.dir / "oom", chunk=16, log=None)
+        self.assertEqual(resumed["rows"], 0)                      # the unsupported row is final, the two good ones are done
+
     @needs_kit
     def test_the_results_file_is_read_by_the_kits_own_loader(self):
         from decision_index.scoring.report import load_results
@@ -166,6 +187,23 @@ class EvaluateFlow(HermeticTestCase):
             second = self.ev.evaluate_sample(self.engine(), self.dir / "sample", self.dir / "eval", budget=budget, log=None, name="tiny", score=False)
         self.assertEqual(second["plan"], first["plan"])
         self.assertEqual(second["run"]["rows"], 0)
+
+    def test_the_measured_throughput_of_the_plan_prices_the_first_chunk_of_every_call(self):
+        sample.write(sample.select(self.rows, per_benchmark=6, seed=7, edition="0.3"), self.dir / "sample")
+        budget = budget_mod.Budget(session_hours=0.1, reserve_minutes=0)
+        slow = {"tokens_per_second": 4.0, "n": 8, "seconds": 1.0, "proxy_tokens": 4, "requests_per_second": 1.0, "run_ids": [], "failed": 0}
+        seen = []
+        real = self.ev.run_requests
+
+        def spy(*args, **kw):
+            seen.append(kw.get("tokens_per_second"))
+            return real(*args, **kw)
+
+        with mock.patch.object(self.ev, "measure_throughput", return_value=slow), mock.patch.object(self.ev, "run_requests", side_effect=spy):
+            self.ev.evaluate_sample(self.engine(), self.dir / "sample", self.dir / "eval", budget=budget, safety=0.5, log=None, name="tiny", score=False)
+            self.ev.evaluate_sample(self.engine(), self.dir / "sample", self.dir / "eval", budget=budget, log=None, name="tiny", score=False)
+            self.ev.evaluate_sample(self.engine(), self.dir / "sample", self.dir / "forced", per_benchmark=1, log=None, name="forced", score=False)
+        self.assertEqual(seen, [4.0, 4.0, None])                                  # a forced size has no measurement to price with
 
     @needs_kit
     def test_evaluate_sample_scores_with_the_kit(self):
