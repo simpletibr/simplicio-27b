@@ -1,0 +1,74 @@
+[
+ {
+  "name": "plain",
+  "state": "The card is late.",
+  "reasoning": "Step 1.\nSo B.",
+  "max_chars": null,
+  "folded_state": "The card is late.\n\nRaciocínio:\nStep 1.\nSo B."
+ },
+ {
+  "name": "state with trailing whitespace",
+  "state": "The card is late.\n\n  ",
+  "reasoning": "Step 1.\nSo B.",
+  "max_chars": null,
+  "folded_state": "The card is late.\n\nRaciocínio:\nStep 1.\nSo B."
+ },
+ {
+  "name": "reasoning that holds the label line",
+  "state": "The card is late.",
+  "reasoning": "Step 1.\nRaciocínio:\nSo B.",
+  "max_chars": null,
+  "folded_state": "The card is late.\n\nRaciocínio:\nStep 1.\nRaciocínio :\nSo B."
+ },
+ {
+  "name": "reasoning with CRLF and CR",
+  "state": "The card is late.",
+  "reasoning": "Step 1.\r\nStep 2.\rSo B.",
+  "max_chars": null,
+  "folded_state": "The card is late.\n\nRaciocínio:\nStep 1.\nStep 2.\nSo B."
+ },
+ {
+  "name": "reasoning with three or more blank lines",
+  "state": "The card is late.",
+  "reasoning": "Step 1.\n\n\n\nSo B.",
+  "max_chars": null,
+  "folded_state": "The card is late.\n\nRaciocínio:\nStep 1.\n\nSo B."
+ },
+ {
+  "name": "trailing spaces on the lines of the reasoning",
+  "state": "The card is late.",
+  "reasoning": "Step 1.   \nSo B.\t\n",
+  "max_chars": null,
+  "folded_state": "The card is late.\n\nRaciocínio:\nStep 1.\nSo B."
+ },
+ {
+  "name": "label line with other spaces and indent",
+  "state": "The card is late.",
+  "reasoning": "Step 1.\n  Raciocínio:  \nSo B.",
+  "max_chars": null,
+  "folded_state": "The card is late.\n\nRaciocínio:\nStep 1.\n  Raciocínio :\nSo B."
+ },
+ {
+  "name": "empty state",
+  "state": "",
+  "reasoning": "So B.",
+  "max_chars": null,
+  "folded_state": "Raciocínio:\nSo B."
+ },
+ {
+  "name": "state given as a mapping",
+  "state": {
+   "k": 1
+  },
+  "reasoning": "So B.",
+  "max_chars": null,
+  "folded_state": "{\"k\": 1}\n\nRaciocínio:\nSo B."
+ },
+ {
+  "name": "long reasoning is clipped to its end behind a notice",
+  "state": "The card is late.",
+  "reasoning": "Step 0: the card was reissued and the old one blocked.\nStep 1: the card was reissued and the old one blocked.\nStep 2: the card was reissued and the old one blocked.\nStep 3: the card was reissued and the old one blocked.\nStep 4: the card was reissued and the old one blocked.\nStep 5: the card was reissued and the old one blocked.\nStep 6: the card was reissued and the old one blocked.\nStep 7: the card was reissued and the old one blocked.\nStep 8: the card was reissued and the old one blocked.\nStep 9: the card was reissued and the old one blocked.\nStep 10: the card was reissued and the old one blocked.\nStep 11: the card was reissued and the old one blocked.",
+  "max_chars": 200,
+  "folded_state": "The card is late.\n\nRaciocínio:\n[... 495 caracteres omitidos ...]\nStep 9: the card was reissued and the old one blocked.\nStep 10: the card was reissued and the old one blocked.\nStep 11: the card was reissued and the old one blocked."
+ }
+]

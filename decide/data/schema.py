@@ -21,6 +21,7 @@ CORPUS_COLUMNS = ("example_id", "source", "license", "split", "lang", "request",
 TEACHER_COLUMNS = ("example_id", "question_id", "teacher", "codes", "probs", "temperature")
 SPLITS = ("train", "dev")
 MANIFEST_NAME = "manifest.json"
+SEAL_TOOL = "seal_directory"      # the `tool` stamp of the manifests written by seal_directory
 PROB_TOLERANCE = 1e-3
 BATCH_ROWS = 20_000
 _LANG = re.compile(r"^(mul|[a-z]{2,3}(-[A-Za-z0-9]{2,8})*)$")
@@ -329,6 +330,32 @@ def corpus_files(path: os.PathLike, *, require_manifest: bool = False, verify: b
         raise ManifestError(f"{p} has no {MANIFEST_NAME} listing its parts: it is not the output of a finished build "
                             "(rebuild it, or pass the parquet file itself)")
     return sorted(f for f in p.rglob("*.parquet") if f.is_file())
+
+
+def seal_directory(directory: os.PathLike, *, kind: str = "corpus", extra: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    """Write ``manifest.json`` for a folder of parquet parts that no builder sealed (labels copied from Modal, a corpus
+    assembled by hand): every ``*.parquet`` below it, sorted by relative path, with its rows and sha256.
+
+    Builders that know their parts (``build_corpus``, ``decontaminate``, ``build_targets``) write their own manifest;
+    this is for the rest.  Sealing again replaces the manifest this function wrote, so run it after the folder changed;
+    the manifest of a builder (or a hand-made one) is refused, because sealing it again would list every parquet file in
+    the folder, the stale parts nobody approved included.  Interrupted ``*.tmp`` files are not parts.  ``extra`` adds
+    fields (``sources``, ...) but cannot replace the listing or the ``tool`` stamp."""
+    root = Path(directory)
+    reserved = {"parts", "rows", "kind", "schema_version", "tool"}
+    clash = sorted(reserved & set(extra or {}))
+    if clash:
+        raise ValueError(f"extra cannot set {', '.join(clash)}: the listing is computed from the parts")
+    assert_manifest_owner(root, SEAL_TOOL)
+    _, pq = _arrow()
+    files = sorted((f for f in root.rglob("*.parquet") if f.is_file()), key=lambda f: f.relative_to(root).as_posix())
+    if not files:
+        raise SchemaError(f"{root}: no *.parquet parts to seal")
+    parts = [{"name": f.relative_to(root).as_posix(), "rows": pq.ParquetFile(f).metadata.num_rows, "sha256": sha256_file(f)} for f in files]
+    manifest: Dict[str, Any] = {"schema_version": SCHEMA_VERSION, "kind": kind, "tool": SEAL_TOOL, "rows": sum(p["rows"] for p in parts), "parts": parts,
+                                **dict(extra or {})}
+    write_manifest(root / MANIFEST_NAME, manifest)
+    return manifest
 
 
 def _read_rows(path: os.PathLike, columns: Sequence[str], *, require_manifest: bool = False) -> Iterator[Dict[str, Any]]:
