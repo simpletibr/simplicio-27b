@@ -812,9 +812,30 @@ class SealContract(unittest.TestCase):
         self.part("a-0000.parquet", ["s:0"])
         manifest = self.S.seal_directory(self.root, extra={"sources": {"s": {"rows": 1}}})
         self.assertEqual(manifest["sources"], {"s": {"rows": 1}})
-        for key in ("parts", "rows", "kind", "schema_version"):
+        for key in ("parts", "rows", "kind", "schema_version", "tool"):
             with self.assertRaises(ValueError, msg=key):
                 self.S.seal_directory(self.root, extra={key: 1})
+
+    def test_the_sealed_manifest_carries_the_stamp_of_the_tool(self) -> None:
+        self.part("a-0000.parquet", ["s:0"])
+        self.assertEqual(self.S.seal_directory(self.root)["tool"], "seal_directory")
+
+    def test_sealing_never_replaces_a_manifest_another_tool_wrote(self) -> None:
+        # a manifest says what a folder is.  Sealing a build output again would list every parquet file in it, the stale
+        # parts nobody approved included (the same rule as the builders: second review of PR #74)
+        self.part("a-0000.parquet", ["s:0"])
+        self.part("stale-0000.parquet", ["s:9"])
+        manifest = self.root / "manifest.json"
+        for content in ({"kind": "corpus", "tool": "build_corpus", "parts": []}, {"kind": "corpus", "parts": []}):
+            self.S.write_manifest(manifest, content)
+            before = manifest.read_bytes()
+            with self.assertRaises(self.S.ManifestError, msg=str(content)):
+                self.S.seal_directory(self.root)
+            self.assertEqual(manifest.read_bytes(), before)
+        manifest.write_text("{not json", encoding="utf-8")
+        with self.assertRaises(self.S.ManifestError):
+            self.S.seal_directory(self.root)
+        self.assertEqual(manifest.read_text(encoding="utf-8"), "{not json")
 
 
 @needs_pyarrow
@@ -964,7 +985,8 @@ class BuildTargetsContract(unittest.TestCase):
         self.build()
         targets = self.root / "targets"
         shutil.copy(targets / "s-0000.parquet", targets / "old-0000.parquet")
-        shutil.copy(targets / "s-0000.parquet.done.json", targets / "old-0000.parquet.done.json")
+        marker = json.loads((targets / "s-0000.parquet.done.json").read_text(encoding="utf-8"))
+        (targets / "old-0000.parquet.done.json").write_text(json.dumps(dict(marker, name="old-0000.parquet")), encoding="utf-8")   # what an earlier run left
         self.assertEqual(len(DT.load_examples(targets)), 6, "the stray copy is ignored by the reader")
         again = self.build()
         self.assertEqual(sorted(again["removed_stale"]), ["old-0000.parquet", "old-0000.parquet.done.json"])
@@ -1025,6 +1047,120 @@ class BuildTargetsContract(unittest.TestCase):
         self.assertEqual(TRAIN.digest_of(self.root / "targets"), first)
         self.build(("t1", "t2"), "--combiner", self.combiner(method="mean", teachers={"t1": {}, "t2": {}}))
         self.assertNotEqual(TRAIN.digest_of(self.root / "targets"), first, "the rebuilt part has other bytes, so another sha256")
+
+    # ---------------------------------------------------------------- what a run may overwrite and delete (the rules of decontaminate, SCHEMA.md section 1)
+    def fingerprints(self, directory: Path) -> dict:
+        return {f.name: self.S.sha256_file(f) for f in sorted(Path(directory).iterdir()) if f.is_file()}
+
+    def run_build(self, out: str = "targets", **kw) -> dict:
+        return self.BT.build(self.root / "corpus", [self.root / "labels" / "t1"], self.root / out, **kw)
+
+    def test_out_cannot_be_a_file(self) -> None:
+        target = self.root / "targets"
+        target.write_text("precious", encoding="utf-8")
+        with self.assertRaises(self.BT.TargetError) as caught:
+            self.run_build()
+        self.assertIn("--out", str(caught.exception))
+        self.assertEqual(target.read_text(encoding="utf-8"), "precious")
+
+    def test_out_never_overlaps_an_input(self) -> None:
+        # --out = the corpus folder would rewrite its parts as targets; --out = a label folder would delete its parquet files
+        self.write_trace("alpha", [("s:0", "think", 1, "stop")])
+        corpus, labels, traces = self.root / "corpus", self.root / "labels" / "t1", self.root / "traces"
+        watched = (corpus, labels, traces / "alpha")
+        before = {d: self.fingerprints(d) for d in watched}
+        for out in (corpus, labels, traces, traces / "alpha", corpus / "inside", self.root / "labels", self.root):
+            with self.assertRaises(self.BT.TargetError, msg=str(out)):
+                self.BT.build(corpus, [labels], out, traces_path=traces)
+        for out in (corpus, self.root):                              # an input given as one file counts as itself
+            with self.assertRaises(self.BT.TargetError, msg=f"{out} with the corpus given as one file"):
+                self.BT.build(corpus / "s-0000.parquet", [labels], out)
+        self.assertEqual({d: self.fingerprints(d) for d in watched}, before)
+        self.assertFalse((corpus / "inside").exists())
+
+    def test_files_the_builder_did_not_write_survive_every_run(self) -> None:
+        from decide.train import data as DT
+
+        targets = self.root / "targets"
+        targets.mkdir()
+        (targets / "notes.parquet").write_bytes(b"not ours")
+        (targets / "notes.parquet.tmp").write_bytes(b"not ours either")
+        (targets / "s-9999.parquet").write_bytes(b"looks like a part of this build, is not one")
+        (targets / "other.done.json").write_text('{"made": "by hand"}', encoding="utf-8")
+        (targets / "s-9999.parquet.done.json").write_text('{"name": "s-9999.parquet", "note": "a marker-shaped file"}', encoding="utf-8")
+        (targets / "copy.parquet.done.json").write_text(json.dumps({"name": "notes.parquet", "rows": 1, "sha256": "0" * 64, "fingerprint": "x", "stats": {}}),
+                                                        encoding="utf-8")                                    # the right shape, the wrong file name
+        (targets / "readme.txt").write_text("keep me", encoding="utf-8")
+        before = self.fingerprints(targets)
+        report = self.build()
+        self.assertEqual(report["removed_stale"], [])
+        self.assertEqual({name: self.fingerprints(targets).get(name) for name in before}, before)
+        manifest = json.loads((targets / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual([p["name"] for p in manifest["parts"]], ["s-0000.parquet"])
+        self.assertEqual(len(DT.load_examples(targets)), 6, "the parquet files the builder did not write are not data")
+        self.build()                                                  # and again, on the folder it now owns
+        self.assertEqual({name: self.fingerprints(targets).get(name) for name in before}, before)
+
+    def add_second_part(self) -> None:
+        extra = self.S.corpus_row(example_id="s:7", source="s", license="mit", split="train", lang="en",
+                                  request=choice_request("Question number 7?", ["a", "b", "c"], keys=["x", "y", "z"]), gold={"q1": "x"})
+        self.S.write_corpus_part(self.root / "corpus" / "s-0001.parquet", [extra])
+        self.S.seal_directory(self.root / "corpus")
+
+    def test_a_part_the_previous_manifest_lists_is_removed_when_it_leaves_the_corpus(self) -> None:
+        # a marker can be lost (a copy that skipped it, a cleanup): the manifest the builder wrote still names the part
+        self.add_second_part()
+        self.build()
+        targets = self.root / "targets"
+        self.assertEqual([p["name"] for p in json.loads((targets / "manifest.json").read_text(encoding="utf-8"))["parts"]], ["s-0000.parquet", "s-0001.parquet"])
+        (targets / "s-0001.parquet.done.json").unlink()
+        (self.root / "corpus" / "s-0001.parquet").unlink()
+        self.S.seal_directory(self.root / "corpus")
+        again = self.build()
+        self.assertEqual(again["removed_stale"], ["s-0001.parquet"])
+        self.assertEqual(sorted(p.name for p in targets.glob("s-0001*")), [])
+
+    def test_a_part_that_left_the_corpus_is_removed_by_its_marker_even_after_an_interrupted_run(self) -> None:
+        self.add_second_part()
+        self.build()
+        targets = self.root / "targets"
+        (targets / "manifest.json").unlink()                           # what a run that died after starting leaves behind
+        (self.root / "corpus" / "s-0001.parquet").unlink()
+        self.S.seal_directory(self.root / "corpus")
+        again = self.build()
+        self.assertEqual(sorted(again["removed_stale"]), ["s-0001.parquet", "s-0001.parquet.done.json"])
+
+    def test_a_manifest_or_report_that_another_tool_wrote_is_not_replaced(self) -> None:
+        targets = self.root / "targets"
+        targets.mkdir()
+        self.S.write_manifest(targets / "manifest.json", {"kind": "corpus", "tool": "decontaminate", "parts": []})
+        before = self.fingerprints(targets)
+        with self.assertRaises(self.BT.TargetError) as caught:
+            self.run_build()
+        self.assertIn("manifest.json", str(caught.exception))
+        self.assertEqual(self.fingerprints(targets), before)
+        (targets / "manifest.json").unlink()
+        self.S.write_manifest(targets / "report.json", {"somebody": "else"})
+        before = self.fingerprints(targets)
+        with self.assertRaises(self.BT.TargetError) as caught:
+            self.run_build()
+        self.assertIn("report.json", str(caught.exception))
+        self.assertEqual(self.fingerprints(targets), before)
+
+    def test_half_written_files_are_removed_only_when_they_are_the_builders(self) -> None:
+        self.build()
+        targets = self.root / "targets"
+        for name in ("s-0000.parquet.tmp", "s-0000.parquet.done.json.tmp", "manifest.json.tmp", "report.json.tmp"):
+            (targets / name).write_bytes(b"half")
+        (targets / "notes.parquet.tmp").write_bytes(b"somebody else's")
+        again = self.build()
+        self.assertEqual(sorted(again["removed_stale"]), ["manifest.json.tmp", "report.json.tmp", "s-0000.parquet.done.json.tmp", "s-0000.parquet.tmp"])
+        self.assertEqual(sorted(p.name for p in targets.glob("*.tmp")), ["notes.parquet.tmp"])
+
+    def test_the_manifest_and_the_report_carry_the_stamp_of_the_tool(self) -> None:
+        self.build()
+        for name in ("manifest.json", "report.json"):
+            self.assertEqual(json.loads((self.root / "targets" / name).read_text(encoding="utf-8"))["tool"], "build_targets", name)
 
     # ---------------------------------------------------------------- thinker traces (SCHEMA.md, section 10)
     def write_trace(self, thinker: str, items, part: str = "part-0000.parquet") -> None:
