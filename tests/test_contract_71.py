@@ -1760,7 +1760,7 @@ class StageContract(unittest.TestCase):
             (src / "decision_config.json").write_text('{"temperature": 1.0}', encoding="utf-8")
             (src / "tokenizer.json").write_text("{}", encoding="utf-8")
             PL.stage(src, dst)
-            self.assertEqual(sorted(p.name for p in dst.iterdir()), sorted(p.name for p in src.iterdir()) + [PL.STAGED_MARK])
+            self.assertEqual(sorted(p.name for p in dst.iterdir()), sorted([p.name for p in src.iterdir()] + [PL.STAGED_MARK]))
             self.assertTrue(os.path.samefile(src / "model-00001.safetensors", dst / "model-00001.safetensors"), "weights are linked, not copied")
             (dst / "decision_config.json").write_text('{"temperature": 2.0}', encoding="utf-8")
             self.assertEqual(json.loads((src / "decision_config.json").read_text(encoding="utf-8"))["temperature"], 1.0, "a config is a copy: fitting the staged one leaves the source alone")
@@ -1823,10 +1823,10 @@ class PreflightContract(unittest.TestCase):
         from decide.rental import preflight as PF
 
         h100 = (("NVIDIA H100 80GB HBM3", 80.0),) * 8
-        got = self.check("full_8xh100", gpus=h100, ram=1024.0)
+        got = self.check("full_8xh100", gpus=h100, ram=1024.0, free=2000.0)
         self.assertFalse(got["ok"])
         self.assertIn("ddp_does_not_fit", " ".join(got["problems"]))
-        ignored = self.check("full_8xh100", gpus=h100, ram=1024.0, ignore_warnings=("ddp_does_not_fit",))
+        ignored = self.check("full_8xh100", gpus=h100, ram=1024.0, free=2000.0, ignore_warnings=("ddp_does_not_fit",))
         self.assertTrue(ignored["ok"], ignored)
         self.assertIn("ddp_does_not_fit", " ".join(ignored["warnings"]))
         self.assertEqual(PF.BLOCKING, ("ddp_does_not_fit", "profile_host_ram_too_small"))
@@ -1912,7 +1912,7 @@ class DayReportContract(unittest.TestCase):
         from decide.rental import state as ST
         from decide.rental import estimate as E
 
-        ticks = iter([0.0, 3600.0, 3600.0, 3600.0 + 7200.0])
+        ticks = iter([0.0, 3600.0, 3600.0, 3600.0 + 7200.0, 3600.0 + 7200.0])
         day = ST.DayState(Path(tmp) / "state", identity={"profile": "p", "config": "c"}, clock=lambda: next(ticks))
         day.begin("fetch")
         day.done("fetch", outputs={})
@@ -1951,6 +1951,111 @@ class DayReportContract(unittest.TestCase):
             self.assertIn("UNVERIFIED", rendered)
             self.assertIn("g4", rendered)
             self.assertIn("stopped", rendered)
+
+
+# --------------------------------------------------------------------------- inputs of the day
+
+class StartCheckpointContract(unittest.TestCase):
+    def folder(self, tmp, *, params=1000, size=2000, shards=("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"), readout=True, config=True):
+        root = Path(tmp) / "start"
+        root.mkdir()
+        weight_map = {f"layer{i}": shard for i, shard in enumerate(shards)}
+        (root / "model.safetensors.index.json").write_text(json.dumps({"metadata": {"total_parameters": params, "total_size": size}, "weight_map": weight_map}), encoding="utf-8")
+        for shard in shards:
+            (root / shard).write_bytes(b"x" * 10)
+        if readout:
+            (root / "readout.safetensors").write_bytes(b"y")
+        if config:
+            (root / "decision_config.json").write_text(json.dumps({"temperature": 1.38}), encoding="utf-8")
+        return root
+
+    def test_a_checkpoint_with_the_expected_size_passes_and_reports_what_it_found(self) -> None:
+        from decide.rental import inputs as IN
+
+        with tempfile.TemporaryDirectory() as tmp:
+            facts = IN.check_start_checkpoint(self.folder(tmp), expected=(1000, 2000))
+            self.assertEqual((facts["total_parameters"], facts["total_size"], facts["shards"]), (1000, 2000, 2))
+
+    def test_the_real_numbers_of_the_plan_are_the_default(self) -> None:
+        from decide.rental import hardware as HW
+        from decide.rental import inputs as IN
+
+        self.assertEqual(IN.EXPECTED_START, (HW.PARAMS, HW.WEIGHT_BYTES))
+
+    def test_a_different_size_is_refused_with_both_numbers(self) -> None:
+        from decide.rental import inputs as IN
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(IN.InputsError) as caught:
+                IN.check_start_checkpoint(self.folder(tmp, params=999), expected=(1000, 2000))
+            self.assertIn("999", str(caught.exception))
+            self.assertIn("1000", str(caught.exception))
+
+    def test_a_missing_shard_the_readout_or_the_config_is_refused(self) -> None:
+        from decide.rental import inputs as IN
+
+        for kw, word in (({"readout": False}, "readout.safetensors"), ({"config": False}, "decision_config.json")):
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaises(IN.InputsError) as caught:
+                    IN.check_start_checkpoint(self.folder(tmp, **kw), expected=(1000, 2000))
+                self.assertIn(word, str(caught.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.folder(tmp)
+            (root / "model-00002-of-00002.safetensors").unlink()
+            with self.assertRaises(IN.InputsError) as caught:
+                IN.check_start_checkpoint(root, expected=(1000, 2000))
+            self.assertIn("model-00002-of-00002.safetensors", str(caught.exception))
+
+    def test_without_expected_numbers_only_the_layout_is_checked(self) -> None:
+        from decide.rental import inputs as IN
+
+        with tempfile.TemporaryDirectory() as tmp:
+            IN.check_start_checkpoint(self.folder(tmp, params=1), expected=None)
+
+
+@needs_pyarrow
+class DatasetInputsContract(unittest.TestCase):
+    def corpus(self, tmp, name="corpus-limpo"):
+        from decide.data import schema as S
+
+        root = Path(tmp) / name
+        rows = [S.corpus_row(example_id=f"c:{i}", source="alpha", license="mit", split="train", lang="en",
+                             request={"state": f"s{i}", "questions": {"q1": {"type": "choice", "instructions": "pick", "criteria": {"A": "a", "B": "b"}}}}, gold={"q1": "A"})
+                for i in range(3)]
+        S.write_corpus_part(root / "part-0000.parquet", rows)
+        S.seal_directory(root)
+        return root
+
+    def test_a_sealed_dataset_passes_and_a_part_that_changed_does_not(self) -> None:
+        from decide.data import schema as S
+        from decide.rental import inputs as IN
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.corpus(tmp)
+            facts = IN.verify_dataset(root, name="corpus", manifest_required=True)
+            self.assertEqual(facts["rows"], 3)
+            (root / "part-0000.parquet").write_bytes((root / "part-0000.parquet").read_bytes() + b"x")
+            with self.assertRaises(S.ManifestError):
+                IN.verify_dataset(root, name="corpus", manifest_required=True)
+
+    def test_a_dataset_without_a_manifest_is_refused_unless_it_may_be_unsealed(self) -> None:
+        from decide.data import schema as S
+        from decide.rental import inputs as IN
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.corpus(tmp)
+            (root / "manifest.json").unlink()
+            with self.assertRaises(S.ManifestError):
+                IN.verify_dataset(root, name="corpus", manifest_required=True)
+            facts = IN.verify_dataset(root, name="labels", manifest_required=False)
+            self.assertIn("not checked", facts["warning"])
+
+    def test_a_missing_folder_names_itself(self) -> None:
+        from decide.rental import inputs as IN
+
+        with self.assertRaises(IN.InputsError) as caught:
+            IN.verify_dataset(Path("/nonexistent/corpus-limpo"), name="corpus", manifest_required=True)
+        self.assertIn("corpus-limpo", str(caught.exception))
 
 
 if __name__ == "__main__":
