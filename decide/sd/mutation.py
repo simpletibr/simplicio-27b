@@ -222,6 +222,23 @@ MUTATIONS: Tuple[Mutation, ...] = (
     Mutation("remote", "token-over-plain-http", R, "            if problem:", "            if False and problem:", REMOTE_TESTS,
              "the reader builds a client that would send the token unencrypted to another machine"),
 
+    # ---- a safetensors header is a claim about bytes; it is checked before any tensor is read
+    Mutation("remote", "header-negative-offset-accepted", R, "or not 0 <= offsets[0] <= offsets[1]:", "or not offsets[0] <= offsets[1]:", REMOTE_TESTS,
+             "a negative offset reads the header's own bytes as a tensor"),
+    Mutation("remote", "header-size-not-checked-against-shape", R, "if offsets[1] - offsets[0] != numel * DTYPE_SIZES[dtype]:",
+             "if False and offsets[1] - offsets[0] != numel * DTYPE_SIZES[dtype]:", REMOTE_TESTS, "a tensor whose byte span is not shape x dtype is reshaped from the wrong bytes"),
+    Mutation("remote", "header-gap-or-overlap-accepted", R, "if a != expected:", "if a < expected:", REMOTE_TESTS, "a hole between two tensors passes"),
+    Mutation("remote", "header-longer-than-the-file-accepted", R, "if total is not None and 8 + n > total:", "if False and total is not None and 8 + n > total:", REMOTE_TESTS,
+             "a header length beyond the end of the file is read as an empty model"),
+    Mutation("remote", "header-cut-short-accepted", R, "if len(first) < 8 + n:", "if False and len(first) < 8 + n:", REMOTE_TESTS,
+             "a header that stops early is parsed as far as it goes"),
+    Mutation("remote", "shard-name-from-the-index-unchecked", R, "if not safe_path(shard_name):", "if False and not safe_path(shard_name):", REMOTE_TESTS,
+             "a shard name with .. or ? from a remote index goes into the URL"),
+    Mutation("remote", "url-built-from-any-path", R, "if not safe_path(filename):", "if False and not safe_path(filename):", REMOTE_TESTS,
+             "any file name, however hostile, becomes part of a URL"),
+    Mutation("remote", "dotdot-segments-allowed", R, 'return isinstance(name, str) and SAFE_PATH.fullmatch(name) is not None and all(part not in (".", "..") for part in name.split("/"))',
+             "return isinstance(name, str) and SAFE_PATH.fullmatch(name) is not None", REMOTE_TESTS, "'..' passes as a path segment"),
+
     # ---- the loader: which tensors are merged with which weights
     Mutation("loader", "donor-weights-misaligned", L, "[weights[i] for i in plan.donors]", "[weights[i] for i in reversed(plan.donors)]",
              ("test_flow_65.LoaderFlow",), "donor i is merged with the weight of donor j"),

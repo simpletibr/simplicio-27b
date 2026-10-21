@@ -233,6 +233,76 @@ class RemoteFlow(HermeticTestCase):
         self.hub.add("org/signed", "extra.safetensors", self.blob)
         self.assertEqual(repo.shard("extra.safetensors").size, len(self.blob))
 
+    # ---- a header that lies: every offset is checked before any tensor is read
+    @staticmethod
+    def crafted(header, data=b""):
+        text = json.dumps(header).encode("utf-8")
+        text += b" " * (-len(text) % 8)
+        return struct.pack("<Q", len(text)) + text + data
+
+    def assert_refused(self, blob, pattern):
+        self.hub.add("org/crafted", "model.safetensors", blob)
+        with self.assertRaisesRegex(remote.RemoteError, pattern):
+            self.repo("org/crafted").shard("model.safetensors")
+
+    def test_a_header_that_lies_about_where_the_bytes_are_is_refused(self):
+        u8 = lambda a, b, n=None: {"dtype": "U8", "shape": [(b - a) if n is None else n], "data_offsets": [a, b]}  # noqa: E731
+        cases = {
+            "a negative offset (it would read the header as a tensor)": (self.crafted({"a": u8(-4, 0, 4)}), "offsets"),
+            "an end before the start": (self.crafted({"a": {"dtype": "U8", "shape": [0], "data_offsets": [8, 4]}}, b"\0" * 8), "offsets"),
+            "a size that is not shape x dtype": (self.crafted({"a": {"dtype": "F32", "shape": [4], "data_offsets": [0, 8]}}, b"\0" * 8), "shape"),
+            "two tensors over the same bytes": (self.crafted({"a": u8(0, 4), "b": u8(0, 4)}, b"\0" * 4), "contiguous"),
+            "a gap between tensors": (self.crafted({"a": u8(0, 4), "b": u8(8, 12)}, b"\0" * 12), "contiguous"),
+            "data that does not start at zero": (self.crafted({"a": u8(4, 8)}, b"\0" * 8), "contiguous"),
+            "a header longer than the file": (struct.pack("<Q", 5000) + b"{}", "header"),
+            "a header that is not JSON": (struct.pack("<Q", 8) + b"not json", "JSON"),
+            "a header that is not an object": (struct.pack("<Q", 8) + b"[1, 2,  ]"[:8], "object|JSON"),
+            "a tensor without offsets": (self.crafted({"a": {"dtype": "U8", "shape": [1]}}, b"\0"), "offsets"),
+            "a shape with a negative size": (self.crafted({"a": {"dtype": "U8", "shape": [-1], "data_offsets": [0, 0]}}), "shape"),
+            "a shape that is not whole numbers": (self.crafted({"a": {"dtype": "U8", "shape": [1.5], "data_offsets": [0, 1]}}, b"\0"), "shape"),
+        }
+        for label, (blob, pattern) in cases.items():
+            with self.subTest(label):
+                self.assert_refused(blob, pattern)
+
+    def test_a_transport_that_cannot_say_the_file_size_still_notices_a_header_cut_short(self):
+        blob = struct.pack("<Q", 5000) + b"{}"
+
+        class Clipping:                                           # a bare `fetch`, as a test double or a local mirror has it: no Content-Range
+            def fetch(self, url, start, end):
+                return bytearray(blob[start:end + 1])
+
+        with self.assertRaisesRegex(remote.RemoteError, "cut short"):
+            remote.SafetensorsFile("x", Clipping())
+        good = self.crafted({"a": {"dtype": "U8", "shape": [2], "data_offsets": [0, 2]}}, b"\0\0")
+
+        class Plain:
+            def fetch(self, url, start, end):
+                return bytearray(good[start:end + 1])
+
+        self.assertEqual(remote.SafetensorsFile("x", Plain()).size, None)                 # no size to check, and nothing wrong with the file
+
+    def test_an_empty_header_and_a_scalar_are_sound_files(self):
+        self.hub.add("org/odd", "empty.safetensors", self.crafted({}))
+        self.assertEqual(self.repo("org/odd").shard("empty.safetensors").names(), [])
+        self.hub.add("org/odd", "scalar.safetensors", self.crafted({"s": {"dtype": "F32", "shape": [], "data_offsets": [0, 4]}}, b"\0" * 4))
+        self.assertEqual(self.repo("org/odd").shard("scalar.safetensors").info("s").numel, 1)
+
+    def test_a_shard_name_from_the_index_cannot_leave_the_repo_or_change_the_url(self):
+        for name in ("../evil.safetensors", "/etc/passwd", "a/../b.safetensors", "a?x=1", "a#frag", "a\\b", "", "http://x/y", "a//b", " a", "a\n", "../404.safetensors"):
+            with self.subTest(repr(name)):
+                self.hub.add("org/hostile", "model.safetensors.index.json", json.dumps({"weight_map": {"w": name}}).encode())
+                with self.assertRaisesRegex(remote.RemoteError, "shard name"):
+                    self.repo("org/hostile").weight_map()
+        self.hub.add("org/fine", "model.safetensors.index.json", json.dumps({"weight_map": {"w": "sub/model-00001-of-00002.safetensors"}}).encode())
+        self.assertEqual(self.repo("org/fine").weight_map(), {"w": "sub/model-00001-of-00002.safetensors"})
+
+    def test_the_url_of_a_file_is_built_only_from_a_safe_path(self):
+        for name in ("../x", "/x", "a?b", "a#b"):
+            with self.subTest(name), self.assertRaisesRegex(remote.RemoteError, "file name"):
+                self.repo().url(name)
+        self.assertTrue(self.repo().url("evaluation/inference-verification.json").endswith("/resolve/main/evaluation/inference-verification.json"))
+
     def test_dtype_table_covers_safetensors_dtypes(self):
         for k in ("F64", "F32", "F16", "BF16", "I64", "I32", "I16", "I8", "U8", "BOOL"):
             self.assertIn(k, remote.DTYPE_SIZES)

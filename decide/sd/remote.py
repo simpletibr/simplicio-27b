@@ -271,6 +271,29 @@ class _Retry(Exception):
 
 # --------------------------------------------------------------------------- safetensors over Range
 
+def _whole_numbers(values: Any, count: Optional[int] = None) -> bool:
+    return isinstance(values, list) and (count is None or len(values) == count) and all(isinstance(v, int) and not isinstance(v, bool) for v in values)
+
+
+def _tensor_entry(url: str, name: str, entry: Any) -> Tuple[str, tuple, int, int]:
+    """`(dtype, shape, start, end)` of one header entry, refusing anything that does not describe exactly the bytes it claims."""
+    if not isinstance(entry, dict):
+        raise RemoteError(f"{url}: the header entry of {name!r} is not an object")
+    dtype, shape, offsets = entry.get("dtype"), entry.get("shape"), entry.get("data_offsets")
+    if dtype not in DTYPE_SIZES:
+        raise RemoteError(f"{url}: unsupported dtype {dtype!r} for {name}")
+    if not _whole_numbers(shape) or any(d < 0 for d in shape):
+        raise RemoteError(f"{url}: tensor {name!r} has an invalid shape {shape!r}")
+    if not _whole_numbers(offsets, 2) or not 0 <= offsets[0] <= offsets[1]:
+        raise RemoteError(f"{url}: tensor {name!r} has data_offsets {offsets!r}; they must be two whole numbers with 0 <= start <= end")
+    numel = 1
+    for d in shape:
+        numel *= d
+    if offsets[1] - offsets[0] != numel * DTYPE_SIZES[dtype]:
+        raise RemoteError(f"{url}: tensor {name!r} spans {offsets[1] - offsets[0]} bytes but its shape {tuple(shape)} of {dtype} needs {numel * DTYPE_SIZES[dtype]}")
+    return dtype, tuple(shape), offsets[0], offsets[1]
+
+
 def _fetch_total(transport, url: str, start: int, end: int) -> Tuple[bytearray, Optional[int]]:
     """`(bytes, size of the whole file or None)`; a transport without `fetch_total` cannot say how big the file is."""
     method = getattr(transport, "fetch_total", None)
@@ -292,19 +315,30 @@ class SafetensorsFile:
         (n,) = struct.unpack("<Q", first[:8])
         if not 0 < n < MAX_HEADER:
             raise RemoteError(f"{url}: implausible safetensors header length {n}")
+        if total is not None and 8 + n > total:
+            raise RemoteError(f"{url}: the header says it is {n} bytes long but the whole file has {total}")
         if 8 + n > len(first):
             first += bytes(transport.fetch(url, len(first), 8 + n - 1))
-        header = json.loads(first[8:8 + n].decode("utf-8"))
+        if len(first) < 8 + n:
+            raise RemoteError(f"{url}: the header is cut short ({len(first) - 8} of {n} bytes)")
+        try:
+            header = json.loads(first[8:8 + n].decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise RemoteError(f"{url}: the header is not valid JSON ({exc})") from exc
+        if not isinstance(header, dict):
+            raise RemoteError(f"{url}: the header is not a JSON object")
         self.metadata = header.pop("__metadata__", {}) or {}
         base = 8 + n
         self.data_start = base
-        self._info: "OrderedDict[str, TensorInfo]" = OrderedDict()
-        for name, h in sorted(header.items(), key=lambda kv: kv[1]["data_offsets"][0]):
-            if h["dtype"] not in DTYPE_SIZES:
-                raise RemoteError(f"{url}: unsupported dtype {h['dtype']} for {name}")
-            a, b = h["data_offsets"]
-            self._info[name] = TensorInfo(h["dtype"], tuple(h["shape"]), base + a, base + b)
-        self.implied_size = max((i.end for i in self._info.values()), default=base)      # where the last tensor ends = the size of a sound file
+        parsed = [(name, *_tensor_entry(url, name, h)) for name, h in header.items()]
+        parsed.sort(key=lambda item: (item[3], item[4]))
+        expected = 0
+        for name, _dtype, _shape, a, b in parsed:
+            if a != expected:
+                raise RemoteError(f"{url}: tensors are not contiguous from offset 0: {name!r} starts at {a}, the previous one ended at {expected}")
+            expected = b
+        self._info: "OrderedDict[str, TensorInfo]" = OrderedDict((name, TensorInfo(dtype, shape, base + a, base + b)) for name, dtype, shape, a, b in parsed)
+        self.implied_size = base + expected                  # where the last tensor ends = the size of a sound file
         self.size = total
         if total is not None and total != self.implied_size:
             raise RemoteError(f"{url}: the server says the file has {total} bytes but its header describes {self.implied_size}; "
@@ -391,6 +425,14 @@ class SafetensorsFile:
 
 # --------------------------------------------------------------------------- a repo
 
+SAFE_PATH = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*")
+
+
+def safe_path(name: Any) -> bool:
+    """A file path inside a repo: letters, digits, `._-` and `/` between non-empty parts, no `.` or `..` part."""
+    return isinstance(name, str) and SAFE_PATH.fullmatch(name) is not None and all(part not in (".", "..") for part in name.split("/"))
+
+
 MANIFEST_NAME = "release-manifest.json"
 SHA256 = re.compile(r"[0-9a-f]{64}")
 _UNSET = object()
@@ -428,6 +470,8 @@ class HubRepo:
         self._lock = threading.RLock()
 
     def url(self, filename: str) -> str:
+        if not safe_path(filename):
+            raise RemoteError(f"{self.repo_id}: refusing the file name {filename!r}: it must be a relative path of letters, digits and ._- without '..', '?' or '#'")
         return f"{self.endpoint}/{self.repo_id}/resolve/{self.revision}/{filename}"
 
     def read_bytes(self, filename: str) -> bytes:
@@ -489,12 +533,16 @@ class HubRepo:
         with self._lock:
             if self._weight_map is None:
                 try:
-                    self._weight_map = dict(self.read_json("model.safetensors.index.json")["weight_map"])
+                    table = dict(self.read_json("model.safetensors.index.json")["weight_map"])
                 except RemoteError as exc:
                     if "404" not in str(exc):
                         raise
                     sf = self.shard("model.safetensors")
-                    self._weight_map = {n: "model.safetensors" for n in sf.names()}
+                    table = {n: "model.safetensors" for n in sf.names()}
+                for shard_name in sorted(set(table.values())):         # they go into a URL: checked here, outside the 404 fallback above
+                    if not safe_path(shard_name):
+                        raise RemoteError(f"{self.repo_id}: the index names a shard name that is not a safe relative path: {shard_name!r}")
+                self._weight_map = table
             return self._weight_map
 
     def names(self) -> List[str]:
