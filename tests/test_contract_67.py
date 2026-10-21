@@ -848,6 +848,29 @@ class GeneratorAndLoopContract(unittest.TestCase):
         for url in ("https://api.example.com/v1", "http://localhost:8000/v1", "http://127.0.0.1:8000/v1", "http://[::1]:8000/v1"):
             self.assertEqual(G.OpenAICompatibleProvider(url, "m").model, "m", url)
 
+    def test_providers_are_built_from_the_config(self) -> None:
+        cmd = G.provider_from_config({"provider": "command", "command": ["python3", "-c", "pass"]})
+        self.assertEqual((cmd.name, cmd.argv), ("command", ["python3", "-c", "pass"]))
+        remote = G.provider_from_config({"provider": "openai-compatible", "base_url": "https://api.example.com/v1", "model": "m", "api_key_env": "MY_KEY"})
+        self.assertEqual((remote.model, remote.api_key_env), ("m", "MY_KEY"))
+        for bad in ({}, {"provider": None}, {"provider": "command", "command": []}, {"provider": "openai-compatible", "model": "m"},
+                    {"provider": "openai-compatible", "base_url": "http://api.example.com/v1", "model": "m"}, {"provider": "magic"}):
+            with self.assertRaises(ValueError, msg=bad):
+                G.provider_from_config(bad)
+
+    def test_generate_rows_follows_the_config(self) -> None:
+        good = {"state": "Cliente diz que o app fecha ao abrir.", "question": "Qual a prioridade?", "options": ["baixa", "media", "alta"], "answer": 2}
+        cfg = {"enabled": True, "per_task": 2, "tasks": [{"domain": "support", "lang": "pt", "qtype": "choice", "description": "triagem"},
+                                                      {"domain": "support", "lang": "pt", "qtype": "choice", "description": "triagem (de novo)"}]}
+        rows, stats = G.generate_rows(cfg, seed=3, provider=G.EchoProvider(json.dumps([good])))
+        self.assertEqual(list(rows), ["gen:echo:support"])
+        self.assertEqual(len(rows["gen:echo:support"]), 1, "the same request from two tasks is kept once")
+        self.assertEqual((stats["calls"], stats["accepted"], stats["duplicates"]), (2, 1, 1))
+        with self.assertRaises(G.GeneratorDisabled):
+            G.generate_rows(dict(cfg, enabled=False), seed=3, provider=G.EchoProvider("[]"))
+        with self.assertRaises(ValueError):
+            G.generate_rows(dict(cfg, tasks=[]), seed=3, provider=G.EchoProvider("[]"))
+
     def test_provider_garbage_is_counted_not_raised(self) -> None:
         spec = G.TaskSpec(domain="support", lang="en", qtype="noul", description="x")
         items, stats = G.generate_items(spec, G.EchoProvider("this is not json"), n=2, seed=1, enabled=True)

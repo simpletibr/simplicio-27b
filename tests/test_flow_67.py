@@ -227,6 +227,49 @@ class BuildFlow(unittest.TestCase):
         with self.assertRaises(S.ManifestError):
             self.clean_run(out, self.root / "clean")
 
+    FAKE_PROVIDER = (
+        "import json, re, sys\n"
+        "prompt = sys.stdin.read()\n"
+        "n = int(re.search(r'Write (\\d+) different', prompt).group(1))\n"
+        "seed = int(re.search(r'variation seed (\\d+)', prompt).group(1))\n"
+        "print(json.dumps([{'state': f'Chamado {seed}-{i}: o app fecha ao abrir depois da atualizacao.', 'question': 'Qual a prioridade?',\n"
+        "                   'options': ['baixa', 'media', 'alta'], 'answer': (seed + i) % 3} for i in range(n)]))\n"
+    )
+
+    def write_generator_config(self, enabled: bool = True) -> Path:
+        script = self.root / "fake_provider.py"
+        script.write_text(self.FAKE_PROVIDER, encoding="utf-8")
+        cfg = self.root / "config.data.yaml"
+        cfg.write_text("data:\n  generator:\n    enabled: " + ("true" if enabled else "false") + "\n    provider: command\n"
+                       f"    command: {json.dumps([sys.executable, str(script)])}\n    per_task: 4\n    tasks:\n"
+                       "      - {domain: suporte, lang: pt, qtype: choice, description: triagem de chamados}\n", encoding="utf-8")
+        return cfg
+
+    def test_the_generator_is_wired_behind_two_switches(self) -> None:
+        # review of PR #74: generate_items existed but build_corpus never called it
+        cfg = self.write_generator_config()
+        plain = self.run_build("--config", str(cfg), out="no-flag")
+        self.assertFalse([k for k in plain["sources"] if k.startswith("gen:")], "enabled in the config is not enough: --generate is the second switch")
+        manifest = self.run_build("--config", str(cfg), "--generate", out="with-gen")
+        self.assertEqual(manifest["sources"]["gen:command:suporte"]["rows"], 4)
+        rows = [r for r in S.read_corpus(self.root / "with-gen") if r["source"] == "gen:command:suporte"]
+        self.assertEqual(len(rows), 4)
+        self.assertEqual({r["license"] for r in rows}, {"provider-terms"})
+        self.assertEqual({r["lang"] for r in rows}, {"pt"})
+        self.assertTrue(all("gen:" not in p.name for p in (self.root / "with-gen").iterdir()), "no colon in file names")
+        again = self.run_build("--config", str(cfg), "--generate", out="with-gen")
+        self.assertIn("gen:command:suporte", again["resumed"])
+
+    def test_generate_with_the_generator_off_in_the_config_is_an_error(self) -> None:
+        cfg = self.write_generator_config(enabled=False)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+            self.run_build("--config", str(cfg), "--generate", out="off")
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("generator", err.getvalue())
+        self.assertIn("enabled", err.getvalue())
+        self.assertFalse((self.root / "off" / "manifest.json").exists())
+
     def test_inspect_prints_conversion(self) -> None:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
