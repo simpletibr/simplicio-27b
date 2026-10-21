@@ -1224,6 +1224,116 @@ class StateContract(HermeticTestCase):
         self.assertEqual(st.restore_files(), [])
         self.assertEqual(log.read_text(), "1\n2\n3\n")
 
+    def hostile_store(self, local, remote="runs/x/results.jsonl"):
+        """A store whose state.json was written by someone else: it says `remote` is mirrored at `local`, and the store holds bytes for it."""
+        store = self.S.MemoryStore()
+        data = self.S.fresh_data(1.0)
+        data["files"][remote] = {"local": local, "size": 5, "pushed": True}
+        store.write("state.json", json.dumps(data).encode())
+        if "/../" not in f"/{remote}/":                                  # the store itself refuses to hold such a name
+            store.write(remote, b"owned\n")
+        return store
+
+    def test_a_remote_state_cannot_make_the_kit_write_outside_the_work_directory(self):
+        target = self.dir / "abs" / "pwned.txt"
+        inside = str(self.dir / "victim" / "inside.txt")                 # absolute, and it does lead into the work directory: still refused
+        hostile = ["../outside/pwned.txt", "runs/../../outside/pwned.txt", "../../../../../../../../tmp/pwned.txt", str(target), inside,
+                   "runs/../inside.txt", "a\\..\\b", "C:/Users/x/pwned.txt", "", ".", "runs/\0/x"]
+        for local in hostile:
+            with self.subTest(local=local):
+                st = self.open(self.hostile_store(local), sub="victim")
+                self.assertEqual(st.restore_files(), [])
+                self.assertEqual(st.data["files"], {})                    # the entry is dropped, not kept for later
+                self.assertTrue(any("outside the work directory" in note for note in st.data["notes"]), st.data["notes"])
+        self.assertFalse((self.dir / "outside").exists())
+        self.assertFalse(target.exists())
+
+    def test_a_local_state_file_is_not_trusted_either(self):
+        work = self.dir / "victim"
+        work.mkdir()
+        data = self.S.fresh_data(1.0)
+        data["files"]["runs/x/results.jsonl"] = {"local": "../outside/pwned.txt", "size": 5}
+        (work / "state.json").write_text(json.dumps(data), encoding="utf-8")
+        st = self.open(self.S.MemoryStore(), sub="victim")
+        self.assertEqual(st.data["files"], {})
+        self.assertTrue(any("outside the work directory" in note for note in st.data["notes"]))
+
+    def test_a_mirror_name_that_climbs_is_dropped_too(self):
+        store = self.hostile_store("runs/x/results.jsonl", remote="runs/../state.json")
+        st = self.open(store, sub="victim")
+        self.assertEqual(st.data["files"], {})
+
+    def test_a_files_table_that_is_not_a_table_is_dropped(self):
+        for files in ([], "x", {"runs/x": "../y"}, {"runs/x": ["../y"]}):
+            with self.subTest(files=files):
+                store = self.S.MemoryStore()
+                data = self.S.fresh_data(1.0)
+                data["files"] = files
+                data["stages"]["fidelity"] = {"status": "done", "attempts": 1, "finished": 2.0, "result": 7}
+                store.write("state.json", json.dumps(data).encode())
+                st = self.open(store, sub="victim")
+                self.assertEqual(st.data["files"], {})
+                self.assertEqual(st.result("fidelity"), 7)                    # the rest of that state is still good: only the table goes
+
+    def test_restore_refuses_a_path_that_was_put_into_the_state_after_it_was_read(self):
+        st = self.open(self.hostile_store("runs/x/results.jsonl"), sub="victim")
+        for local in ("../outside/pwned.txt", str(self.dir / "abs" / "pwned.txt")):
+            with self.subTest(local=local):
+                st.data["files"] = {"runs/x/results.jsonl": {"local": local, "size": 5}}
+                with self.assertRaisesRegex(self.S.StateError, "outside the work directory"):
+                    st.restore_files()
+        self.assertFalse((self.dir / "outside").exists())
+        self.assertFalse((self.dir / "abs").exists())
+
+    def test_push_does_not_upload_a_file_that_is_not_in_the_work_directory(self):
+        secret = self.dir / "secret.txt"
+        secret.write_text("hf_THE_TOKEN_FILE")
+        store = self.S.MemoryStore()
+        st = self.open(store, sub="victim")
+        for local in (str(secret), "../secret.txt"):
+            with self.subTest(local=local):
+                st.data["files"] = {"stolen.txt": {"local": local, "size": 0}}
+                self.assertFalse(st.push(files_now=True))
+                self.assertRegex(st.push_error, "outside the work directory")
+        self.assertNotIn("stolen.txt", store.files)
+        self.assertNotIn(b"hf_THE_TOKEN_FILE", b"".join(store.files.values()))
+
+    def test_a_link_inside_the_work_directory_does_not_lead_out_of_it(self):
+        outside = self.dir / "elsewhere"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("secret")
+        work = self.dir / "victim"
+        work.mkdir()
+        try:
+            os.symlink(outside, work / "link", target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"no symlinks here: {exc}")
+        store = self.S.MemoryStore()
+        st = self.open(store, sub="victim")
+        st.data["files"] = {"x.txt": {"local": "link/secret.txt", "size": 0}}
+        self.assertFalse(st.push(files_now=True))
+        self.assertNotIn("x.txt", store.files)
+        st.data["files"] = {"x.txt": {"local": "link/new.txt", "size": 5}}
+        store.write("x.txt", b"owned")
+        with self.assertRaisesRegex(self.S.StateError, "outside the work directory"):
+            st.restore_files()
+        self.assertFalse((outside / "new.txt").exists())
+        os.symlink(work, work / "home", target_is_directory=True)           # a link to the work directory itself is not a file either
+        st.data["files"] = {"x.txt": {"local": "home", "size": 5}}
+        with self.assertRaisesRegex(self.S.StateError, "outside the work directory"):
+            st.restore_files()
+        self.assertTrue((work / "home").is_symlink())
+
+    def test_a_directory_whose_name_starts_with_two_dots_is_inside_the_work_directory(self):
+        store = self.S.MemoryStore()
+        st = self.open(store)
+        log = self.dir / "w" / "..runs" / "results.jsonl"
+        log.parent.mkdir(parents=True)
+        log.write_text("1\n")
+        st.track_file(log, "runs/results.jsonl")
+        self.assertTrue(st.push(files_now=True))
+        self.assertEqual(store.read("runs/results.jsonl"), b"1\n")
+
     def test_tokens_are_redacted_from_recorded_errors(self):
         store = self.S.MemoryStore()
         st = self.open(store)
