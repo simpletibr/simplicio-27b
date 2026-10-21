@@ -117,11 +117,12 @@ class FakeKit:
         return {"rows": count, "total": count, "tokens": 10 * count, "seconds": 1.5, "status": "complete"}
 
 
-def build_world(root: Path, *, label_every=1, screened=True, labels_sealed=True, proxy_checked=True, proxy_declared_rows=None):
+def build_world(root: Path, *, label_every=1, screened=True, labels_sealed=True, proxy_checked=True, proxy_declared_rows=None, corpus_tool=None):
     """A LocalHub holding the private data repo and the start checkpoint; returns (hub, proxy_requests_file).
 
     ``screened=False`` uploads a corpus sealed by hand (not the output of decontaminate); ``labels_sealed=False`` uploads labels without a manifest;
-    ``proxy_checked=False`` uploads a proxy whose second pass (against the clean corpus) never ran; ``proxy_declared_rows`` makes its manifest declare another number."""
+    ``proxy_checked=False`` uploads a proxy whose second pass (against the clean corpus) never ran; ``proxy_declared_rows`` makes its manifest declare another number;
+    ``corpus_tool`` stamps the corpus manifest with another tool but leaves ``decontamination.json`` (and its reference for this proxy) where it is."""
     from decide.data import schema as S
     from decide.rental import gates as G
     from decide.rental import hub as H
@@ -161,6 +162,9 @@ def build_world(root: Path, *, label_every=1, screened=True, labels_sealed=True,
         S.seal_directory(staging / "corpus-limpo")
     if not labels_sealed:
         (staging / "labels" / "pplx-decider-v1.2" / "manifest.json").unlink()
+    if corpus_tool is not None:
+        stamped = json.loads((staging / "corpus-limpo" / "manifest.json").read_text(encoding="utf-8"))
+        S.write_manifest(staging / "corpus-limpo" / "manifest.json", {**stamped, "tool": corpus_tool})
     hub = H.LocalHub(root / "hub")
     hub.ensure_repo("me/data", kind="dataset")
     hub.upload("me/data", staging, kind="dataset")
@@ -438,6 +442,19 @@ class RefusalsBeforeTheMoney(unittest.TestCase):
             self.assertIn("decontaminate", str(caught.exception))
             self.assertEqual(executor.calls, [], "no command ran, so no GPU hour was spent on rows nobody screened")
             self.assertFalse((Path(tmp) / "day" / "start").exists(), "the 52 GB checkpoint is not downloaded for a day that cannot start")
+
+    def test_a_corpus_not_stamped_by_decontaminate_stops_the_day_even_when_a_decontamination_report_and_the_proxys_reference_are_there(self) -> None:
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp), corpus_tool="build_corpus")
+            executor = InProcessExecutor()
+            with self.assertRaises(R.DayError) as caught:
+                make_day(Path(tmp) / "day", hub, FakeKit(), executor).run()
+            self.assertIn("fetch", str(caught.exception))
+            self.assertIn("build_corpus", str(caught.exception))
+            self.assertEqual(executor.calls, [])
+            self.assertFalse((Path(tmp) / "day" / "start").exists())
 
     def test_labels_without_a_manifest_stop_the_day_at_the_fetch(self) -> None:
         from decide.rental import run as R
