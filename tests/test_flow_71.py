@@ -465,5 +465,197 @@ class RefusalsBeforeTheMoney(unittest.TestCase):
                 make_day(work, hub, FakeKit(), InProcessExecutor()).run()
 
 
+class IncompleteKit(FakeKit):
+    """A kit that ends one named run early: the answers are there, the status is not ``complete``."""
+
+    def __init__(self, unfinished: str, **kw: Any) -> None:
+        super().__init__(**kw)
+        self.unfinished = unfinished
+
+    def run(self, model, requests, out, *, budget=None) -> Dict[str, Any]:
+        info = super().run(model, requests, out, budget=budget)
+        return dict(info, status="interrupted") if model.name == self.unfinished else info
+
+
+class FailingBackupHub:
+    """A LocalHub whose uploads fail the way a full quota, a dropped connection or a revoked token would."""
+
+    def __new__(cls, root: Path, error: Exception):
+        from decide.rental import hub as H
+
+        class Failing(H.LocalHub):
+            def upload(self, *args, **kwargs):
+                raise error
+
+        return Failing(root)
+
+
+class GuardsOfTheDay(unittest.TestCase):
+    """The orders of the day that no rehearsal reaches by itself: what each phase refuses to do before its gate, and what a failing backup does."""
+
+    def world(self, tmp, kit=None, hub=None, **kw):
+        from decide.data import schema as S
+        from decide.rental import gates as G
+        from decide.rental import hub as H
+
+        hub = hub or H.LocalHub(Path(tmp) / "hub")
+        day = make_day(Path(tmp) / "day", hub, kit or FakeKit(), InProcessExecutor(), **kw)
+        rows = [S.corpus_row(example_id=f"{source}:{i}", source=source, license="mit", split="dev", lang="en",
+                             request={"state": f"case {i}", "questions": {"q1": {"type": "choice", "instructions": "pick", "criteria": {k: k.lower() for k in "ABCD"}}}},
+                             gold={"q1": "A"}) for source in ("alpha", "beta") for i in range(8)]
+        S.write_corpus_part(day.paths.proxy / "proxy.parquet", rows)
+        S.seal_directory(day.paths.proxy, kind="proxy")
+        requests = Path(tmp) / "public-requests.jsonl"
+        G.proxy_to_requests(day.paths.proxy, requests)
+        return day, hub, requests
+
+    def test_the_public_round_does_not_start_before_g4_passed(self) -> None:
+        from decide.rental import run as R
+
+        for label, prepare in (("g4 never ran", lambda state: None), ("g4 stopped the day", lambda state: state.stop("g4", "delta 0.4 < 1.5"))):
+            with tempfile.TemporaryDirectory() as tmp:
+                kit = FakeKit()
+                day, _, requests = self.world(tmp, kit=kit, public_requests=None)
+                day.public_requests = requests
+                prepare(day.state)
+                with self.assertRaises(R.DayError, msg=label) as caught:
+                    day._do_public_round()
+                self.assertIn("needs G4 passed first", str(caught.exception), label)
+                self.assertEqual(kit.calls, [], f"{label}: no GPU time is spent on a round the gate did not allow")
+
+    def test_nothing_is_published_before_g4_passed(self) -> None:
+        from decide.rental import hub as H
+        from decide.rental import run as R
+
+        for label, prepare in (("g4 never ran", lambda state: None), ("g4 stopped the day", lambda state: state.stop("g4", "delta 0.4 < 1.5"))):
+            with tempfile.TemporaryDirectory() as tmp:
+                day, hub, _ = self.world(tmp)
+                prepare(day.state)
+                with self.assertRaises(R.DayError, msg=label) as caught:
+                    day._do_publish()
+                self.assertIn("nothing is published before G4 passes", str(caught.exception), label)
+                with self.assertRaises(H.HubError, msg="the weights repo was not even created"):
+                    hub.is_private("me/weights", kind="model")
+
+    def test_a_run_the_kit_did_not_finish_is_not_scored_by_g4(self) -> None:
+        from decide.rental import run as R
+
+        for unfinished in ("baseline", "new"):
+            with tempfile.TemporaryDirectory() as tmp:
+                kit = IncompleteKit(unfinished)
+                day, _, _ = self.world(tmp, kit=kit)
+                with self.assertRaises(R.DayError, msg=unfinished) as caught:
+                    day._do_g4()
+                self.assertIn(f"ended the {unfinished} run with status 'interrupted'", str(caught.exception))
+                self.assertIn("run again", str(caught.exception))
+                self.assertFalse((day.paths.g4 / "verdict.json").exists(), "no verdict from a half run")
+
+    def test_a_public_round_the_kit_did_not_finish_is_not_recorded_as_done(self) -> None:
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            kit = IncompleteKit("final")
+            day, _, requests = self.world(tmp, kit=kit)
+            day.public_requests = requests
+            day.state.begin("g4")
+            day.state.done("g4", outputs={}, detail={})
+            with self.assertRaises(R.DayError) as caught:
+                day._do_public_round()
+            self.assertIn("ended the public round with status 'interrupted'", str(caught.exception))
+            self.assertEqual([call["model"] for call in kit.calls], ["final"])
+
+    def test_a_public_round_skipped_for_lack_of_the_file_runs_when_the_file_comes(self) -> None:
+        """The owner runs the day without ``--public-requests`` and then again with it: the second run must not say "skipped already"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            kit = FakeKit()
+            day, _, requests = self.world(tmp, kit=kit)
+            day.state.begin("g4")
+            day.state.done("g4", outputs={}, detail={})
+            day.state.skip("public_round", "no public requests file")
+            self.assertEqual(day.run(only=["public_round"]).phases["public_round"], "skipped", "still no file: still skipped")
+            self.assertEqual(kit.calls, [])
+            day.public_requests = requests
+            result = day.run(only=["public_round"])
+            self.assertEqual(result.phases["public_round"], "done")
+            self.assertEqual([call["model"] for call in kit.calls], ["final"])
+
+    def test_publish_is_done_again_when_the_public_round_finished_after_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            day, _, _ = self.world(tmp)
+            for phase, detail in (("g4", {}), ("public_round", {}), ("publish", {"uploaded": ["weights", "report"]})):
+                day.state.begin(phase)
+                day.state.done(phase, outputs={}, detail=detail)
+            self.assertIn("public round", day._stale("publish") or "")
+            day.state.begin("publish")
+            day.state.done("publish", outputs={}, detail={"uploaded": ["weights", "public round", "report"]})
+            self.assertIsNone(day._stale("publish"))
+
+    def test_a_publish_without_a_public_round_stays_done(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            day, _, _ = self.world(tmp)
+            day.state.begin("g4")
+            day.state.done("g4", outputs={}, detail={})
+            day.state.skip("public_round", "no public requests file")
+            day.state.begin("publish")
+            day.state.done("publish", outputs={}, detail={"uploaded": ["weights", "report"]})
+            self.assertIsNone(day._stale("publish"))
+
+    def test_a_gt_report_that_comes_after_the_training_is_refused_not_ignored(self) -> None:
+        """Traces skipped (no GT report), the model trained without them, and now a passing report is given: say so, do not carry on as if it counted."""
+        from decide.rental import run as R
+
+        sys.path.insert(0, str(Path(__file__).parent))
+        from test_contract_71 import FakeThinker, gt_report
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / "gt-report.json"
+            report.write_text(json.dumps(gt_report()), encoding="utf-8")
+            day, _, _ = self.world(tmp, thinker=FakeThinker(), gt_report=report)
+            day.state.skip("traces", "thinker disabled: no GT report")
+            day.state.skip("targets_traces", "no traces")
+            self.assertIn("GT report", day._stale("traces") or "", "nothing was trained yet: the traces can still be made")
+            day.state.begin("train")
+            day.state.done("train", outputs={}, detail={})
+            with self.assertRaises(R.DayError) as caught:
+                day._stale("traces")
+            self.assertIn("new --workdir", str(caught.exception))
+            self.assertIn("without them", str(caught.exception))
+
+    def test_the_targets_with_traces_are_made_once_the_traces_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            day, _, _ = self.world(tmp)
+            day.state.begin("traces")
+            day.state.done("traces", outputs={}, detail={})
+            day.state.skip("targets_traces", "no traces")
+            self.assertIn("traces were made", day._stale("targets_traces") or "")
+
+    def test_traces_stay_skipped_while_there_is_still_no_passing_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            day, _, _ = self.world(tmp)
+            day.state.skip("traces", "thinker disabled: no GT report")
+            day.state.skip("targets_traces", "no traces")
+            day.state.begin("train")
+            day.state.done("train", outputs={}, detail={})
+            self.assertIsNone(day._stale("traces"))
+            self.assertIsNone(day._stale("targets_traces"))
+
+    def test_a_backup_that_fails_is_a_warning_and_the_day_goes_on(self) -> None:
+        from decide.rental import hub as H
+
+        for error in (H.HubError("quota exceeded"), OSError("no space left on device"), ConnectionError("connection reset")):
+            with tempfile.TemporaryDirectory() as tmp:
+                seen: List[str] = []
+                day, _, _ = self.world(tmp, hub=FailingBackupHub(Path(tmp) / "hub", error), log=seen.append)
+                day.state.begin("train")
+                day.state.done("train", outputs={}, detail={})
+                day._backup("train")                                  # must not raise
+                self.assertEqual(len(day._backup_warnings), 1, error)
+                self.assertIn("backup of train to me/day failed", day._backup_warnings[0])
+                self.assertIn(str(error), day._backup_warnings[0])
+                self.assertIn("a lost machine would lose this phase", day._backup_warnings[0])
+                self.assertTrue(any(line.startswith("WARNING: backup of train") for line in seen), seen)
+                self.assertEqual(day.state.status("train"), "done", "the phase itself stays done")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -452,6 +452,26 @@ class DayStateContract(unittest.TestCase):
             self.assertEqual(again.record("targets")["detail"], {"rows_out": 96})
             self.assertTrue(again.reusable("targets"))
 
+    def test_a_phase_is_finished_only_after_it_began_and_only_once(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            day = self.open(Path(tmp) / "state")
+            with self.assertRaises(ST.StateError) as caught:
+                day.done("targets", outputs={})
+            self.assertIn("was not begun", str(caught.exception))
+            self.assertEqual(day.status("targets"), "pending", "a refused finish leaves the phase as it was")
+            day.begin("targets")
+            day.done("targets", outputs={}, detail={"rows_out": 1})
+            with self.assertRaises(ST.StateError):
+                day.done("targets", outputs={}, detail={"rows_out": 2})              # finished twice: the first record stands
+            self.assertEqual(day.record("targets")["detail"], {"rows_out": 1})
+            day.begin("train")
+            day.fail("train", "boom")
+            with self.assertRaises(ST.StateError):
+                day.done("train", outputs={})                                         # a failed phase is begun again, not finished
+            self.assertEqual(day.status("train"), "failed")
+
     def test_a_phase_whose_output_changed_is_not_reusable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "targets"
@@ -812,6 +832,21 @@ class GtEvidenceContract(unittest.TestCase):
             self.assertFalse(got["enabled"], reason)
             self.assertIn(reason, " ".join(got["reasons"]))
 
+    def test_coverage_is_complete_only_when_the_report_says_true(self) -> None:
+        """Not "not false": a report with no coverage, or a coverage that does not say ``true``, is not a complete one."""
+        for label, change in (("no coverage block", lambda r: r.pop("coverage")),
+                              ("coverage is not an object", lambda r: r.__setitem__("coverage", "complete")),
+                              ("no complete key", lambda r: r["coverage"].pop("complete")),
+                              ("complete is null", lambda r: r["coverage"].__setitem__("complete", None)),
+                              ("complete is a string", lambda r: r["coverage"].__setitem__("complete", "true")),
+                              ("complete is 1", lambda r: r["coverage"].__setitem__("complete", 1))):
+            report = gt_report()
+            change(report)
+            got = self.evidence(report)
+            self.assertFalse(got["enabled"], label)
+            self.assertIn("coverage is not complete", " ".join(got["reasons"]), label)
+        self.assertTrue(self.evidence(gt_report())["enabled"])
+
     def test_a_pinned_revision_in_the_config_must_match_the_report(self) -> None:
         cfg = dict(self.cfg, revision="1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0")
         self.assertTrue(self.evidence(gt_report(), cfg)["enabled"])
@@ -939,6 +974,24 @@ class G4Contract(unittest.TestCase):
         self.assertTrue(one["ci_above_zero"])
         self.assertEqual(one["resamples"], 200)
 
+    def test_the_same_answers_on_both_sides_give_an_interval_of_exactly_zero(self) -> None:
+        """Paired: each resample draws the same questions for both sides, so identical runs cannot differ in any resample."""
+        requests, new, base = self.fixture(100, 70, 70)
+        got = self.verdict(requests, new, base, seed=3)
+        self.assertEqual(got["delta_points"], 0.0)
+        self.assertEqual(got["ci95"], [0.0, 0.0])
+        self.assertFalse(got["ci_above_zero"])
+        self.assertIn("ci_includes_zero", got["notes"])
+        self.assertEqual((got["status"], got["reasons"]), ("FAIL", ["delta_below_margin"]))
+
+    def test_a_small_gain_on_the_same_questions_has_a_narrow_paired_interval(self) -> None:
+        """Two runs that differ on 12 of 200 questions: an unpaired interval would be about 23 points wide, the paired one about 8."""
+        requests, new, base = self.fixture(100, 73, 67)
+        got = self.verdict(requests, new, base, seed=3, resamples=400)
+        low, high = got["ci95"]
+        self.assertGreater(low, 0, got)
+        self.assertLess(high - low, 12.0, got)
+
     def test_a_gain_that_noise_can_explain_is_flagged_even_when_it_passes(self) -> None:
         requests, new, base = self.fixture(40, 22, 19, sources=("alpha",))
         got = self.verdict(requests, new, base)
@@ -958,6 +1011,28 @@ class G4Contract(unittest.TestCase):
         got = self.verdict(requests, new, base)
         self.assertIn("home private proxy", got["scope"])
         self.assertIn("not the board", got["scope"])
+
+    def test_a_proxy_row_that_carries_reasoning_is_shown_to_the_decider_without_it(self) -> None:
+        """G4 measures the decider alone: a request of the proxy that has a ``reasoning`` field loses it, in the scored tuples and in the kit's file."""
+        from decide.data import schema as S
+        from decide.rental import gates as G
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [S.corpus_row(example_id=f"p:{i}", source="alpha", license="mit", split="dev", lang="en",
+                                 request={"state": f"s{i}", "reasoning": "a thinker's notes that must not reach the decider",
+                                          "questions": {"q1": {"type": "choice", "instructions": "pick", "criteria": {"A": "a", "B": "b"}}}},
+                                 gold={"q1": "A"}) for i in range(3)]
+            S.write_corpus_part(Path(tmp) / "proxy" / "proxy.parquet", rows)
+            S.seal_directory(Path(tmp) / "proxy", kind="proxy")
+            self.assertIn("reasoning", S.parse_row(next(iter(S.read_corpus(Path(tmp) / "proxy"))))[0], "the fixture does carry it")
+            for example_id, request, gold, source in G.proxy_requests(Path(tmp) / "proxy"):
+                self.assertNotIn("reasoning", request)
+                self.assertEqual((request["state"], gold), (f"s{example_id.split(':')[1]}", {"q1": "A"}), "only the reasoning is dropped")
+            out = Path(tmp) / "g4" / "requests.jsonl"
+            G.proxy_to_requests(Path(tmp) / "proxy", out)
+            for line in out.read_text(encoding="utf-8").splitlines():
+                self.assertNotIn("reasoning", json.loads(line)["request"])
+                self.assertNotIn("thinker's notes", line)
 
     def test_the_proxy_becomes_a_request_file_the_kit_reads(self) -> None:
         from decide.data import schema as S
@@ -1430,6 +1505,21 @@ class LocalHubContract(unittest.TestCase):
                 hub.ensure_repo("me/day", kind="model")
             self.assertIn("public", str(caught.exception))
 
+    def test_an_upload_to_a_repo_that_turned_public_after_it_was_made_writes_nothing(self) -> None:
+        """The check is on every upload, not only when the repo is ensured: someone can make it public in between."""
+        from decide.rental import hub as H
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub = self.hub(tmp)
+            hub.ensure_repo("me/day", kind="model")
+            source = self.folder(tmp, {"a.json": b"{}", "weights.safetensors": b"w"})
+            hub.make_public_for_test("me/day", kind="model")
+            with self.assertRaises(H.HubError) as caught:
+                hub.upload("me/day", source, kind="model")
+            self.assertIn("public", str(caught.exception))
+            self.assertIn("nothing was uploaded", str(caught.exception))
+            self.assertEqual(hub.files("me/day", kind="model"), [], "not one file reached a public repo")
+
     def test_upload_and_download_round_trip_with_patterns_and_a_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             hub = self.hub(tmp)
@@ -1666,6 +1756,23 @@ class HfHubContract(unittest.TestCase):
         self.assertNotIn(token, str(caught.exception))
         self.assertIn("***", str(caught.exception))
         self.assertNotIn("q" * 30, repr(hub) + json.dumps(vars(hub), default=repr))
+
+    def test_the_original_error_is_not_shown_next_to_the_hub_error(self) -> None:
+        """``raise ... from None``: a traceback that prints "during handling of the above exception" would print the request details too."""
+        import traceback
+
+        from decide.rental import hub as H
+
+        secret = "hf_" + "r" * 30
+        error = RuntimeError(f"upload failed\nAuthorization: Bearer {secret}\nbody: REQUESTBODYDETAIL")
+        with self.assertRaises(H.HubError) as caught:
+            self.hub(self.failing(error)).files("me/day", kind="model")
+        shown = "".join(traceback.format_exception(type(caught.exception), caught.exception, caught.exception.__traceback__))
+        self.assertTrue(caught.exception.__suppress_context__)
+        self.assertNotIn(secret, shown)
+        self.assertNotIn("REQUESTBODYDETAIL", shown)
+        self.assertNotIn("during handling of the above exception", shown)
+        self.assertIn("upload failed", str(caught.exception), "the first line is kept: it is what tells the owner what happened")
 
     def test_a_programming_error_in_the_caller_is_not_dressed_up_as_a_hub_error(self) -> None:
         from decide.rental import hub as H
@@ -2089,6 +2196,14 @@ class ExecutorContract(unittest.TestCase):
         self.assertNotIn("THINKER_API_KEY", env)
         self.assertEqual((env["PATH"], env["PYTHONUNBUFFERED"]), ("/bin", "1"))
         self.assertTrue(env["PYTHONPATH"].split(os.pathsep)[0].endswith(str(ROOT)) or str(ROOT) in env["PYTHONPATH"])
+
+    def test_the_child_cannot_go_online_for_a_model_even_if_the_parent_could(self) -> None:
+        from decide.rental import run as R
+
+        cfg = {"hub": {"token_env": "HF_TOKEN"}, "thinker": {"api_key_env": "THINKER_API_KEY"}}
+        for parent in ({}, {"HF_HUB_OFFLINE": "0", "TRANSFORMERS_OFFLINE": "0"}, {"HF_HUB_OFFLINE": "", "TRANSFORMERS_OFFLINE": "false"}):
+            env = R.child_env(cfg, parent)
+            self.assertEqual((env["HF_HUB_OFFLINE"], env["TRANSFORMERS_OFFLINE"]), ("1", "1"), parent)
 
     def test_a_command_runs_in_the_repo_and_its_output_goes_to_the_log(self) -> None:
         from decide.rental import run as R
