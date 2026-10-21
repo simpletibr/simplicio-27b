@@ -602,7 +602,7 @@ def _why_inconclusive(report: Dict[str, Any]) -> str:
             "thinking_not_detected": (f"thinking not detected: {st['thought']} of {st['ok']} rows that answered show thinking (reasoning apart, a closing tag "
                                       f"or {C.MIN_THINKING_TOKENS}+ tokens), so the endpoint probably ignored the request for it"),
             "reasoning_hidden_or_not_closed": (f"{st['reasoning_hidden'] + st['no_close']} of {st['ok']} rows that answered hid their reasoning ({st['reasoning_hidden']}) "
-                                               f"or never closed it ({st['no_close']}): the run measures the provider, not the model")}
+                                               f"or never closed it ({st['no_close']}): those rows say nothing about the model")}
     return "; ".join(texts.get(r, r) for r in v["reasons"])
 
 
@@ -698,7 +698,7 @@ WHY = {
     "usage_missing": "mais da metade das respostas veio sem contagem de tokens: nao da para medir o pensamento nem o custo",
     "reasoning_hidden": "{hidden} linhas vieram so com a resposta (pelo menos {min_tokens} tokens e nenhum raciocinio visivel): o provedor provavelmente pensa e esconde o raciocinio, e o kit nao consegue conferir que o thinker pensou",
     "mixed_endpoints": "as linhas vieram de mais de um endpoint: um agregador pode ter mandado cada linha a um upstream ou a uma quantizacao diferente",
-    "reasoning_hidden_or_not_closed": "mais de {share} das linhas que responderam esconderam o raciocinio ou pararam sem fechar o pensamento ({unreadable} de {answered}): o resultado mede o provedor, nao o modelo",
+    "reasoning_hidden_or_not_closed": "mais de {share} das linhas que responderam esconderam o raciocinio ou pararam sem fechar o pensamento ({unreadable} de {answered}): essas linhas nao dizem nada sobre o modelo",
     "thinking_not_detected": "menos da metade das linhas mostra pensamento: o endpoint provavelmente ignorou o pedido de thinking",
     "no_replies": "nenhuma linha pontuada teve resposta do thinker",
     "no_scored_rows": "nenhuma linha do thinker foi pontuada ainda",
