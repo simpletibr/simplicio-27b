@@ -1083,6 +1083,29 @@ class G4Contract(unittest.TestCase):
         self.assertEqual(sum(len(per_source) for per_source in units.values()), scored["n"])
         self.assertNotIn((new[0]["run_id"], "q1"), units[new[0]["run_id"].split(":")[0]])
 
+    def test_a_model_that_answers_the_same_for_every_option_gets_no_credit_for_the_first_one(self) -> None:
+        """The gold answer of the fixture is always A, the first option: the first-index tie-break gave a uniform model 100% on it."""
+        from decide.data import proxy_private as PP
+        from decide.rental import gates as G
+
+        requests, new, base = self.fixture(50, 0, 40)
+        uniform = [dict(row, probs=[0.25, 0.25, 0.25, 0.25]) for row in new]
+        got = self.verdict(requests, uniform, base)
+        self.assertAlmostEqual(got["new"]["proxy_points"], 0.0, places=9, msg="chance, not a perfect score")
+        self.assertEqual((got["new"]["ties"], got["baseline"]["ties"], got["new"]["n"]), (100, 0, 100))
+        self.assertEqual(got["status"], "FAIL")
+        self.assertEqual(got["reasons"], ["delta_below_margin"])
+        units = G._units(requests, uniform)
+        self.assertEqual({value for per_source in units.values() for value in per_source.values()}, {(0.25, 0.25)}, "the units follow the scorer: a quarter of a right answer")
+        self.assertEqual(PP.score_rows(requests, uniform)["ties"], 100)
+
+    def test_the_bootstrap_still_agrees_with_the_scorer_when_some_answers_are_ties(self) -> None:
+        requests, new, base = self.fixture(60, 45, 30)
+        tied = [dict(row, probs=[0.4, 0.4, 0.1, 0.1]) if i % 5 == 0 else row for i, row in enumerate(new)]        # gold A is one of the two tied options
+        got = self.verdict(requests, tied, base)
+        self.assertIn(got["status"], ("PASS", "FAIL"), got)             # not INVALID, and no AssertionError from the units / scorer cross-check
+        self.assertEqual(got["new"]["ties"], 24)
+
     def test_a_duplicate_of_a_question_nobody_scores_does_not_matter(self) -> None:
         requests, new, base = self.fixture(50, 40, 20)
         stray = [{"run_id": "not-in-the-proxy", "question_id": "q1", "probs": [1, 0, 0, 0]}, {"run_id": "not-in-the-proxy", "question_id": "q1", "probs": [0, 1, 0, 0]}]

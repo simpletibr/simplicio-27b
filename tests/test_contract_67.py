@@ -973,6 +973,36 @@ class ProxyContract(unittest.TestCase):
             self.assertEqual((conflict["n"], conflict["bad"], conflict["missing"], conflict["conflicting"]), (1, 1, 0, 1), "no answer is picked for the user: neither the first nor the last")
         self.assertEqual(once["conflicting"], 0)
 
+    def test_a_tie_for_the_top_probability_counts_one_over_the_options_that_share_it(self) -> None:
+        """A model that cannot tell the options apart must not get the questions whose answer is the first option for free (``max`` returns the first index of a tie)."""
+        reqs = [(f"e{i}", choice_request(), {"q1": gold}, "s1") for i, gold in enumerate("ABCDAC")]
+        row = lambda i, probs: {"example_id": f"e{i}", "question_id": "q1", "codes": ["A", "B", "C", "D"], "probs": probs}      # noqa: E731
+        uniform = P.score_rows(reqs[:4], [row(i, [0.25, 0.25, 0.25, 0.25]) for i in range(4)])
+        self.assertAlmostEqual(uniform["per_source"]["s1"]["accuracy"], 0.25, places=12, msg="the gold option was A, B, C and D once each: the same as chance whichever the tie-break")
+        first_always = P.score_rows([reqs[0], reqs[4]], [row(0, [0.25] * 4), row(4, [0.25] * 4)])         # gold A twice: the first-index rule says 100%
+        last_always = P.score_rows([reqs[3], reqs[3]], [row(3, [0.25] * 4), row(3, [0.25] * 4)])          # the same row twice, gold D
+        self.assertAlmostEqual(first_always["per_source"]["s1"]["accuracy"], 0.25, places=12)
+        self.assertAlmostEqual(last_always["per_source"]["s1"]["accuracy"], 0.25, places=12)
+        self.assertEqual((first_always["proxy"], uniform["proxy"]), (0.0, 0.0), "no skill above chance")
+        mixed = P.score_rows(reqs[:2] + reqs[4:], [row(0, [0.4, 0.4, 0.1, 0.1]), row(1, [0.4, 0.4, 0.1, 0.1]), row(4, [0.1, 0.4, 0.4, 0.1]), row(5, [0.1, 0.4, 0.4, 0.1])])
+        # gold A and B are in the tied pair {A, B}: 1/2 each; gold A is not in {B, C}: 0; gold C is in it: 1/2
+        self.assertAlmostEqual(mixed["per_source"]["s1"]["accuracy"], (0.5 + 0.5 + 0.0 + 0.5) / 4, places=12)
+
+    def test_the_score_says_how_many_answers_had_a_shared_top(self) -> None:
+        reqs = [(f"e{i}", choice_request(), {"q1": "A"}, "s1") for i in range(3)]
+        row = lambda i, probs: {"example_id": f"e{i}", "question_id": "q1", "codes": ["A", "B", "C", "D"], "probs": probs}      # noqa: E731
+        out = P.score_rows(reqs, [row(0, [0.7, 0.1, 0.1, 0.1]), row(1, [0.1, 0.1, 0.4, 0.4]), row(2, [0.25, 0.25, 0.25, 0.25])])
+        self.assertEqual((out["n"], out["ties"]), (3, 2), "a shared top counts even when the gold option is not one of the tied ones")
+        self.assertEqual(P.score_rows(reqs[:1], [row(0, [0.7, 0.1, 0.1, 0.1])])["ties"], 0)
+
+    def test_top_credit(self) -> None:
+        self.assertEqual(P.top_credit([0.7, 0.1, 0.1, 0.1], 0), (1.0, False))
+        self.assertEqual(P.top_credit([0.7, 0.1, 0.1, 0.1], 1), (0.0, False))
+        self.assertEqual(P.top_credit([0.1, 0.4, 0.4, 0.1], 2), (0.5, True))
+        self.assertEqual(P.top_credit([0.1, 0.4, 0.4, 0.1], 0), (0.0, True))
+        self.assertEqual(P.top_credit([0.25, 0.25, 0.25, 0.25], 3), (0.25, True))
+        self.assertEqual(P.top_credit([1, 1], 1), (0.5, True), "integers too")
+
     def test_result_table_says_which_questions_were_answered_twice_differently(self) -> None:
         row = lambda eid, qid, probs: {"example_id": eid, "question_id": qid, "probs": probs}      # noqa: E731
         table, conflicting = P.result_table([row("e1", "q1", [1, 0]), row("e1", "q1", [1, 0]), row("e2", "q1", [1, 0]), row("e2", "q1", [0, 1]), row("e3", 7, [1, 0]),
