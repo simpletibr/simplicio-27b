@@ -21,7 +21,7 @@ import math
 import os
 import random
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from decide.data import proxy_private as PP
 from decide.data import schema as S
