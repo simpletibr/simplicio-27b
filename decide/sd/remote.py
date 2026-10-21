@@ -145,6 +145,44 @@ class HttpTransport:
         parts = urllib.parse.urlsplit(url)
         return (parts.scheme, (parts.hostname or "").lower(), parts.port or {"http": 80, "https": 443}.get(parts.scheme))
 
+    @staticmethod
+    def _redirect_target(url: str, where: str) -> str:
+        """The URL a `Location` sends the next request to, rebuilt from the fields that were checked.
+
+        The origin (and with it whether the token goes along) is decided here with `urllib.parse`; the request leaves through urllib3, which reads
+        some spellings differently: `http://B\\@A/x` is host A for `urlsplit` and host B for urllib3, and the Authorization header met B.  So a
+        location with a control character, a backslash or userinfo is refused, what is sent is `scheme://host[:port]/path?query` built from the
+        fields checked here (no fragment, no userinfo), and urllib3's own reading of that URL must give the same host and port or the redirect
+        is refused too.  The host that was checked is then the host that is connected to.
+        """
+        def refuse(why: str) -> RemoteError:
+            return RemoteError(f"refusing a redirect from {url} to {where.split('?')[0]!r}: {why}")
+
+        if any(ord(c) < 0x20 or ord(c) == 0x7F for c in where):
+            raise refuse("the location has a control character in it")
+        target = urllib.parse.urljoin(url, where)
+        parts = urllib.parse.urlsplit(target)
+        scheme, was = parts.scheme, urllib.parse.urlsplit(url).scheme
+        if scheme not in ("http", "https") or (was == "https" and scheme == "http"):
+            raise RemoteError(f"refusing a redirect from {url} to {target.split('?')[0]}: it must stay on https")
+        if "@" in parts.netloc or "\\" in where:                      # user@host is read differently by different parsers: nobody gets to use it
+            raise refuse("the location has credentials or a backslash in it")
+        try:
+            host, port = (parts.hostname or "").lower(), parts.port
+        except ValueError:
+            raise refuse("the port is not a number") from None
+        if not host:
+            raise refuse("the location names no host")
+        rebuilt = urllib.parse.urlunsplit((scheme, (f"[{host}]" if ":" in host else host) + (f":{port}" if port is not None else ""),
+                                           parts.path, parts.query, ""))
+        import urllib3.util
+
+        seen = urllib3.util.parse_url(rebuilt)
+        default = {"http": 80, "https": 443}[scheme]
+        if (seen.host or "").lower().strip("[]") != host or (seen.port or default) != (port or default):
+            raise refuse(f"another parser reads its host as {seen.host}:{seen.port or default}, not {host}:{port or default}")
+        return rebuilt
+
     def _follow(self, method: str, url: str, headers: dict, **kw: Any):
         """One request, with redirects followed here and not by `requests`: the Authorization header goes to the first origin only.
 
@@ -164,11 +202,7 @@ class HttpTransport:
             resp.close()
             if not where:
                 raise RemoteError(f"HTTP {resp.status_code} without a Location for {url}")
-            target = urllib.parse.urljoin(url, where)
-            scheme, was = urllib.parse.urlsplit(target).scheme, urllib.parse.urlsplit(url).scheme
-            if scheme not in ("http", "https") or (was == "https" and scheme == "http"):
-                raise RemoteError(f"refusing a redirect from {url} to {target.split('?')[0]}: it must stay on https")
-            url = target
+            url = self._redirect_target(url, where)
         raise RemoteError(f"too many redirects for {url}")
 
     def _headers(self, extra: Optional[dict] = None) -> dict:

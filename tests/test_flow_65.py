@@ -12,7 +12,9 @@ import random
 import struct
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 from decide_support import FakeHub, HermeticTestCase, build_safetensors, needs_kit, needs_requests, needs_torch, needs_transformers, numpy_tensors
 
@@ -268,6 +270,169 @@ class RemoteFlow(HermeticTestCase):
             with self.assertRaisesRegex(remote.RemoteError, "more than 500 bytes"):
                 remote.LocalTransport(max_bytes=500).get(str(path))
             self.assertEqual(len(remote.LocalTransport(max_bytes=600).get(str(path))), 600)
+
+    def test_who_keeps_the_token_after_a_redirect_case_by_case(self):
+        """`_follow` against a scripted session: for each Location, was the next request sent with the Authorization header, or refused."""
+        class Reply:
+            def __init__(self, code, location=None):
+                self.status_code, self.headers = code, ({"Location": location} if location is not None else {})
+
+            def close(self):
+                pass
+
+        class Session:
+            def __init__(self, replies):
+                self.replies, self.asked = list(replies), []
+
+            def request(self, method, url, **kw):
+                self.asked.append((url, kw["headers"].get("Authorization")))
+                return self.replies.pop(0)
+
+        def follow(location, start="https://huggingface.co/org/m/resolve/abc/file.bin"):
+            session = Session([Reply(302, location), Reply(200)])
+            t = remote.HttpTransport(token="tok", sleep=lambda s: None)
+            t._session = lambda: session
+            t._follow("GET", start, {"Authorization": "Bearer tok"})
+            return session.asked[1]
+
+        keeps = {
+            "a relative path": "/other/path",
+            "a relative file": "file2.bin",
+            "the same host written in capitals": "HTTPS://HuggingFace.CO/x",
+            "the same host with the default port spelled out": "https://huggingface.co:443/x",
+            "the same host with a query": "/x?download=true&token=NOT-OURS",
+            "an empty host after the scheme, which joins to ours": "https:///x",
+        }
+        for name, location in keeps.items():
+            with self.subTest(f"keeps: {name}"):
+                url, auth = follow(location)
+                self.assertEqual(auth, "Bearer tok", url)
+                self.assertTrue(urllib.parse.urlsplit(url).hostname == "huggingface.co", url)
+        drops = {
+            "another host": "https://cdn-lfs.example.com/blob",
+            "a subdomain": "https://cdn.huggingface.co/blob",
+            "the same host on another port": "https://huggingface.co:8443/x",
+            "a host that only ends like ours": "https://evilhuggingface.co/x",
+            "a host that starts like ours": "https://huggingface.co.evil.example/x",
+            "a protocol-relative location": "//cdn-lfs.example.com/blob",
+        }
+        for name, location in drops.items():
+            with self.subTest(f"drops: {name}"):
+                url, auth = follow(location)
+                self.assertIsNone(auth, url)
+        url, auth = follow("https://127.0.0.1:8080/x", start="http://127.0.0.1:8080/x")             # http to https on the same host and port
+        self.assertIsNone(auth, "another scheme is another origin")
+        refused = {
+            "https to http": "http://huggingface.co/x",
+            "https to http on another host": "http://cdn.example.com/x",
+            "another scheme": "ftp://cdn.example.com/x",
+            "a local file": "file:///etc/passwd",
+            "a host written as userinfo": "https://huggingface.co@cdn.example.com/x",
+            "userinfo on our own host": "https://user:pass@huggingface.co/x",
+            "a backslash before the at sign": "https://cdn.example.com\\@huggingface.co/x",
+            "a backslash inside the host": "https://huggingface.co\\.cdn.example.com/x",
+            "a tab inside the host": "https://huggingface.co\t.cdn.example.com/x",
+            "a line feed before the at sign": "https://cdn.example.com\n@huggingface.co/x",
+            "a control character in the path": "/x\x01y",
+            "a NUL byte": "https://cdn.example.com\x00.huggingface.co/x",
+            "DEL": "/x\x7fy",
+            "a port without a host": "https://:8443/x",
+            "a port that is not a number": "https://huggingface.co:80x/x",
+        }
+        for name, location in refused.items():
+            with self.subTest(f"refused: {name}"), self.assertRaisesRegex(remote.RemoteError, "refusing a redirect"):
+                follow(location)
+        with self.assertRaisesRegex(remote.RemoteError, "without a Location"):
+            follow(None)
+        with self.assertRaisesRegex(remote.RemoteError, "without a Location"):
+            follow("")
+
+
+    def test_the_request_goes_to_the_url_that_was_checked_not_to_the_text_of_the_location(self):
+        """`urlsplit` decides the origin, `urllib3` makes the connection: what is sent is rebuilt from the fields `urlsplit` gave, so the host that was
+        checked is the host that is connected to, and a second parser (urllib3's) must agree with it or the redirect is refused."""
+        class Reply:
+            def __init__(self, code, location=None):
+                self.status_code, self.headers = code, ({"Location": location} if location is not None else {})
+
+            def close(self):
+                pass
+
+        class Session:
+            def __init__(self, replies):
+                self.replies, self.asked = list(replies), []
+
+            def request(self, method, url, **kw):
+                self.asked.append((url, kw["headers"].get("Authorization")))
+                return self.replies.pop(0)
+
+        def follow(location, start="https://huggingface.co/org/m/resolve/abc/file.bin"):
+            session = Session([Reply(302, location), Reply(200)])
+            t = remote.HttpTransport(token="tok", sleep=lambda s: None)
+            t._session = lambda: session
+            t._follow("GET", start, {"Authorization": "Bearer tok"})
+            return session.asked[1]
+
+        rebuilt = {
+            "HTTPS://HuggingFace.CO:443/x?y=1#frag": ("https://huggingface.co:443/x?y=1", "Bearer tok"),
+            "/other/path?a=b": ("https://huggingface.co/other/path?a=b", "Bearer tok"),
+            "https://cdn.example.com/blob#part": ("https://cdn.example.com/blob", None),
+            "//cdn.example.com:8443/blob": ("https://cdn.example.com:8443/blob", None),
+            "https://[::1]:8443/blob": ("https://[::1]:8443/blob", None),
+        }
+        for location, (want, auth) in rebuilt.items():
+            with self.subTest(location):
+                self.assertEqual(follow(location), (want, auth))
+        import urllib3.util
+
+        real = urllib3.util.parse_url
+        for lie, why in ((lambda u: real(u.replace("huggingface.co", "evil.example")), "another host"),
+                         (lambda u: real(u.replace("huggingface.co", "huggingface.co:9999")), "another port")):
+            with self.subTest(f"urllib3 reads {why}"), mock.patch.object(urllib3.util, "parse_url", lie), \
+                    self.assertRaisesRegex(remote.RemoteError, "refusing a redirect"):
+                follow("/x")
+        with mock.patch.object(urllib3.util, "parse_url", real):
+            self.assertEqual(follow("/x")[1], "Bearer tok")                  # the check does not trip on an honest location
+
+
+    def test_a_redirect_that_two_parsers_read_differently_never_gets_the_token(self):
+        """Two real servers.  `A` is the Hub, `B` is somebody else's: a Location that `urllib.parse` reads as `A` and `urllib3` reads as `B`
+        (a backslash before the at sign) used to keep the Authorization header and then connect to `B`.  `B` must never see a Bearer."""
+        other = FakeHub()
+        other.__enter__()
+        self.addCleanup(other.__exit__, None, None, None)
+        other.add("org/model", "config.json", b"{}")
+        a_port, b_port = urllib.parse.urlsplit(self.hub.base_url).port, urllib.parse.urlsplit(other.base_url).port
+        self.hub.redirect.add("org/model/config.json")
+        url = f"{self.hub.base_url}/org/model/resolve/{'a' * 40}/config.json"
+        transport = remote.HttpTransport(token="hf_SECRET", max_retries=0, sleep=lambda s: None)
+
+        def follow(base):
+            self.hub.redirect_base = base
+            return transport._follow("GET", url, transport._headers())
+
+        hostile = {
+            "the host before a backslash and the Hub's after the at sign": f"http://127.0.0.1:{b_port}\\@127.0.0.1:{a_port}",
+            "the same with localhost": f"http://localhost:{b_port}\\@127.0.0.1:{a_port}",
+            "the same with a letter after the backslash": f"http://127.0.0.1:{b_port}\\x@127.0.0.1:{a_port}",
+            "the other host as userinfo of ours": f"http://127.0.0.1:{a_port}@127.0.0.1:{b_port}",
+            "userinfo naming the other host": f"http://user:pass@127.0.0.1:{b_port}",
+        }
+        for name, base in hostile.items():
+            with self.subTest(name), self.assertRaisesRegex(remote.RemoteError, "refusing a redirect"):
+                follow(base)
+            self.assertEqual(other.auth_seen, [], name)               # nobody even asked B
+        self.assertNotIn("Bearer hf_SECRET", other.auth_seen)
+
+        resp = follow(other.base_url)                                    # control: a plain redirect to another origin works, and drops the token
+        self.assertEqual((resp.status_code, other.auth_seen), (200, [""]))
+        resp.close()
+        before = len(self.hub.auth_seen)
+        resp = follow("")                                                # control: back to the same origin keeps it
+        self.assertEqual(resp.status_code, 200)
+        resp.close()
+        self.assertEqual(self.hub.auth_seen[before:], ["Bearer hf_SECRET", "Bearer hf_SECRET"])
+
 
     def test_missing_file_and_unknown_tensor(self):
         r = self.repo()
