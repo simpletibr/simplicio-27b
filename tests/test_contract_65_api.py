@@ -44,6 +44,16 @@ class NormalizeSpecContract(HermeticTestCase):
                 with self.subTest(f"{where}: {bad!r}"), self.assertRaisesRegex(api.ApiError, "revision"):
                     api.normalize_spec(make(bad))
 
+    def test_a_repo_cannot_be_a_donor_and_the_lora_or_a_donor_and_the_anchor(self):
+        base = {"anchor": "org/a", "anchor_revision": A}
+        both = {**base, "donors": [{"repo": "org/Simplicio-27B", "weight": 0.5, "revision": D}], "lora": {"repo": "org/simplicio-27b", "weight": 0.1, "revision": L}}
+        with self.assertRaisesRegex(api.ApiError, "both a donor and the LoRA"):
+            api.normalize_spec(both)
+        with self.assertRaisesRegex(api.ApiError, "is the anchor"):
+            api.normalize_spec({**base, "donors": [{"repo": "org/a", "weight": 0.5, "revision": D}]})
+        api.normalize_spec({**both, "lora": {"repo": "org/other-lora", "weight": 0.1, "revision": L}})          # a different adapter is fine
+        api.normalize_spec({**both, "lora": {"repo": "org/simplicio-27b", "weight": 0, "revision": L}})         # a LoRA with weight zero is dropped
+
     def test_a_zero_weight_part_is_dropped_before_its_revision_matters(self):
         spec = api.normalize_spec({"anchor": "org/a", "anchor_revision": "a" * 40, "donors": [{"repo": "org/d", "weight": 0}], "lora": {"repo": "org/l", "weight": 0}})
         self.assertEqual((spec["donors"], spec["lora"]), ([], None))

@@ -218,6 +218,18 @@ class ConfigContract(HermeticTestCase):
         r["models"]["donors"].append({"name": "amos", "repo": "mukaddamzaid/amos-1-large", "weight": 1.0, "enabled": False, "revision": "4" * 40})
         C.validate(r)      # present but disabled is tolerated
 
+    def test_a_donor_that_is_the_lora_or_the_anchor_is_refused(self):
+        r = self.raw()
+        r["models"]["donors"].append({"name": "twice", "repo": r["models"]["lora"]["repo"], "weight": 1.0, "enabled": True, "revision": "4" * 40})
+        with self.assertRaisesRegex(C.ConfigError, "both a donor and the LoRA"):
+            C.validate(r)
+        r["models"]["lora"]["enabled"] = False
+        C.validate(r)                                                   # the LoRA is off, so nothing is counted twice
+        r = self.raw()
+        r["models"]["donors"].append({"name": "self", "repo": r["models"]["anchor"]["repo"], "weight": 1.0, "enabled": True, "revision": "4" * 40})
+        with self.assertRaisesRegex(C.ConfigError, "is the anchor"):
+            C.validate(r)
+
     def test_candidates_are_deterministic_and_normalised(self):
         cfg = C.load_config(overrides={"models": {"donors": [
             {"name": "d3", "repo": "a/b", "weight": 3.0, "enabled": True, "revision": "1" * 40},

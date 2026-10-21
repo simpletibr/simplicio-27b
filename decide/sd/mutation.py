@@ -59,6 +59,7 @@ MERGE_TESTS = ("test_contract_65.MergeMathContract",)
 TTA_TESTS = ("test_contract_65.TtaContract", "test_flow_65.EngineFlow")
 CAL_TESTS = ("test_contract_65.CalibrateContract",)
 ENGINE_TESTS = ("test_flow_65.EngineFlow", "test_flow_65_api.EngineExtrasFlow")
+LOADER_TESTS = ("test_flow_65.LoaderFlow",)
 CONFIG_TESTS = ("test_contract_65.ConfigContract",)
 API_TESTS = ("test_contract_65_api.NormalizeSpecContract", "test_contract_65_api.SpecForContract")
 REMOTE_TESTS = ("test_flow_65.RemoteFlow",)
@@ -171,6 +172,27 @@ MUTATIONS: Tuple[Mutation, ...] = (
              "the size the publisher listed is not compared with the file"),
     Mutation("remote", "manifest-sha256-unchecked", R, "if SHA256.fullmatch(tag) and tag != entry[\"sha256\"]:", "if SHA256.fullmatch(tag) and tag != tag:", REMOTE_TESTS,
              "the sha256 the publisher listed is not compared with the one the Hub holds"),
+
+    # ---- a donor must change the anchor where it says it does, and the Simplicio delta must enter once
+    Mutation("loader", "donor-coverage-unchecked", L, "if missing and not allow_partial:", "if False and missing and not allow_partial:", LOADER_TESTS,
+             "a donor whose names match nothing loads without a word and the 'merge' is the anchor bit for bit"),
+    Mutation("loader", "partial-donors-allowed-by-default", L, "allow_partial: bool = False", "allow_partial: bool = True", LOADER_TESTS,
+             "the explicit switch for a partial donor is on unless somebody turns it off"),
+    Mutation("loader", "base-naming-donor-accepted", L, "    if odd:", "    if False and odd:", LOADER_TESTS,
+             "a merged base-model checkpoint (lm_head, mtp, model. prefix) is accepted as a donor"),
+    Mutation("loader", "lora-repo-also-a-donor", L, 'if lora_spec and d["repo"].lower() == lora_spec["repo"].lower():',
+             'if False and lora_spec and d["repo"].lower() == lora_spec["repo"].lower():', LOADER_TESTS, "the Simplicio delta is counted as a donor and as the LoRA"),
+    Mutation("loader", "anchor-as-its-own-donor", L, 'if d["repo"].lower() == spec["anchor"].lower():', 'if False and d["repo"].lower() == spec["anchor"].lower():',
+             LOADER_TESTS, "a donor equal to the anchor passes: its task vector is zero"),
+    Mutation("api", "spec-lora-repo-also-a-donor", AP, 'if lora is not None and part["repo"].lower() == lora["repo"].lower():',
+             'if False and lora is not None and part["repo"].lower() == lora["repo"].lower():', API_TESTS, "a spec with Simplicio-27B as donor and as LoRA is accepted"),
+    Mutation("api", "spec-anchor-as-its-own-donor", AP, 'if part["repo"].lower() == anchor.lower():', 'if False and part["repo"].lower() == anchor.lower():', API_TESTS,
+             "a spec whose donor is the anchor is accepted"),
+    Mutation("config", "config-lora-repo-also-a-donor", CF, 'need(not (d.get("enabled", True) and lora_repo and str(d.get("repo", "")).lower() == lora_repo),',
+             'need(not (False and d.get("enabled", True) and lora_repo and str(d.get("repo", "")).lower() == lora_repo),', CONFIG_TESTS,
+             "the config accepts Simplicio-27B as an enabled donor with the LoRA on"),
+    Mutation("config", "config-anchor-as-its-own-donor", CF, 'need(not (d.get("enabled", True) and str(d.get("repo", "")).lower() == anchor_repo),',
+             'need(not (False and d.get("enabled", True) and str(d.get("repo", "")).lower() == anchor_repo),', CONFIG_TESTS, "the config accepts the anchor as a donor"),
 
     # ---- the loader: which tensors are merged with which weights
     Mutation("loader", "donor-weights-misaligned", L, "[weights[i] for i in plan.donors]", "[weights[i] for i in reversed(plan.donors)]",

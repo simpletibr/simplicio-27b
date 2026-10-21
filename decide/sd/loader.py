@@ -56,6 +56,7 @@ class LoadOptions:
     batch_tokens: int = 4096
     max_length: Optional[int] = None
     head_path: Optional[str] = None                        # safetensors with a refit readout ("weight": [255, hidden])
+    allow_partial: bool = False                            # a donor may lack some of the anchor's mergeable tensors (recorded in provenance)
 
     @classmethod
     def from_config(cls, cfg: Mapping[str, Any], **overrides: Any) -> "LoadOptions":
@@ -93,6 +94,7 @@ class TensorPlan:
     donors: List[int] = field(default_factory=list)       # indices of donors that hold this tensor
     lora: Optional[str] = None                             # LoRA module key
     merged: bool = False
+    eligible: bool = False                                 # a tensor a donor is expected to hold (not skipped by pattern, not vision)
 
 
 def plan_tensors(anchor_names: Sequence[str], donor_names: Sequence[Sequence[str]], lora_modules: Mapping[str, Any],
@@ -113,8 +115,30 @@ def plan_tensors(anchor_names: Sequence[str], donor_names: Sequence[Sequence[str
             continue
         donors = [i for i, names in enumerate(donor_sets) if name in names]
         lora = lora_target.get(name)
-        plans.append(TensorPlan(name, donors, lora, merged=bool(donors or lora)))
+        plans.append(TensorPlan(name, donors, lora, merged=bool(donors or lora), eligible=True))
     return plans
+
+
+BASE_NAMING = re.compile(r"^(model\.|lm_head\.|mtp\.)")      # how the base model names things; pplx and d3 say language_model. and visual.
+
+
+def check_donor(donor_id: str, donor_names: Sequence[str], plans: Sequence[TensorPlan], index: int, allow_partial: bool) -> None:
+    """Refuse a donor that would not change the anchor where it claims to: a merge that is the anchor is the worst result of a sweep.
+
+    The loader leaves the anchor's tensor in place wherever a donor has no tensor of that name, so a donor published under other names
+    (a base-model layout such as the merged Simplicio-27B, which also carries lm_head and mtp tensors) used to load without a word and
+    give the anchor bit for bit, which a sweep would then report as 'merging does not help'.
+    """
+    odd = [n for n in donor_names if BASE_NAMING.match(n)]
+    if odd:
+        raise LoaderError(f"donor {donor_id} is in base-model naming ({len(odd)} tensors such as {odd[0]!r}); the anchor says language_model./visual.. "
+                          "A merged checkpoint with lm_head/mtp tensors cannot be a donor: take its delta from its LoRA adapter instead")
+    eligible = [p for p in plans if p.eligible]
+    missing = [p.name for p in eligible if index not in p.donors]
+    if missing and not allow_partial:
+        raise LoaderError(f"donor {donor_id} covers {len(eligible) - len(missing)} of {len(eligible)} of the anchor's mergeable tensors; "
+                          f"first missing: {missing[0]}.  Without them the donor would leave the anchor unchanged there.  "
+                          "Pass LoadOptions(allow_partial=True) only for a donor that is partial on purpose")
 
 
 class LoraAdapter:
@@ -271,6 +295,11 @@ def load_decider(spec: Mapping[str, Any], options: Optional[LoadOptions] = None,
     donors = [make_repo(d["repo"], d.get("revision")) for d in spec.get("donors", [])]
     weights = [float(d["weight"]) for d in spec.get("donors", [])]
     lora_spec = spec.get("lora")
+    for d in spec.get("donors", []):
+        if lora_spec and d["repo"].lower() == lora_spec["repo"].lower():
+            raise LoaderError(f"{d['repo']} is both a donor and the LoRA: its delta would be counted twice")
+        if d["repo"].lower() == spec["anchor"].lower():
+            raise LoaderError(f"donor {d['repo']} is the anchor: its task vector is zero, so the 'merge' would be the anchor")
     lora = LoraAdapter(make_repo(lora_spec["repo"], lora_spec.get("revision")), lora_spec["weight"]) if lora_spec and float(lora_spec["weight"]) else None
     method = spec.get("method") or ("task_arithmetic" if donors else "anchor")
     if not donors:
@@ -302,7 +331,10 @@ def load_decider(spec: Mapping[str, Any], options: Optional[LoadOptions] = None,
 
     # -- what to read
     anchor_names = anchor.file_order(anchor.names())
-    plans = plan_tensors(anchor_names, [d.names() for d in donors], lora.pairs if lora else {}, opt.skip_merge, opt.load_vision)
+    donor_names = [d.names() for d in donors]
+    plans = plan_tensors(anchor_names, donor_names, lora.pairs if lora else {}, opt.skip_merge, opt.load_vision)
+    for i, d in enumerate(spec.get("donors", [])):
+        check_donor(d["repo"], donor_names[i], plans, i, opt.allow_partial)
     unmatched = [m for m in (lora.modules() if lora else []) if M.NameMapper(anchor_names).to_anchor(m) is None]
     if unmatched:
         raise LoaderError(f"{len(unmatched)} LoRA modules match no anchor tensor, first: {unmatched[0]}")

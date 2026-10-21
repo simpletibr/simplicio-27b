@@ -685,12 +685,54 @@ class LoaderFlow(HermeticTestCase):
         for x, y in zip(a, b):
             self.assertAlmostEqual(x, y, places=5)
 
-    def test_a_donor_without_a_tensor_leaves_the_anchor_value(self):
-        partial = {k: v for k, v in self.sd.items() if k != "language_model.layers.0.input_layernorm.weight"}
-        self.tm.publish_backbone(self.hub, "org/partial", partial, shards=2)
-        d = self.load(self.spec(donors=(("org/partial", 0.5),)))
-        name = "language_model.layers.0.input_layernorm.weight"
-        self.assertLess(float((d.backbone.state_dict()[name].double() - self.pa[name].double()).abs().max()), 1e-6)
+    def publish_partial(self, repo="org/partial", drop="language_model.layers.0.input_layernorm.weight"):
+        self.tm.publish_backbone(self.hub, repo, {k: v for k, v in self.sd.items() if k != drop}, shards=2)
+        return drop
+
+    def test_a_donor_that_lacks_a_tensor_is_refused_with_the_count_and_the_first_missing_name(self):
+        drop = self.publish_partial()
+        with self.assertRaises(self.L.LoaderError) as ctx:
+            self.load(self.spec(donors=(("org/partial", 0.5),)))
+        message = str(ctx.exception)
+        total = len([n for n in self.pa if not n.startswith("visual.") and "embed_tokens" not in n])
+        self.assertIn(f"covers {total - 1} of {total}", message)
+        self.assertIn(drop, message)
+        self.assertIn("org/partial", message)
+
+    def test_a_donor_without_a_tensor_leaves_the_anchor_value_when_partial_donors_are_allowed(self):
+        drop = self.publish_partial()
+        d = self.load(self.spec(donors=(("org/partial", 0.5),)), allow_partial=True)
+        self.assertLess(float((d.backbone.state_dict()[drop].double() - self.pa[drop].double()).abs().max()), 1e-6)
+        merged = "language_model.layers.1.mlp.up_proj.weight"
+        want = self.pa[merged].double() + 0.5 * (self.pd[merged].double() - self.pa[merged].double())
+        self.assertLess(float((d.backbone.state_dict()[merged].double() - want).abs().max()), 1e-5)
+
+    def test_a_donor_whose_names_match_none_of_the_anchors_is_not_a_merge_that_equals_the_anchor(self):
+        # the reviewer's probe: published with the base model's "model." prefix, 0 names in common, and the result was the anchor bit for bit
+        other = {("model." + k if k.startswith(("language_model.", "visual.")) else k): v for k, v in self.sd.items()}
+        self.tm.publish_backbone(self.hub, "org/othernames", other, shards=2)
+        with self.assertRaisesRegex(self.L.LoaderError, "org/othernames"):
+            self.load(self.spec(donors=(("org/othernames", 0.5),)))
+        with self.assertRaisesRegex(self.L.LoaderError, "base-model naming"):
+            self.load(self.spec(donors=(("org/othernames", 0.5),)), allow_partial=True)       # allowing a partial donor does not allow this
+
+    def test_a_donor_with_an_lm_head_or_mtp_tensor_is_in_base_model_naming(self):
+        for extra in ("lm_head.weight", "mtp.layers.0.weight"):
+            with self.subTest(extra):
+                donor = dict(self.sd)
+                donor[extra] = self.torch.zeros(4, 4)
+                self.tm.publish_backbone(self.hub, "org/withhead", donor, shards=2)
+                with self.assertRaisesRegex(self.L.LoaderError, "base-model naming"):
+                    self.load(self.spec(donors=(("org/withhead", 0.5),)))
+
+    def test_the_same_repo_as_donor_and_as_lora_would_count_the_simplicio_delta_twice(self):
+        spec = self.spec(donors=(("org/lora", 0.5),), lora=0.1)
+        with self.assertRaisesRegex(self.L.LoaderError, "both a donor and the LoRA"):
+            self.load(spec)
+
+    def test_a_donor_that_is_the_anchor_itself_is_refused(self):
+        with self.assertRaisesRegex(self.L.LoaderError, "is the anchor"):
+            self.load(self.spec(donors=(("org/anchor", 0.5),)))
 
     def test_a_donor_with_another_shape_is_refused_with_the_tensor_name(self):
         bad = dict(self.sd)

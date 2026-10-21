@@ -126,7 +126,13 @@ def validate(raw: Mapping) -> None:
     names = [x["name"] for x in donors]
     need(len(names) == len(set(names)), "duplicate donor names")
     need(all(x.get("weight", 0) >= 0 for x in donors), "donor weights must be >= 0")
+    lora_repo = str((raw["models"].get("lora") or {}).get("repo", "")).lower() if (raw["models"].get("lora") or {}).get("enabled", True) else ""
+    anchor_repo = str(raw["models"].get("anchor", {}).get("repo", "")).lower()
     for d in donors:
+        need(not (d.get("enabled", True) and lora_repo and str(d.get("repo", "")).lower() == lora_repo),
+             f"donor {d.get('name')!r} is both a donor and the LoRA ({lora_repo}): its delta would be counted twice")
+        need(not (d.get("enabled", True) and str(d.get("repo", "")).lower() == anchor_repo),
+             f"donor {d.get('name')!r} is the anchor ({anchor_repo}): its task vector is zero, so the 'merge' would be the anchor")
         tag = f"{d.get('name', '')} {d.get('repo', '')}".lower()
         need(not (d.get("enabled", True) and any(f in tag for f in FORBIDDEN_DONORS)),
              f"donor {d.get('name')!r} is not allowed (license or incompatible readout; see fase0b)")

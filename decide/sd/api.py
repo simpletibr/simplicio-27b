@@ -107,6 +107,11 @@ def normalize_spec(spec: Any, cfg: Optional[Mapping[str, Any]] = None) -> Dict[s
     lora = None
     if spec.get("lora"):
         lora = _checked_part(spec["lora"], "lora", False)
+    for part in donors:
+        if lora is not None and part["repo"].lower() == lora["repo"].lower():
+            raise ApiError(f"{part['repo']} is both a donor and the LoRA: its delta would be counted twice")
+        if part["repo"].lower() == anchor.lower():
+            raise ApiError(f"donor {part['repo']} is the anchor: its task vector is zero, so the 'merge' would be the anchor")
     method = spec.get("method")
     if method is not None and method not in (*C.METHODS, "anchor"):
         raise ApiError(f"spec.method must be one of {[*C.METHODS, 'anchor']}, got {method!r}")
