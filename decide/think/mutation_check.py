@@ -13,6 +13,7 @@ mutants live in a temporary copy of decide/think, the two test files and scripts
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -127,6 +128,10 @@ MUTANTS: Tuple[Mutant, ...] = (
            "the fraction of requests that may think can pass 100%"),
     Mutant("L3", "report", T + "compare.py", 'if quant not in (None, "none"):', "if False:",
            "a 4-bit run gets no one-sided warning"),
+    Mutant("L4", "report", T + "compare.py", "return most / len(chunk) > 0.4 or readable / len(chunk) < 0.4", "return most / len(chunk) > 0.4",
+           "a row of symbol noise with no repeated character reads as language"),
+    Mutant("L5", "report", T + "compare.py", 'chunk = "".join(text[:window].split())', 'chunk = "".join(text.split())',
+           "the garbled-output check reads the whole reply, not its first 2000 characters"),
 )
 
 
@@ -145,7 +150,8 @@ def prepare(dst: Path) -> None:
 def run_tests(cwd: Path, suites: Sequence[Tuple[str, str]], timeout: int = 600) -> Tuple[bool, str, str]:
     """(all passed, name of the suite that failed, first failure line)."""
     for name, module in suites:
-        r = subprocess.run([sys.executable, "-m", "unittest", module], cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run([sys.executable, "-m", "unittest", module], cwd=cwd, capture_output=True, text=True, timeout=timeout,
+                           env={**os.environ, "THINK_MUTATION_CHECK": "1"})
         if r.returncode != 0:
             text = r.stderr + r.stdout
             hit = re.search(r"^(?:FAIL|ERROR): (\S+) \((\S+)\)", text, re.M)

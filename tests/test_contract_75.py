@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import random
 import re
 import sys
@@ -1859,6 +1860,7 @@ class ServeContract(unittest.TestCase):
         self.assertEqual(mod.validate(SV.vllm_command()[1:]), 0)
 
 
+@unittest.skipIf(os.environ.get("THINK_MUTATION_CHECK") == "1", "inside a mutated copy this test fails for every mutant, which would hide the real one")
 class MutationToolContract(unittest.TestCase):
     """decide/think/mutation_check.py plants one-line bugs in a copy and expects these tests to fail; its list must not go stale."""
 
@@ -1973,6 +1975,48 @@ class ProvenanceContract(unittest.TestCase):
         for model, rev in C.PINNED_REVISIONS.items():
             md = ThinkerConfigInReportContract.md(model=model, revision=rev)
             self.assertNotIn("AVISO: modelo ou revisao", md, model)
+
+
+class GarbledOutputContract(unittest.TestCase):
+    """fp16 can overflow on a T4 and make the model emit noise; that must not read as a quiet FAIL."""
+
+    GOOD = "Let us compute the energy first: E = h * c / lambda, so the photon of 500 nm carries about 2.48 eV. Therefore option B is the closest. " * 4
+
+    def test_text_that_reads_is_not_garbled(self) -> None:
+        self.assertFalse(K.looks_garbled(self.GOOD))
+        self.assertFalse(K.looks_garbled("Resolvendo: \\frac{a}{b} = 3 \\Rightarrow a = 3b; assim 2a + b = 7b. " * 5))      # LaTeX is symbol-heavy but still readable
+
+    def test_a_run_of_one_character_is_garbled(self) -> None:
+        self.assertTrue(K.looks_garbled("!" * 500))
+        self.assertTrue(K.looks_garbled("�" * 300))
+
+    def test_mostly_symbols_is_garbled(self) -> None:
+        self.assertTrue(K.looks_garbled("#$%&*()+=<>?@^~|" * 40))
+
+    def test_short_or_empty_text_is_not_judged(self) -> None:
+        for text in ("", None, "!!!", "x" * 100):
+            self.assertFalse(K.looks_garbled(text), repr(text))
+
+    def test_only_the_first_2000_characters_are_read(self) -> None:
+        self.assertFalse(K.looks_garbled(self.GOOD * 5 + "!" * 20000))              # the noise after the window is not read
+
+    def test_stats_count_the_garbled_rows_from_reasoning_or_final(self) -> None:
+        rows, recs = scenario({25: [(True, {"m": True})] * 4})
+        recs[0]["reasoning"] = self.GOOD
+        recs[1]["reasoning"] = "!" * 400
+        recs[2]["final"] = "�" * 400
+        stats = K.thinker_stats(K.score_pack(rows, recs))
+        self.assertEqual(stats["garbled"], 2)
+
+    def test_the_report_warns_when_any_row_is_garbled(self) -> None:
+        rows, recs = scenario({25: [(False, {"m": True})] * 5})
+        for r in recs[:3]:
+            r["reasoning"] = "!" * 400
+        md = K.render_markdown(K.build_report(rows, recs, B=20, seed=1))
+        self.assertIn("AVISO: 3 linhas com saida ilegivel", md)
+        self.assertIn("fp16", md)
+        quiet = K.render_markdown(K.build_report(*scenario({25: [(False, {"m": True})] * 5}), B=20, seed=1))
+        self.assertNotIn("saida ilegivel", quiet)
 
 
 if __name__ == "__main__":

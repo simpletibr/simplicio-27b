@@ -419,7 +419,7 @@ def _parse_results(items: Sequence[str]) -> Dict[str, str]:
     return out
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m decide.think.sample", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build", help="draw the sample and write pack.jsonl.gz + manifest.json")
@@ -433,7 +433,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     v = sub.add_parser("verify", help="check a pack against a manifest")
     v.add_argument("--manifest", required=True)
     v.add_argument("--pack", required=True)
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
     if args.cmd == "build":
         info = build(args.suite, _parse_results(args.results), args.out, per_benchmark=args.per_benchmark or None, seed=args.seed,
                      benchmarks=[int(x) for x in args.benchmarks.split(",") if x], one_per_case=not args.all_requests,

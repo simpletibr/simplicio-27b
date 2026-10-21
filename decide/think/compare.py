@@ -366,6 +366,22 @@ def _summary(values: Sequence[float]) -> Dict[str, Optional[float]]:
             "p80": xs[min(len(xs) - 1, math.ceil(len(xs) * 0.8) - 1)], "max": xs[-1]}
 
 
+def looks_garbled(text: Optional[str], *, window: int = 2000, min_chars: int = 200) -> bool:
+    """Noise, not language: in the first `window` characters, one character is over 40% of them or letters and digits are under 40%.
+
+    On a T4 the model runs in fp16, which can overflow and make it emit a run of one token.  Such a row is
+    not a wrong answer of the model, and a FAIL made of them says nothing about it.  Too short to judge is False.
+    """
+    if not text:
+        return False
+    chunk = "".join(text[:window].split())
+    if len(chunk) < min_chars:
+        return False
+    most = max(chunk.count(ch) for ch in set(chunk))
+    readable = sum(ch.isalnum() for ch in chunk)
+    return most / len(chunk) > 0.4 or readable / len(chunk) < 0.4
+
+
 def _is_unparseable(rec: dict) -> bool:
     if rec.get("status", "ok") != "ok":
         return False
@@ -382,6 +398,7 @@ def thinker_stats(s: Scored, benchmarks: Optional[Sequence[int]] = None) -> Dict
         "failed": sum(r.get("status", "ok") == "failed" for r in recs),
         "unparseable": sum(_is_unparseable(r) for r in recs),
         "truncated": sum(bool(r.get("truncated")) for r in recs),
+        "garbled": sum(looks_garbled(r.get("reasoning")) or looks_garbled(r.get("final")) for r in recs),
         "completion_tokens": _summary(tokens),
         "seconds": _summary(seconds),
     }
@@ -570,6 +587,9 @@ def render_markdown(report: Dict[str, Any]) -> str:
             f"- segundos por linha: total {sc['total']}, mediana {sc['median']}, p80 {sc['p80']}, maximo {sc['max']}"]
     if st["rows"] and st["truncated"] / st["rows"] > 0.10:
         out.append("- AVISO: mais de 10% das linhas bateram no orcamento de tokens; um FAIL assim pode vir do orcamento, nao do modelo. Reexecute as truncadas com `--max-tokens` maior.")
+    if st.get("garbled"):
+        out.append(f"- AVISO: {st['garbled']} linhas com saida ilegivel (ruido, nao linguagem). Na T4 isso costuma ser o fp16 estourando; "
+                   "essas linhas nao dizem nada sobre o modelo, e um FAIL feito delas nao e um veredito (README, \"Se a saida for ruido\").")
     if not cov["complete"]:
         out.append(f"- AVISO: execucao parcial, {cov['missing']} linhas sem resultado e {cov['errors']} com erro transitorio; todos os sistemas foram comparados so nas linhas feitas.")
     if any(report["choice_mismatch"].values()):
@@ -587,7 +607,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
 
 # --------------------------------------------------------------------------------------- CLI
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m decide.think.compare", description=__doc__.split("\n\n")[0])
     ap.add_argument("--pack", required=True, help="pack.jsonl.gz written by sample.py (private)")
     ap.add_argument("--thinker", required=True, help="results.jsonl written by thinker.py")
@@ -597,7 +617,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--min-delta", type=float, default=C.GT_MIN_DELTA_PTS, help="points the thinker must win by (default %(default)s)")
     ap.add_argument("--models", help="comma-separated decision models to compare against (default: all in the pack)")
     ap.add_argument("--ignore-pack-mismatch", action="store_true", help="accept results made from another pack (ids must still match)")
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
     try:
         rows = load_pack(args.pack)
         header, records = load_thinker(args.thinker)
