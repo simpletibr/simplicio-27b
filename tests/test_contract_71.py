@@ -1256,5 +1256,374 @@ class GenerateTracesContract(unittest.TestCase):
                     self.run_step(corpus, Path(tmp) / "traces", FakeThinker(), **kw)
 
 
+# --------------------------------------------------------------------------- the Hub and the kit
+
+class LocalHubContract(unittest.TestCase):
+    def hub(self, tmp):
+        from decide.rental import hub as H
+
+        return H.LocalHub(Path(tmp) / "hub")
+
+    def folder(self, tmp, files):
+        root = Path(tmp) / "src"
+        for name, data in files.items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_bytes(data)
+        return root
+
+    def test_a_repo_is_created_private_and_asking_again_is_fine(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            hub = self.hub(tmp)
+            hub.ensure_repo("me/day", kind="model")
+            hub.ensure_repo("me/day", kind="model")
+            self.assertTrue(hub.is_private("me/day", kind="model"))
+
+    def test_a_repo_that_is_public_is_refused(self) -> None:
+        from decide.rental import hub as H
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub = self.hub(tmp)
+            hub.ensure_repo("me/day", kind="model")
+            hub.make_public_for_test("me/day", kind="model")
+            with self.assertRaises(H.HubError) as caught:
+                hub.ensure_repo("me/day", kind="model")
+            self.assertIn("public", str(caught.exception))
+
+    def test_upload_and_download_round_trip_with_patterns_and_a_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            hub = self.hub(tmp)
+            hub.ensure_repo("me/day", kind="model")
+            src = self.folder(tmp, {"a.safetensors": b"aaaa", "b.json": b"{}", "resume.pt": b"state", "sub/c.json": b"[]"})
+            revision = hub.upload("me/day", src, kind="model", path_in_repo="seed1", patterns=["*.safetensors", "*.json"])
+            self.assertIsInstance(revision, str)
+            self.assertEqual(sorted(hub.files("me/day", kind="model")), ["seed1/a.safetensors", "seed1/b.json", "seed1/sub/c.json"])
+            self.assertEqual(hub.files("me/day", kind="model", prefix="seed1/sub"), ["seed1/sub/c.json"])
+            out = hub.download("me/day", Path(tmp) / "dst", kind="model", patterns=["seed1/*.safetensors"])
+            self.assertEqual((out / "seed1" / "a.safetensors").read_bytes(), b"aaaa")
+            self.assertFalse((out / "seed1" / "b.json").exists())
+
+    def test_a_second_upload_replaces_a_changed_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            hub = self.hub(tmp)
+            hub.ensure_repo("me/day", kind="dataset")
+            src = self.folder(tmp, {"x.json": b"1"})
+            hub.upload("me/day", src, kind="dataset")
+            (src / "x.json").write_bytes(b"22")
+            hub.upload("me/day", src, kind="dataset")
+            self.assertEqual((hub.download("me/day", Path(tmp) / "dst", kind="dataset") / "x.json").read_bytes(), b"22")
+
+    def test_a_missing_repo_names_itself_in_the_error(self) -> None:
+        from decide.rental import hub as H
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub = self.hub(tmp)
+            for call in (lambda: hub.download("me/nope", Path(tmp) / "d", kind="model"), lambda: hub.files("me/nope", kind="model"),
+                         lambda: hub.upload("me/nope", Path(tmp), kind="model")):
+                with self.assertRaises(H.HubError) as caught:
+                    call()
+                self.assertIn("me/nope", str(caught.exception))
+
+    def test_kinds_do_not_mix(self) -> None:
+        from decide.rental import hub as H
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub = self.hub(tmp)
+            hub.ensure_repo("me/day", kind="model")
+            with self.assertRaises(H.HubError):
+                hub.files("me/day", kind="dataset")
+
+    def test_nothing_that_looks_like_a_secret_is_uploaded(self) -> None:
+        from decide.rental import hub as H
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub = self.hub(tmp)
+            hub.ensure_repo("me/day", kind="model")
+            for bad in (".env", "hf_token.json", "my-secret.json", "id_rsa", "cert.pem", "api.key", "sub/.env.local"):
+                src = self.folder(Path(tmp) / bad.replace("/", "_"), {"ok.json": b"{}", bad: b"x"})
+                with self.assertRaises(H.HubError) as caught:
+                    hub.upload("me/day", src, kind="model", patterns=["*.json", "*", ".env*"])
+                self.assertIn("secret", str(caught.exception))
+            self.assertEqual(hub.files("me/day", kind="model"), [])
+
+    def test_the_checkpoint_patterns_take_the_weights_and_the_configs_and_not_the_training_state(self) -> None:
+        import fnmatch
+
+        from decide.rental import hub as H
+
+        def taken(name):
+            return any(fnmatch.fnmatch(name, pattern) for pattern in H.CHECKPOINT_PATTERNS)
+
+        for name in ("model-00001-of-00006.safetensors", "readout.safetensors", "model.safetensors.index.json", "decision_config.json", "config.json",
+                     "tokenizer_config.json", "tokenizer.json", "chat_template.jinja"):
+            self.assertTrue(taken(name), name)
+        for name in ("resume.pt", "events.jsonl", "optimizer.pt", "model.safetensors.tmp", "summary.log", "run.json.tmp"):
+            self.assertFalse(taken(name), name)
+
+
+class HfHubContract(unittest.TestCase):
+    class Api:
+        def __init__(self, private=True):
+            self.private = private
+            self.calls = []
+
+        def create_repo(self, repo_id, *, private, repo_type, exist_ok):
+            self.calls.append(("create_repo", repo_id, private, repo_type, exist_ok))
+
+        def repo_info(self, repo_id, *, repo_type):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(private=self.private)
+
+        def upload_folder(self, *, repo_id, folder_path, path_in_repo, repo_type, allow_patterns, commit_message):
+            from types import SimpleNamespace
+
+            self.calls.append(("upload_folder", repo_id, str(folder_path), path_in_repo, repo_type, tuple(allow_patterns or ()), commit_message))
+            return SimpleNamespace(oid="a" * 40)
+
+        def list_repo_files(self, repo_id, *, revision, repo_type):
+            return ["x/a.json", "y/b.json"]
+
+    def hub(self, api=None, snapshot=None):
+        from decide.rental import hub as H
+
+        return H.HfHub(api or self.Api(), snapshot=snapshot or (lambda **kw: str(kw["local_dir"])))
+
+    def test_a_repo_is_created_private_and_checked_to_be_private(self) -> None:
+        api = self.Api()
+        self.hub(api).ensure_repo("me/day", kind="dataset")
+        self.assertEqual(api.calls, [("create_repo", "me/day", True, "dataset", True)])
+
+    def test_a_repo_that_turns_out_public_stops_everything_before_any_upload(self) -> None:
+        from decide.rental import hub as H
+
+        api = self.Api(private=False)
+        hub = self.hub(api)
+        with self.assertRaises(H.HubError):
+            hub.ensure_repo("me/day", kind="model")
+        with self.assertRaises(H.HubError):
+            hub.upload("me/day", Path("."), kind="model")
+        self.assertNotIn("upload_folder", [call[0] for call in api.calls])
+
+    def test_upload_forwards_the_patterns_the_prefix_and_the_kind(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            api = self.Api()
+            revision = self.hub(api).upload("me/day", Path(tmp), kind="dataset", path_in_repo="targets", patterns=["*.parquet"], message="targets")
+            self.assertEqual(revision, "a" * 40)
+            self.assertEqual(api.calls[-1], ("upload_folder", "me/day", tmp, "targets", "dataset", ("*.parquet",), "targets"))
+
+    def test_download_forwards_the_revision_the_patterns_and_the_folder(self) -> None:
+        seen = {}
+
+        def snapshot(**kw):
+            seen.update(kw)
+            return kw["local_dir"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.hub(snapshot=snapshot).download("perplexity-ai/pplx-decider-v1.2", Path(tmp) / "start", kind="model", revision="c" * 40, patterns=["*.json"])
+            self.assertEqual(out, Path(tmp) / "start")
+        self.assertEqual((seen["repo_id"], seen["repo_type"], seen["revision"], seen["allow_patterns"]), ("perplexity-ai/pplx-decider-v1.2", "model", "c" * 40, ["*.json"]))
+
+    def test_the_token_comes_from_the_named_variable_and_is_never_printed(self) -> None:
+        from decide.rental import hub as H
+
+        saved = os.environ.pop("DECIDE_TEST_HF_TOKEN", None)
+        self.addCleanup(lambda: os.environ.pop("DECIDE_TEST_HF_TOKEN", None) if saved is None else os.environ.__setitem__("DECIDE_TEST_HF_TOKEN", saved))
+        with self.assertRaises(H.HubError) as caught:
+            H.HfHub.from_env("DECIDE_TEST_HF_TOKEN", endpoint="https://huggingface.co")
+        self.assertIn("DECIDE_TEST_HF_TOKEN", str(caught.exception))
+        os.environ["DECIDE_TEST_HF_TOKEN"] = "hf_" + "x" * 30
+        try:
+            hub = H.HfHub.from_env("DECIDE_TEST_HF_TOKEN", endpoint="https://huggingface.co")
+        except ImportError:
+            self.skipTest("huggingface_hub is not installed")
+        self.assertNotIn("x" * 30, repr(hub) + str(hub) + json.dumps(vars(hub), default=repr))
+
+    def test_the_calls_match_the_installed_huggingface_hub(self) -> None:
+        try:
+            import inspect
+
+            from huggingface_hub import HfApi, snapshot_download
+        except ImportError:
+            self.skipTest("huggingface_hub is not installed")
+        self.assertTrue({"repo_id", "private", "repo_type", "exist_ok"} <= set(inspect.signature(HfApi.create_repo).parameters))
+        self.assertTrue({"repo_id", "folder_path", "path_in_repo", "repo_type", "allow_patterns", "commit_message"} <= set(inspect.signature(HfApi.upload_folder).parameters))
+        self.assertTrue({"repo_id", "repo_type", "revision", "local_dir", "allow_patterns", "endpoint", "token"} <= set(inspect.signature(snapshot_download).parameters))
+        self.assertTrue({"repo_id", "revision", "repo_type"} <= set(inspect.signature(HfApi.list_repo_files).parameters))
+        self.assertTrue({"repo_id", "repo_type"} <= set(inspect.signature(HfApi.repo_info).parameters))
+
+
+def use_the_kit():
+    """Make decide.sd importable (the kit is Squad A's and may not be in this checkout); skip when it is not."""
+    try:
+        import decide.sd.api  # noqa: F401
+        return
+    except ImportError:
+        pass
+    path = os.environ.get("DECIDE_KIT_DIR")
+    if path and (Path(path) / "decide" / "sd").is_dir():
+        sys.path.append(path)
+        try:
+            import decide.sd.api  # noqa: F401
+            return
+        except ImportError as exc:
+            raise unittest.SkipTest(f"the kit is there but cannot be imported here: {exc}")
+    raise unittest.SkipTest("decide/sd (the kit) is not in this checkout; set DECIDE_KIT_DIR to a checkout that has it")
+
+
+class ModelRefContract(unittest.TestCase):
+    def test_exactly_one_of_a_folder_or_a_repo(self) -> None:
+        from decide.rental import kit as K
+
+        K.ModelRef(name="new", path=Path("/x"))
+        K.ModelRef(name="base", repo="perplexity-ai/pplx-decider-v1.2", revision="c" * 40)
+        for kw in ({}, {"path": Path("/x"), "repo": "a/b"}):
+            with self.assertRaises(ValueError):
+                K.ModelRef(name="bad", **kw)
+
+    def test_a_repo_needs_a_pinned_revision(self) -> None:
+        from decide.rental import kit as K
+
+        for revision in (None, "main", "abc"):
+            with self.assertRaises(ValueError):
+                K.ModelRef(name="base", repo="a/b", revision=revision)
+
+
+class SdKitContract(unittest.TestCase):
+    """The adapter around decide.sd.api, with a stand-in for the api: what it asks the kit for, in which order."""
+
+    class Api:
+        def __init__(self):
+            self.calls = []
+
+        def load_engine(self, spec, **kw):
+            self.calls.append(("load_engine", spec, kw))
+            return "engine"
+
+        def run_requests(self, engine, requests, out, **kw):
+            self.calls.append(("run_requests", engine, str(requests), str(out), kw))
+            return {"rows": 3, "tokens": 120, "seconds": 4.5, "status": "complete", "total": 3}
+
+    def checkpoint(self, tmp, temperature=1.2, by_type=None):
+        root = Path(tmp) / "ckpt"
+        root.mkdir()
+        config = {"temperature": temperature}
+        if by_type is not None:
+            config["temperature_by_type"] = by_type
+        (root / "decision_config.json").write_text(json.dumps(config), encoding="utf-8")
+        return root
+
+    def kit(self, api, **kw):
+        from decide.rental import kit as K
+
+        return K.SdKit(api=api, **kw)
+
+    def test_a_hub_model_is_loaded_by_repo_and_revision_and_keeps_its_published_temperature(self) -> None:
+        from decide.rental import kit as K
+
+        api = self.Api()
+        info = self.kit(api).run(K.ModelRef(name="pplx", repo="perplexity-ai/pplx-decider-v1.2", revision="c" * 40), "req.jsonl", "out")
+        load, run = api.calls
+        self.assertEqual(load[1]["anchor"], "perplexity-ai/pplx-decider-v1.2")
+        self.assertEqual(load[1]["anchor_revision"], "c" * 40)
+        self.assertNotIn("temperatures", load[2])
+        self.assertEqual(load[2]["quant"], "bf16")
+        self.assertEqual((run[1], run[2], run[3]), ("engine", "req.jsonl", "out"))
+        self.assertTrue(run[4]["resume"])
+        self.assertEqual((info["rows"], info["tokens"], info["status"]), (3, 120, "complete"))
+
+    def test_a_local_checkpoint_is_served_to_the_kit_without_the_network_and_with_its_own_temperatures(self) -> None:
+        from decide.rental import kit as K
+
+        with tempfile.TemporaryDirectory() as tmp:
+            api = self.Api()
+            self.kit(api).run(K.ModelRef(name="new", path=self.checkpoint(tmp, 1.2, {"choice": 1.1, "noul": 1.3})), "req.jsonl", "out")
+            load = api.calls[0]
+            self.assertEqual(load[2]["temperatures"], {"choice": 1.1, "noul": 1.3, "default": 1.2})
+            self.assertEqual(set(load[2]["factories"]), {"repo", "processor"})
+            self.assertEqual(load[1]["anchor"], K.LOCAL_REPO)
+
+    def test_a_local_checkpoint_without_by_type_temperatures_uses_the_one_it_carries(self) -> None:
+        from decide.rental import kit as K
+
+        with tempfile.TemporaryDirectory() as tmp:
+            api = self.Api()
+            self.kit(api).run(K.ModelRef(name="new", path=self.checkpoint(tmp, 1.7)), "req.jsonl", "out")
+            self.assertEqual(api.calls[0][2]["temperatures"], {"default": 1.7})
+
+    def test_a_placeholder_temperature_is_refused_before_anything_is_loaded(self) -> None:
+        from decide.rental import kit as K
+
+        with tempfile.TemporaryDirectory() as tmp:
+            api = self.Api()
+            root = self.checkpoint(tmp)
+            config = json.loads((root / "decision_config.json").read_text(encoding="utf-8"))
+            config["temperature_is_placeholder"] = True
+            (root / "decision_config.json").write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaises(K.KitError) as caught:
+                self.kit(api).run(K.ModelRef(name="new", path=root), "req.jsonl", "out")
+            self.assertIn("placeholder", str(caught.exception))
+            self.assertEqual(api.calls, [])
+
+    def test_a_missing_checkpoint_folder_is_an_error_before_anything_is_loaded(self) -> None:
+        from decide.rental import kit as K
+
+        api = self.Api()
+        with self.assertRaises(K.KitError):
+            self.kit(api).run(K.ModelRef(name="new", path=Path("/nonexistent/ckpt")), "req.jsonl", "out")
+        self.assertEqual(api.calls, [])
+
+    def test_the_quant_and_the_device_are_the_callers(self) -> None:
+        from decide.rental import kit as K
+
+        api = self.Api()
+        self.kit(api, quant="nf4", device="cuda:0", tta_rotations=2).run(K.ModelRef(name="p", repo="a/b", revision="c" * 40), "r", "o")
+        kw = api.calls[0][2]
+        self.assertEqual((kw["quant"], kw["device"], kw["tta_rotations"]), ("nf4", "cuda:0", 2))
+
+    def test_without_the_kit_the_message_says_what_is_missing(self) -> None:
+        from decide.rental import kit as K
+
+        with self.assertRaises(K.KitError) as caught:
+            K.SdKit(module="decide_kit_that_does_not_exist.api").run(K.ModelRef(name="p", repo="a/b", revision="c" * 40), "r", "o")
+        self.assertIn("decide/sd", str(caught.exception))
+
+
+class LocalRepoParity(unittest.TestCase):
+    """The kit's own HubRepo, reading a checkpoint folder through the transport of ``kit.local_repo``."""
+
+    def setUp(self) -> None:
+        use_the_kit()
+
+    def make(self, tmp):
+        from decide_b_support import FakeTokenizer, HAVE_TRANSFORMERS, make_tiny_checkpoint
+
+        if not HAVE_TRANSFORMERS:
+            self.skipTest("torch + transformers are not installed")
+        return make_tiny_checkpoint(Path(tmp) / "ckpt", FakeTokenizer())
+
+    def test_the_kit_reads_the_layout_of_the_checkpoint(self) -> None:
+        from decide.rental import kit as K
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = K.local_repo(self.make(tmp))
+            self.assertEqual(repo.read_json("decision_config.json")["format_version"], 2)
+            self.assertTrue(repo.exists("readout.safetensors"))
+            self.assertFalse(repo.exists("not-there.json"))
+            names = repo.names()
+            self.assertTrue(names)
+            tensor = repo.read_tensor(names[0])
+            self.assertEqual(tuple(tensor.shape), tuple(repo.info(names[0]).shape))
+            head = repo.shard("readout.safetensors").read_tensor("weight")
+            self.assertEqual(tuple(head.shape), (255, 64))
+
+    def test_a_path_outside_the_checkpoint_is_not_served(self) -> None:
+        from decide.rental import kit as K
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = K.local_repo(self.make(tmp))
+            (Path(tmp) / "secret.txt").write_text("nope", encoding="utf-8")
+            self.assertFalse(repo.exists("../secret.txt"))
+
+
 if __name__ == "__main__":
     unittest.main()
