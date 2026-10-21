@@ -648,6 +648,59 @@ class LabelCoverageContract(unittest.TestCase):
             G.label_coverage({"rows_in": 10}, minimum=0.95)
 
 
+@needs_pyarrow
+class TeacherCoverageContract(unittest.TestCase):
+    """build_targets keeps a row that only has a gold label, so rows_out says nothing about the teachers: the share is counted on the ``teachers`` column."""
+
+    def build(self, tmp, keep_every):
+        import contextlib
+        import io
+
+        from decide.data import schema as S
+        from decide.train import build_targets as BT
+        from decide_b_support import make_targets_dataset
+
+        root = Path(tmp) / "data"
+        make_targets_dataset(root, train=8, dev=6)
+        part = next((root / "labels").rglob("*.parquet"))
+        rows = list(S.read_teacher(part))
+        part.unlink()
+        S.write_teacher_part(part, rows[::keep_every])
+        with contextlib.redirect_stdout(io.StringIO()):
+            BT.main(["--corpus", str(root / "corpus"), "--labels", str(root / "labels"), "--out", str(root / "targets-again")])
+        out = root / "targets-again"
+        return out, json.loads((out / "report.json").read_text(encoding="utf-8"))
+
+    def test_every_row_with_a_teacher_label_counts(self) -> None:
+        from decide.rental import gates as G
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out, report = self.build(tmp, 1)
+            got = G.teacher_coverage(out, report)
+            self.assertEqual((got["rows_in"], got["rows_out"]), (14, 14))
+            self.assertTrue(G.label_coverage(got, minimum=0.95)["passed"])
+
+    def test_a_row_that_only_has_gold_does_not(self) -> None:
+        from decide.rental import gates as G
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out, report = self.build(tmp, 2)
+            self.assertEqual((report["rows_in"], report["rows_out"]), (14, 14), "build_targets keeps the gold-only rows")
+            got = G.teacher_coverage(out, report)
+            self.assertEqual((got["rows_in"], got["rows_out"]), (14, 7))
+            self.assertFalse(G.label_coverage(got, minimum=0.95)["passed"])
+
+    def test_a_targets_folder_without_a_manifest_is_refused(self) -> None:
+        from decide.data import schema as S
+        from decide.rental import gates as G
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out, report = self.build(tmp, 1)
+            (out / "manifest.json").unlink()
+            with self.assertRaises(S.ManifestError):
+                G.teacher_coverage(out, report)
+
+
 class GtEvidenceContract(unittest.TestCase):
     cfg = {"enabled": "auto", "model": "Qwen/Qwen3.8-27B", "revision": None, "thinking": True}
 

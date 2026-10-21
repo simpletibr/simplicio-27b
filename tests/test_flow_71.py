@@ -189,6 +189,10 @@ class WholeDay(unittest.TestCase):
         cls.kit_a = FakeKit()
         cls.a = make_day(cls.workdir, cls.hub, cls.kit_a, cls.executor).run(until="calibrate")
         cls.calls_after_a = list(cls.executor.modules())
+        final, run = cls.workdir / "final", cls.workdir / "runs" / "seed1" / "final"
+        cls.linked_after_a = all(os.path.samefile(path, run / path.name) for path in final.glob("*.safetensors"))
+        cls.config_after_a = json.loads((final / "decision_config.json").read_text(encoding="utf-8"))
+        cls.config_is_a_copy = not os.path.samefile(final / "decision_config.json", run / "decision_config.json")
 
         cls.kit_b = FakeKit(rates={"baseline": 2, "new": 2})
         cls.b = make_day(cls.workdir, cls.hub, cls.kit_b, cls.executor, public_requests=cls.requests).run()
@@ -232,12 +236,11 @@ class WholeDay(unittest.TestCase):
         self.assertEqual(Path(argv[argv.index("--targets") + 1]), self.workdir / "targets")
 
     def test_the_calibrated_checkpoint_is_a_staged_copy_and_the_run_output_is_untouched(self) -> None:
-        final, run = self.workdir / "final", self.workdir / "runs" / "seed1" / "final"
-        config = json.loads((final / "decision_config.json").read_text(encoding="utf-8"))
-        self.assertFalse(config["temperature_is_placeholder"])
-        self.assertIn("calibration", config)
-        self.assertTrue(os.path.samefile(next(final.glob("*.safetensors")), run / next(final.glob("*.safetensors")).name))
-        self.assertTrue((final / ".staged-by-the-day").is_file())
+        self.assertTrue(self.linked_after_a, "the weights of final/ are links to the run's, not a second copy of 50 GB")
+        self.assertFalse(self.config_after_a["temperature_is_placeholder"])
+        self.assertIn("calibration", self.config_after_a)
+        self.assertTrue(self.config_is_a_copy, "the config is a copy: fitting the temperature in final/ cannot change the run's output")
+        self.assertTrue((self.workdir / "final" / ".staged-by-the-day").is_file())
 
     def test_g4_stops_the_day_when_the_new_checkpoint_is_not_better_and_nothing_is_published(self) -> None:
         self.assertEqual((self.b.status, self.b.stopped_at), ("stopped", "g4"))

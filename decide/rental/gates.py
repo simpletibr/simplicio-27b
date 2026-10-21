@@ -34,7 +34,8 @@ SCOPE = ("home private proxy (decide.data.proxy_private): a stand-in for the boa
 # --------------------------------------------------------------------------- label coverage (F3)
 
 def label_coverage(report: Mapping[str, Any], *, minimum: float) -> Dict[str, Any]:
-    """Share of the corpus rows that kept a label after ``decide.train.build_targets`` (its ``report.json``)."""
+    """Share of the corpus rows that kept a teacher label: ``report`` has ``rows_in`` (corpus rows) and ``rows_out`` (rows with a teacher label;
+    see :func:`teacher_coverage`, ``build_targets`` alone also keeps the rows that only have gold)."""
     if isinstance(minimum, bool) or not isinstance(minimum, (int, float)) or not 0 < minimum <= 1:
         raise ValueError(f"minimum must be a share in (0, 1], got {minimum!r}")
     try:
@@ -49,6 +50,19 @@ def label_coverage(report: Mapping[str, Any], *, minimum: float) -> Dict[str, An
     passed = round(coverage, 12) >= minimum
     return {"coverage": coverage, "minimum": minimum, "passed": passed, "rows_in": rows_in, "rows_out": rows_out,
             "reason": f"{rows_out} of {rows_in} rows have a label ({coverage:.4f} {'>=' if passed else '<'} {minimum})"}
+
+
+def teacher_coverage(targets_path: "str | os.PathLike[str]", report: Mapping[str, Any]) -> Dict[str, Any]:
+    """``rows_in`` / ``rows_out`` for :func:`label_coverage`: the corpus rows, and those that kept a label from at least one teacher.
+
+    ``build_targets`` keeps a row that has only a gold label (``rows_out`` of its report), so its own count cannot tell whether the
+    teachers labeled the corpus.  The ``teachers`` column of the targets lists the teachers each row used."""
+    _, pq = S._arrow()
+    labeled = 0
+    for file in S.corpus_files(targets_path, require_manifest=True):
+        for batch in pq.ParquetFile(file).iter_batches(batch_size=S.BATCH_ROWS, columns=["teachers"]):
+            labeled += sum(1 for value in batch.column(0).to_pylist() if json.loads(value))
+    return {"rows_in": report["rows_in"], "rows_out": labeled, "dropped_unlabeled": report.get("dropped_unlabeled", 0)}
 
 
 # --------------------------------------------------------------------------- the GT evidence (F2b)
