@@ -12,6 +12,7 @@ is the owner's decision, outside this tool), and a file whose name looks like a 
 """
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import hashlib
 import json
@@ -19,7 +20,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence
+from typing import Any, Callable, Iterator, List, Optional, Sequence
 
 #: What leaves the machine from a checkpoint folder: the weights and the small configs, not the training state
 #: (``resume.pt``, optimizer shards, ``events.jsonl``, ``*.tmp``).
@@ -151,10 +152,36 @@ class LocalHub(Hub):
 
 # --------------------------------------------------------------------------- huggingface_hub
 
+#: What the commonest failures of the Hub usually mean, by the name of the exception class (shown next to the repo that failed).
+_HINTS = {
+    "RepositoryNotFoundError": "the repo does not exist, or this token cannot see it: a private repo looks like a missing one",
+    "GatedRepoError": "a gated repo: accept its terms on the Hub with the account the token belongs to",
+    "RevisionNotFoundError": "no such revision in this repo",
+    "EntryNotFoundError": "no such file in this repo",
+    "LocalEntryNotFoundError": "the file is not on this machine and the Hub could not be reached",
+    "HfHubHTTPError": "the Hub refused the request: check the token's permissions (write access for uploads)",
+}
+
+
 class HfHub(Hub):
-    def __init__(self, api: Any, *, snapshot: Callable[..., Any]) -> None:
+    def __init__(self, api: Any, *, snapshot: Callable[..., Any], scrub: Callable[[str], str] = lambda text: text) -> None:
         self._api = api
         self._snapshot = snapshot
+        self._scrub = scrub                    # a function, not the secret: nothing here can show the token
+
+    @contextlib.contextmanager
+    def _guard(self, action: str, repo: str) -> Iterator[None]:
+        """Whatever the Hub client raises becomes a :class:`HubError` that names the action and the repo, with the token scrubbed and
+        the original traceback not chained (it can carry request details).  A missing package stays an ``ImportError``."""
+        try:
+            yield
+        except (HubError, ImportError):
+            raise
+        except Exception as exc:               # noqa: BLE001 - the client raises its own classes, httpx's and OSError's
+            name = type(exc).__name__
+            first = self._scrub(str(exc).strip().splitlines()[0]) if str(exc).strip() else ""
+            hint = _HINTS.get(name) or next((text for klass, text in _HINTS.items() if klass in {c.__name__ for c in type(exc).__mro__}), "")
+            raise HubError(f"{action} {repo}: {name}" + (f": {first}" if first else "") + (f" ({hint})" if hint else "")) from None
 
     def __repr__(self) -> str:
         return "HfHub()"
@@ -172,28 +199,32 @@ class HfHub(Hub):
         def snapshot(**kwargs: Any) -> Any:
             return snapshot_download(token=token, endpoint=endpoint, **kwargs)
 
-        return cls(HfApi(token=token, endpoint=endpoint), snapshot=snapshot)
+        return cls(HfApi(token=token, endpoint=endpoint), snapshot=snapshot, scrub=lambda text: text.replace(token, "***"))
 
     def _private(self, repo: str, kind: str) -> None:
         if not self._api.repo_info(repo, repo_type=_kind(kind)).private:
             raise HubError(f"repo {repo} is public; the day only writes to private repos (make it private, or use another repo)")
 
     def ensure_repo(self, repo: str, *, kind: str = "model") -> None:
-        self._api.create_repo(repo, private=True, repo_type=_kind(kind), exist_ok=True)
-        self._private(repo, kind)
+        with self._guard("creating", repo):
+            self._api.create_repo(repo, private=True, repo_type=_kind(kind), exist_ok=True)
+            self._private(repo, kind)
 
     def upload(self, repo: str, folder: "str | os.PathLike[str]", *, kind: str = "model", path_in_repo: str = "",
                patterns: Optional[Sequence[str]] = None, message: str = "") -> str:
-        self._private(repo, kind)
-        check_upload_names(folder, patterns)
-        info = self._api.upload_folder(repo_id=repo, folder_path=str(folder), path_in_repo=path_in_repo, repo_type=kind,
-                                       allow_patterns=list(patterns) if patterns else None, commit_message=message or "upload from the rented day")
-        return str(info.oid)
+        with self._guard("uploading to", repo):
+            self._private(repo, kind)
+            check_upload_names(folder, patterns)
+            info = self._api.upload_folder(repo_id=repo, folder_path=str(folder), path_in_repo=path_in_repo, repo_type=kind,
+                                           allow_patterns=list(patterns) if patterns else None, commit_message=message or "upload from the rented day")
+            return str(info.oid)
 
     def download(self, repo: str, dest: "str | os.PathLike[str]", *, kind: str = "model", revision: Optional[str] = None,
                  patterns: Optional[Sequence[str]] = None) -> Path:
-        self._snapshot(repo_id=repo, repo_type=_kind(kind), revision=revision, local_dir=str(dest), allow_patterns=list(patterns) if patterns else None)
+        with self._guard("downloading", repo):
+            self._snapshot(repo_id=repo, repo_type=_kind(kind), revision=revision, local_dir=str(dest), allow_patterns=list(patterns) if patterns else None)
         return Path(dest)
 
     def files(self, repo: str, *, kind: str = "model", revision: Optional[str] = None, prefix: str = "") -> List[str]:
-        return _under(prefix, list(self._api.list_repo_files(repo, revision=revision, repo_type=_kind(kind))))
+        with self._guard("listing", repo):
+            return _under(prefix, list(self._api.list_repo_files(repo, revision=revision, repo_type=_kind(kind))))
