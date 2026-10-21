@@ -205,9 +205,12 @@ class Day:
             for phase in PHASES:
                 if only and phase not in only:
                     continue
-                if phase != "preflight" and state.reusable(phase):
+                stale = self._stale(phase) if phase != "preflight" else None
+                if phase != "preflight" and state.reusable(phase) and stale is None:
                     self._say(f"{phase}: {state.status(phase)} already, skipped")
                 else:
+                    if stale is not None:
+                        self._say(f"{phase}: {state.status(phase)} before, but {stale}")
                     try:
                         self._phase(phase)
                     except _Stop as halted:
@@ -222,6 +225,29 @@ class Day:
             return DayResult("stopped", stopped_at, str(stop), statuses)
         finished = all(status in ("done", "skipped") for status in statuses.values())
         return DayResult("complete" if finished else "partial", None, None, statuses)
+
+    def _stale(self, phase: str) -> Optional[str]:
+        """Why a phase that the state calls settled has to be decided again: the owner has since given the day what it lacked (``None``: it stays).
+
+        A phase that was skipped for a missing input is not a finished phase.  The public round (no requests file) and the thinker traces
+        (no passing GT report) are decided again as soon as the input exists; the upload is done again when the public round finished
+        after it.  The traces cannot be made after the model trained without them: that day is over, and the message says so."""
+        state, status = self.state, self.state.status(phase)
+        if phase == "public_round" and status == "skipped" and self._public_requests() is not None:
+            return "the public requests file is given now"
+        if phase == "traces" and status == "skipped" and self._evidence()["enabled"]:
+            late = [name for name in ("train", "soup", "calibrate", "g4") if state.status(name) != "pending"]
+            if late:
+                raise DayError(f"the GT report passes now, but the traces were skipped in an earlier session and {', '.join(late)} already ran without them: "
+                               "the model that exists was trained without the thinker's reasoning.  Use a new --workdir to train with them, "
+                               "or run without --gt-report to go on with this model")
+            return "the GT report passes now"
+        if phase == "targets_traces" and status == "skipped" and state.status("traces") == "done":
+            return "the traces were made in this session"
+        if phase == "publish" and status == "done" and state.status("public_round") == "done":
+            if "public round" not in (state.record("publish").get("detail") or {}).get("uploaded", []):
+                return "the public round finished after the upload, and its results were not sent"
+        return None
 
     def _phase(self, phase: str) -> None:
         state = self.state
