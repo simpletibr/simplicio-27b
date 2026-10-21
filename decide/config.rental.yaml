@@ -1,0 +1,42 @@
+# decide/config.rental.yaml :: configuração do dia alugado (Squad B). Sobreposta a decide/config.yaml por sd.config.load_config.
+# Só a chave `rental`. Segredos NÃO ficam aqui: só o NOME das variáveis de ambiente (HF_TOKEN, THINKER_API_KEY).
+
+rental:
+  profile: econ_b200                       # decide/rental/profiles/<nome>.yaml (ou um caminho); --profile no comando vence
+  workdir: /workspace/day                  # onde o dia escreve: state/, logs/, data/, targets/, runs/, g4/, public/
+  hub:
+    token_env: HF_TOKEN
+    endpoint: https://huggingface.co
+    private: true                          # todo upload nasce privado; tornar público é decisão do dono, fora do orquestrador
+    work_repo: wesleysimplicio/simplicio-decide-day        # modelo privado: cópia de cada seed e da média (retomada)
+    data_repo: wesleysimplicio/simplicio-decide-data       # dataset privado: corpus-limpo/, labels/, proxy/, traces/
+    weights_repo: wesleysimplicio/Simplicio-Decide-27B     # o mesmo hub.winner_repo do kit
+  start:                                   # o checkpoint de onde o dia parte (fine-tune contínuo)
+    repo: perplexity-ai/pplx-decider-v1.2
+    revision: cce0f3f80033e9d89d80831d5281fd72124aacce     # commit visto na API do Hub em 2026-10-21
+  inputs:                                  # subpastas do data_repo
+    corpus: corpus-limpo
+    labels: labels/pplx-decider-v1.2
+    proxy: proxy
+    traces: traces
+    teacher: pplx-decider-v1.2
+  gates:
+    baseline:                              # o modelo que o G4 bate: o mesmo de onde o dia parte
+      repo: perplexity-ai/pplx-decider-v1.2
+      revision: cce0f3f80033e9d89d80831d5281fd72124aacce
+    g4_margin_points: 1.5                  # G4: >= baseline + 1,5 pontos do privado caseiro
+    proxy_scale: 100                       # pontos = 100 x a habilidade média corrigida pelo acaso (proxy_private.score_rows)
+    label_coverage: 0.95                   # F3: >= 95% do corpus rotulado
+    bootstrap: {resamples: 1000, seed: 20261021}
+  thinker:
+    enabled: auto                          # auto: só com um report.json do GT que passou (--gt-report); off: nunca
+    model: Qwen/Qwen3.8-27B
+    revision: null                         # null: vale a revisão do relatório do GT, que tem de passar com o mesmo modelo
+    thinking: true
+    budget_per_question: 2048              # tokens de raciocínio por pergunta (max_tokens do pedido = isto x perguntas, até o teto)
+    max_tokens_cap: 16384
+    base_url: null                         # endpoint compatível com OpenAI (um vLLM que o dono subiu, ou um hospedado)
+    api_key_env: THINKER_API_KEY           # nome da variável; vazio para um vLLM local
+    concurrency: 8
+  public:
+    requests: null                         # arquivo de pedidos da rodada pública completa (o do kit)

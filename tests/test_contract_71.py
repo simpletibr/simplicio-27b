@@ -9,7 +9,6 @@ construction: the tests pin the formulas, not a measurement.
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 import subprocess
@@ -18,7 +17,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from decide_b_support import ROOT, needs_torch, needs_yaml
+from decide_b_support import ROOT, needs_yaml
 
 from decide.rental import estimate as E
 from decide.rental import hardware as HW
@@ -193,12 +192,13 @@ class EstimateContract(unittest.TestCase):
         self.assertAlmostEqual(train["usd"], train["seconds"] * 8 * 0.001097, places=6)
 
     def test_the_public_round_is_inference_over_the_board_token_count(self) -> None:
+        load = HW.WEIGHT_BYTES / (HW.ASSUMED_IO_GB_PER_S * 1e9)          # one model load (a guess about the disk), UNVERIFIED
         report = E.estimate(self.econ)
         public = self.phases(report)["public_round"]
         self.assertEqual(public["flops"], 2 * PARAMS * PUBLIC_TOKENS)
-        self.assertAlmostEqual(public["seconds"], 2 * PARAMS * PUBLIC_TOKENS / (2250e12 * 0.40), places=3)
+        self.assertAlmostEqual(public["seconds"], 2 * PARAMS * PUBLIC_TOKENS / (2250e12 * 0.40) + load, places=3)
         report = E.estimate(self.full)
-        self.assertAlmostEqual(self.phases(report)["public_round"]["seconds"], 2 * PARAMS * PUBLIC_TOKENS / (8 * 989e12 * 0.40), places=3)
+        self.assertAlmostEqual(self.phases(report)["public_round"]["seconds"], 2 * PARAMS * PUBLIC_TOKENS / (8 * 989e12 * 0.40) + load, places=3)
 
     def test_totals_add_the_phases_up(self) -> None:
         report = E.estimate(self.econ)
