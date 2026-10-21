@@ -226,7 +226,7 @@ def generate_traces(corpus: "str | os.PathLike[str]", out: "str | os.PathLike[st
                     quiet.append(row["example_id"])
                 else:
                     rows.append(TR.trace_row(example_id=row["example_id"], thinker=thinker, reasoning=reasoning, tokens=reply["tokens"],
-                                             finish_reason=reply["finish_reason"]))
+                                             finish_reason=reply["finish_reason"], request_sha256=S.request_digest(S.parse_row(row)[0])))
                     report["tokens"] += reply["tokens"]
             if rows:
                 TR.write_trace_part(directory / f"part-{index:04d}.parquet", rows)

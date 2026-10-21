@@ -3,7 +3,9 @@
 * the start checkpoint is the one the plan counted on: the parameter count and the bytes of ``model.safetensors.index.json`` are
   the numbers of ``pplx-decider-v1.2`` (``hardware.PARAMS`` / ``WEIGHT_BYTES``), every shard it lists is there, and so are the
   readout head and the decision config;
-* a dataset folder is read through its ``manifest.json``: every part is checked against its sha256 (``decide.data.schema``).
+* a dataset folder is read through its ``manifest.json``: every part is checked against its sha256 (``decide.data.schema``);
+* the corpus is the output of ``decide.data.decontaminate`` (SCHEMA.md section 11), which is what ``build_targets`` demands: the day
+  says so at the fetch, before the 52 GB checkpoint is downloaded and before any GPU hour, not in the middle of the targets phase.
 """
 from __future__ import annotations
 
@@ -14,6 +16,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from decide.data import schema as S
+from decide.train import build_targets as BT
+from decide.train.targets import TargetError
 
 from . import hardware as HW
 
@@ -81,3 +85,15 @@ def verify_dataset(path: "str | os.PathLike[str]", *, name: str, manifest_requir
     else:
         facts["warning"] = f"{name}: no {S.MANIFEST_NAME}, so its parts are not checked against a sha256 (they are read by name)"
     return facts
+
+
+def check_corpus_screened(path: "str | os.PathLike[str]", *, name: str = "corpus") -> Dict[str, Any]:
+    """The provenance of a corpus folder that came out of ``decontaminate`` (``tool``, ``manifest_sha256``, ``decontamination_sha256``).
+
+    Raises ``InputsError`` for anything else: a raw ``build_corpus`` folder, a folder sealed by hand, a parquet file.  It is the check
+    ``build_targets`` makes (the same function), moved to the door of the day."""
+    try:
+        facts = BT.corpus_provenance(path, allow_undecontaminated=False)
+    except TargetError as exc:
+        raise InputsError(f"{name}: {exc}") from None
+    return dict(facts)

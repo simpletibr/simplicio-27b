@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from decide.data import proxy_private as PP
+from decide.data import schema as S
 
 from . import estimate as E
 from . import gates as G
@@ -258,9 +259,14 @@ class Day:
         cfg, paths = self.cfg, self.paths
         inputs = cfg["inputs"]
         self.hub.download(cfg["hub"]["data_repo"], paths.data, kind="dataset", patterns=[f"{inputs[key]}/*" for key in ("corpus", "labels", "proxy")])
-        facts = {"corpus": IN.verify_dataset(paths.corpus, name="corpus", manifest_required=True),
-                 "proxy": IN.verify_dataset(paths.proxy, name="proxy", manifest_required=True),
-                 "labels": IN.verify_dataset(paths.labels, name="labels", manifest_required=False)}
+        facts: Dict[str, Any] = {}
+        for key in ("corpus", "proxy", "labels"):
+            try:
+                facts[key] = IN.verify_dataset(getattr(paths, key), name=key, manifest_required=True)
+            except S.ManifestError as exc:
+                raise DayError(f"{key}: {exc}. A folder the day reads needs a manifest.json: seal it before the upload, e.g. "
+                               f"`python -c \"from decide.data import schema as S; S.seal_directory('<folder>', kind='{key}')\"` (RUNBOOK, session 4)") from None
+        facts["corpus"]["screened"] = IN.check_corpus_screened(paths.corpus)
         for item in facts.values():
             if item.get("warning"):
                 self._say(f"warning: {item['warning']}")

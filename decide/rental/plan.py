@@ -113,7 +113,7 @@ def _python(python: Optional[str]) -> str:
 def targets_command(paths: Paths, *, thinker: Optional[str] = None, python: Optional[str] = None) -> List[str]:
     argv = [_python(python), "-m", "decide.train.build_targets", "--corpus", str(paths.corpus), "--labels", str(paths.labels)]
     if thinker is not None:
-        argv += ["--traces", str(paths.traces), "--thinker", thinker]
+        argv += ["--traces", str(paths.traces / thinker), "--thinker", thinker]       # the manifest of the traces is in the folder of the thinker
     return argv + ["--out", str(paths.targets_traces if thinker is not None else paths.targets)]
 
 
