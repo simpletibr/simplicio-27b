@@ -57,29 +57,42 @@ python -m decide.think.compare --pack pack.jsonl.gz --thinker work/results.jsonl
 
   | status | quando |
   |---|---|
-  | **INCONCLUSIVE** | o thinking não foi detectado na maioria das linhas que responderam (`thinking_not_detected`), nenhuma linha respondeu (`no_replies`), nada foi pontuado (`no_scored_rows`), ou o pacote não tem decisor (`no_decision_models`) |
+  | **INCONCLUSIVE** | o thinking não foi detectado na maioria das linhas que responderam (`thinking_not_detected`), mais de 10% das que responderam esconderam o raciocínio ou pararam sem fechá-lo (`reasoning_hidden_or_not_closed`), nenhuma linha respondeu (`no_replies`), nada foi pontuado (`no_scored_rows`), ou o pacote não tem decisor (`no_decision_models`) |
   | **PARTIAL** | faltam linhas (`rows_not_run`) ou há linhas com erro transitório (`rows_with_transient_error`) |
-  | **EXPLORATORY** | a rodada está completa, mas fora do protocolo: `bootstrap_b`, `seed`, `min_delta`, `models_subset`, `pack_not_manifest`, `manifest_not_checked`, `pack_mismatch_ignored`, `thinker_config_unknown`, `thinking_off`, `model_not_pinned`, `revision_not_declared`, `standard_only`, `sampling_not_registered`, `reasoning_effort`, `extra_body_overrides_protocol`, `usage_missing` |
+  | **EXPLORATORY** | a rodada está completa, mas fora do protocolo: `bootstrap_b`, `seed`, `min_delta`, `models_subset`, `pack_not_manifest`, `manifest_not_checked`, `pack_mismatch_ignored`, `thinker_config_unknown`, `thinking_off`, `model_not_pinned`, `revision_not_declared`, `standard_only`, `sampling_not_registered`, `reasoning_effort`, `extra_body_overrides_protocol`, `usage_missing`, `reasoning_hidden` (qualquer linha que escondeu o raciocínio), `mixed_endpoints` (as linhas vieram de mais de um endpoint) |
   | **PASS** / **FAIL** | nenhum dos anteriores |
 
-  Quando mais de um vale, a linha final mostra o de cima e acrescenta `also PARTIAL (...)` ou `also EXPLORATORY (...)`.
+  Quando mais de um vale, a linha final mostra o de cima e acrescenta `also PARTIAL (...)` ou `also EXPLORATORY (...)`. Linhas
+  desistidas (`gave_up`) acrescentam `also NOTE (gave_up N)` em qualquer status, PASS e FAIL inclusive, e um FAIL de um pensador
+  quantizado traz `one-sided (nf4-fp16)` no meio da linha: em 4 bits só o PASS vale.
 - **Thinking visto.** Para cada linha que respondeu, o `thinker` grava se o modelo pensou: raciocínio devolvido à parte, texto
   antes do `</think>`, ou pelo menos 100 tokens gerados. Se menos da metade das linhas mostra isso, o endpoint provavelmente
   ignorou o pedido de thinking e o status é INCONCLUSIVE (`thinking_not_detected`), mesmo que a conta dê +10. Se mais da
   metade das respostas veio sem `usage` (contagem de tokens), o status é EXPLORATORY (`usage_missing`).
+- **Provedor que pensa e esconde o raciocínio.** Um endpoint hospedado pode pensar e devolver só a resposta final: o kit
+  não vê o `</think>` nem o raciocínio, e não sabe se abriu o `<think>` (quem renderiza o template é o servidor). Nesse
+  backend (`openai`) a resposta é **lida como está**, e uma linha com 100 tokens ou mais e nenhum raciocínio visível (sem
+  `</think>`, sem raciocínio à parte, sem `reasoning_tokens`) é marcada `reasoning_hidden`. Qualquer linha assim deixa o
+  status EXPLORATORY (`reasoning_hidden`); se elas (somadas às `no_close`) passarem de 10% das linhas que responderam, o
+  status é INCONCLUSIVE (`reasoning_hidden_or_not_closed`) com o motivo na linha final e no `report.json`. Em nenhum caso
+  isso vira um PASS ou FAIL oficial: um FAIL feito de linhas que não dizem nada sobre o modelo mandaria o plano ao modo
+  só-decisor (ADR 0004).
 - **Como cada lado responde.** O decisor responde com o argmax das probabilidades publicadas (primeiro máximo na ordem das
   opções). Uma linha só conta como acerto se **todas** as perguntas dela estão certas (SATA-Bench é exato, como no kit); no
   ChessBench vale qualquer lance do conjunto de empates. O pensador responde com a última linha `ANSWER <pergunta>: <rótulo>`
   **depois** do último `</think>`. Vale a **última** linha `ANSWER` da pergunta: se o rótulo dela não é uma opção, a pergunta
   fica sem resposta, e o leitor não volta a uma linha anterior. Só se a pergunta não tem nenhuma linha `ANSWER` o leitor tenta
   `resposta é X`, `\boxed{X}` e, numa pergunta única, o último rótulo solto; o relatório conta as linhas lidas assim. Uma
-  saída que parou (`stop`) sem `</think>` e sem raciocínio à parte **não é lida**: o template do Qwen3.8 já abre o `<think>`,
-  então o texto inteiro é pensamento ou o endpoint não pensou (`no_close`, contada como erro).
+  saída que parou (`stop`) sem `</think>` e sem raciocínio à parte **não é lida no backend `transformers`**, onde o kit
+  renderiza o template e sabe que ele abriu o `<think>`: o texto inteiro é pensamento (`no_close`, contada como erro; se passar
+  de 10% o status é INCONCLUSIVE). No backend `openai` ela é lida como está (acima).
 - **Erro do modelo, ausente e erro transitório.** Resposta ilegível, orçamento de tokens esgotado e falha terminal contam
   como **erro** do pensador: a linha continua na comparação, errada. Falha terminal é: a linha esgotou as tentativas (3
   erros seguidos, `--max-attempts`; vale para rede, 5xx e tempo esgotado), o servidor ficou sem memória com um pedido só,
   ou o backend disse que a linha não tem como ser respondida; no arquivo ela é `failed` (com `gave_up` quando foi por
-  tentativas) e é listada no relatório. Linha **sem resultado** é ausente; linha com erro transitório ainda dentro das
+  tentativas) e é listada no relatório. A desistência vem **no fim da rodada**, e **não vem** numa rodada que parou por erros
+  seguidos (`--max-consecutive-errors`, 8): isso é o provedor fora do ar, não a linha, e três rodadas assim não podem virar
+  linhas `failed`. Essa rodada deixa um registro `round_end` com `outage`, e os erros dela não entram na contagem das tentativas. Linha **sem resultado** é ausente; linha com erro transitório ainda dentro das
   tentativas também não entra. Enquanto houver uma ou outra o status é PARTIAL, nunca PASS nem FAIL: rode de novo com os
   mesmos argumentos. `--retry-failed` refaz as `failed` com a contagem zerada.
 - A habilidade corrigida pelo acaso (`skill`, a fórmula do kit) é impressa por prova, mas o veredito é em acurácia.
@@ -251,6 +264,9 @@ python -m decide.think.thinker --backend openai --base-url https://SEU-ENDPOINT/
   `chat_template_kwargs`. O sinal de que não pensa é o número de tokens por linha na casa das dezenas: a sonda imprime os
   tokens de cada linha, o fim do `thinker` avisa (`WARNING: ... the model barely thought`) quando a média fica abaixo de 100
   e o relatório avisa (`AVISO: a mediana é de ... tokens por linha`). Uma rodada assim não é o gate.
+  O contrário também acontece: um provedor que **pensa e esconde o raciocínio** devolve só a resposta, com milhares de tokens
+  gerados. A linha é lida como está e marcada `reasoning_hidden` (acima): o status sai EXPLORATORY, ou INCONCLUSIVE se forem mais
+  de 10% das linhas. Para um veredito oficial use um endpoint que devolva o raciocínio (`reasoning_content`), ou o vLLM/Modal.
 - Se o endpoint responder HTTP 400 a `top_k`, `min_p`, `repetition_penalty` ou `chat_template_kwargs`, use `--standard-only` e
   ligue o thinking pelo campo do próprio provedor em `--extra-body '{"campo": valor}'`. A amostragem deixa de ser a do cartão
   do modelo, então o veredito sai **EXPLORATORY** (`standard_only`): é indício, não o gate. **Não ponha chave em
@@ -262,7 +278,7 @@ python -m decide.think.thinker --backend openai --base-url https://SEU-ENDPOINT/
   que o servidor roda. Preencha só se o endpoint serve esse commit.
 - **Agregadores e quantização.** Um agregador (OpenRouter e parecidos) pode mandar cada requisição a um upstream diferente,
   com outra quantização e outro modo de thinking. Isso o kit não vê. Cada linha grava o endpoint de onde veio; se o arquivo
-  mistura endpoints o relatório avisa, e o cabeçalho mostra só a configuração do primeiro. Prefira um provedor que diga qual
+  mistura endpoints o relatório avisa (e o status é EXPLORATORY, `mixed_endpoints`), e o cabeçalho mostra só a configuração do primeiro. Prefira um provedor que diga qual
   checkpoint serve e em que precisão, e use o mesmo `--out` com o mesmo endpoint do início ao fim.
 - **Custo** = tokens de saída da amostra inteira x preço por token. Os tokens por linha só aparecem na sonda. Não há preço
   nenhum estimado aqui.
@@ -281,6 +297,9 @@ python -m decide.think.serve --print
 ```
 
 - `--work` guarda `results.jsonl`, `report/` e `vllm.log`. Rodar de novo com os mesmos argumentos retoma.
+- O servidor local sobe **sem chave**. A espera (`serve.wait_ready`, `serve --wait-url`) usa o mesmo cliente que não segue
+  redirecionamentos, e a célula `local-vllm` do notebook da API não manda chave nenhuma para ele: a chave de um endpoint não
+  sai do endpoint (a célula de conferências a tira do ambiente quando `MODE = "local-vllm"`).
 - Códigos de saída: **0** terminou; **2** o pacote não é o do manifesto, ou o `thinker` recusou o protocolo (outro modelo, outro
   prompt, orçamento menor no mesmo arquivo); **3** o `thinker` parou após erros seguidos (o relatório sai mesmo assim);
   **4** o servidor não subiu (as últimas linhas do `vllm.log` são impressas).
@@ -367,8 +386,9 @@ O `report.md` tem, em ordem:
    Avisos: mais de 10% das linhas bateram no orçamento (o FAIL pode ser do orçamento, não do modelo: refaça com `--max-tokens`
    maior, só as cortadas são refeitas), saída ilegível, mediana de tokens baixa demais, linhas sem sinal de pensamento, linhas
    sem `usage`, linhas que pararam sem fechar o `</think>` (`no_close`), linhas lidas sem a linha `ANSWER` pedida (fallback),
-   linhas desistidas depois das tentativas (`gave_up`), `--standard-only`, mais de um endpoint no mesmo arquivo, execução
-   parcial. O `thinker` imprime os avisos de pensamento e de `no_close` no fim da própria rodada.
+   linhas desistidas depois das tentativas (`gave_up`), linhas que esconderam o raciocínio (`reasoning_hidden`), `--standard-only`,
+   mais de um endpoint no mesmo arquivo, execução parcial. O `thinker` imprime os avisos de pensamento, de `no_close`, de
+   `reasoning_hidden` e de rodada parada por erros seguidos no fim da própria rodada.
 6. **Folga de latência.** A regra do kit é latência média, mediana e p80 de até 1.000 ms por requisição numa RTX PRO 6000, uma
    requisição por vez (ADR 0004, fato 4). Se o pensador atende uma fração f das requisições com tempo médio t, a média passa de
    1.000 ms quando f > 1.000 ms / t (ignorando o tempo do decisor). Como a média entra na regra, uma fração pequena com raciocínio
@@ -384,8 +404,8 @@ O que fazer com cada veredito:
 | **FAIL** sem isso, em bf16/FP8 | o pensador não paga | ADR 0004: a F3 só faz autodestilação, o F6 treina o decisor sem bloco de raciocínio e o plano segue só-decisor |
 | **FAIL** em 4 bits | não prova nada sobre bf16/FP8 | confirme por endpoint, `hosted` ou Modal |
 | **PARTIAL** | faltam linhas, ou há linhas com erro transitório | rode de novo com os mesmos argumentos para terminar; o número mostra só a direção e não é veredito |
-| **EXPLORATORY** | rodada completa, mas fora do protocolo registrado (`standard_only`, `revision_not_declared`, subconjunto de modelos, pacote que não é o do manifesto...) | corrija o que o código diz (por exemplo `--revision`) e rode de novo com outro `--out`, ou trate o número como indício |
-| **INCONCLUSIVE** | o pensador não foi visto pensando (`thinking_not_detected`), ou ninguém respondeu | o endpoint ignorou o pedido de thinking: ligue-o (veja "Backends") e rode de novo com outro `--out` |
+| **EXPLORATORY** | rodada completa, mas fora do protocolo registrado (`standard_only`, `revision_not_declared`, `reasoning_hidden`, `mixed_endpoints`, subconjunto de modelos, pacote que não é o do manifesto...) | corrija o que o código diz (por exemplo `--revision`) e rode de novo com outro `--out`, ou trate o número como indício |
+| **INCONCLUSIVE** | o pensador não foi visto pensando (`thinking_not_detected`), o provedor escondeu o raciocínio ou as linhas não fecharam (`reasoning_hidden_or_not_closed`), ou ninguém respondeu | o endpoint ignorou o pedido de thinking: ligue-o (veja "Backends") e rode de novo com outro `--out`; se o provedor esconde o raciocínio, use um endpoint que o devolva (`reasoning_content`) ou o vLLM/Modal |
 
 O que o veredito **não** diz: (a) o bootstrap reamostra linhas, não a aleatoriedade da geração (temperatura 1,0): duas rodadas
 podem dar números diferentes; (b) escolher o melhor de 8 decisores nas mesmas linhas favorece a referência, o que é o lado
@@ -422,7 +442,10 @@ Isto é um esboço do que o PASS destrava, não parte do gate.
   mantém o **fim** (onde está a conclusão) atrás de um aviso de quantos caracteres saíram; `attach_trace` e `split_trace`
   escrevem e lêem a forma dobrada. O `from_record` e o `attach_trace` (com `source_id`) **recusam** (`EvaluationDataError`) os ids do
   `gt-sample-manifest.json`: um traço feito sobre uma linha do GT é dado de avaliação. Os resultados do GT também já não
-  gravam o raciocínio por padrão (`--keep-reasoning` o liga). Onde o `trace.py` e o SCHEMA.md divergirem, vale o SCHEMA.md. O SCHEMA.md **mantém** um
+  gravam o raciocínio por padrão (`--keep-reasoning` o liga). `trace.fold_reasoning(estado, raciocínio, max_chars=8000)` é a forma
+  dobrada do SCHEMA.md, repetida aqui (o `trace.py` só usa a biblioteca padrão e não importa `decide/train`); um estado que não é
+  texto (objeto, lista) entra como JSON. O arquivo dourado `tests/fold_reasoning_cases.json` (da Squad do treino, 10 casos) é a
+  trava: `test_every_case_of_the_golden_file_folds_the_same_way` o lê e falha se um caso divergir. Onde o `trace.py` e o SCHEMA.md divergirem, vale o SCHEMA.md. O SCHEMA.md **mantém** um
   raciocínio cortado pelo orçamento (`finish_reason: length`); o `from_record` o recusa por padrão, então passe
   `allow_truncated=True` ao gravar traços do corpus. Para gerar traços do corpus de treino da F2 falta um leitor de corpus
   que este kit não tem: ele lê só o pacote do GT.
