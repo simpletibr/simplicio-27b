@@ -36,6 +36,10 @@ PINNED_REVISIONS = {QWEN_MODEL: QWEN_REVISION, QWEN_FP8_MODEL: QWEN_FP8_REVISION
 # Sampling for thinking mode, from the model card.
 THINKING_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repetition_penalty": 1.0}
 
+# A reply with fewer tokens than this on average is not a model that thought: the endpoint probably ignored the request for thinking.
+# (An answer line alone is about ten tokens; thinking on a hard question is thousands.)
+MIN_THINKING_TOKENS = 100
+
 # A result row is final when its status is one of these; anything else (`error`) is retried on resume.
 TERMINAL_STATUSES = ("ok", "failed")
 

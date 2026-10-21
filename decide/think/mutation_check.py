@@ -1,14 +1,15 @@
 """Mutation check: plant a one-line bug in a COPY of the kit, run the tests, expect them to fail.
 
     python -m decide.think.mutation_check                 # every mutant
-    python -m decide.think.mutation_check --group answers # one group (answers, bootstrap, verdict, scoring, resume, sample, trace, serve, report)
+    python -m decide.think.mutation_check --group answers # one group (answers, bootstrap, verdict, scoring, resume, sample, trace, serve, report, provenance, hosted, notebook, readme)
     python -m decide.think.mutation_check --id A1         # one mutant
     python -m decide.think.mutation_check --list
 
 For each mutant: the file must hold `old` exactly once, the unmutated copy must pass, then the tests run
 against the mutated copy (contract first, flow only if the contract did not notice).  A mutant that no test
 notices SURVIVES, the run exits 1, and that is a missing test.  The working tree is never touched: the
-mutants live in a temporary copy of decide/think, the two test files and scripts/check_vllm_args.py.
+mutants live in a temporary copy of decide/think, the notebooks, the test files, the two documents the README links to and
+scripts/check_vllm_args.py.
 """
 from __future__ import annotations
 
@@ -24,7 +25,8 @@ from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parents[2]
-COPY = ("decide/think", "tests/test_contract_75.py", "tests/test_flow_75.py", "scripts/check_vllm_args.py")
+COPY = ("decide/think", "decide/PLAN.md", "docs/adr/0004-pensar-sob-demanda.md", "notebooks/decide", "notebooks/Simplicio_27B_Training_Colab.ipynb",
+        "tests/test_contract_75.py", "tests/test_flow_75.py", "tests/think_nb_support.py", "scripts/check_vllm_args.py")
 SUITES = (("contract", "tests.test_contract_75"), ("flow", "tests.test_flow_75"))
 
 
@@ -132,6 +134,78 @@ MUTANTS: Tuple[Mutant, ...] = (
            "a row of symbol noise with no repeated character reads as language"),
     Mutant("L5", "report", T + "compare.py", 'chunk = "".join(text[:window].split())', 'chunk = "".join(text.split())',
            "the garbled-output check reads the whole reply, not its first 2000 characters"),
+    # --- serve + think + compare on one box, and the Modal app around it
+    Mutant("H1", "hosted", T + "hosted.py", "return code or report_code", "return report_code",
+           "a thinker that stopped after consecutive errors exits 0"),
+    Mutant("H2", "hosted", T + "hosted.py", "if code in (0, 3) and results.is_file():", "if results.is_file():",
+           "the report is rewritten after the thinker refused the protocol"),
+    Mutant("H3", "hosted", T + "hosted.py", "    finally:\n        server.stop()", "    finally:\n        pass",
+           "the server keeps the GPU after an error"),
+    Mutant("H4", "hosted", T + "hosted.py", "        if not server.alive():\n            return False", "        if False:\n            return False",
+           "the wait goes on for 30 minutes after the server process died"),
+    Mutant("H5", "hosted", T + "hosted.py", "return max(32768, max_tokens + CONTEXT_MARGIN)", "return 32768",
+           "a bigger thinking budget does not fit the server's context"),
+    Mutant("H6", "hosted", T + "hosted.py", "    if manifest:\n        problems = sample.verify(manifest, pack)", "    if False:\n        problems = sample.verify(manifest, pack)",
+           "a pack that is not the sample starts a 29 GiB download"),
+    Mutant("O1", "hosted", T + "modal_app.py", 'os.environ.get("SIMPLICIO_THINK_GPU", "H100")', 'os.environ.get("SIMPLICIO_THINK_GPU", "A10G")',
+           "the Modal function asks for a GPU that cannot hold the FP8 checkpoint"),
+    Mutant("O2", "hosted", T + "modal_app.py", "time_budget_s=float(TIMEOUT_S - MARGIN_S)", "time_budget_s=float(TIMEOUT_S)",
+           "the thinker starts rows until the container is killed"),
+    Mutant("O3", "hosted", T + "modal_app.py", "        thread.join(timeout=5)\n        commit_now()", "        thread.join(timeout=5)\n        pass",
+           "the results are not committed to the Volume when the gate ends"),
+    # --- a key that must not reach the results header, and an endpoint that does not think
+    Mutant("X1", "report", T + "thinker.py", "    refuse_secrets(obj, what)\n    return obj", "    return obj",
+           "a key typed into --extra-body is copied to the results header and the report"),
+    Mutant("X2", "report", T + "thinker.py", "if SECRET_KEY.match(str(k)):", "if False:",
+           "a field named api_key goes through"),
+    Mutant("X3", "report", T + "thinker.py", "elif isinstance(obj, str) and SECRET_VALUE.match(obj):", "elif False:",
+           "a value shaped like a key goes through under an innocent field name"),
+    Mutant("W1", "report", T + "compare.py", 'ct["median"] < C.MIN_THINKING_TOKENS', 'ct["median"] <= C.MIN_THINKING_TOKENS',
+           "a median of exactly 100 tokens is called not thinking"),
+    Mutant("W2", "report", T + "compare.py", 'if thinking_on and st["rows"] and isinstance(', 'if st["rows"] and isinstance(',
+           "a thinking-off control is told it did not think"),
+    Mutant("W3", "report", T + "thinker.py", "stats.completion_tokens / stats.ok < C.MIN_THINKING_TOKENS", "stats.completion_tokens / stats.ok <= C.MIN_THINKING_TOKENS",
+           "an average of exactly 100 tokens is called not thinking"),
+    Mutant("W4", "report", T + "thinker.py", "if thinking and stats.ok and", "if stats.ok and",
+           "the thinking-off control gets the warning in the log"),
+    # --- what the results header says about how the model ran
+    Mutant("P1", "provenance", T + "thinker.py", "nf4_config_kwargs(torch_dtype))", "nf4_config_kwargs(torch.float16))",
+           "the NF4 matmuls ignore --dtype: a bf16 rerun still computes in fp16"),
+    Mutant("P2", "provenance", T + "thinker.py", '"dtype": args.dtype if args.backend == "transformers" else None,', '"dtype": None,',
+           "the dtype is not recorded in the results header, so a rerun in another dtype resumes the same file"),
+    # --- the notebooks: a flag that is renamed, a protocol that is changed, a pin that drifts
+    Mutant("N1", "notebook", "notebooks/decide/think_gt_kaggle.ipynb", "--quant nf4", "--quant none",
+           "the Kaggle notebook stops quantizing (a 27B model on 2 x 15 GB T4)"),
+    Mutant("N2", "notebook", T + "thinker.py", 'ap.add_argument("--time-budget-s", type=float,', 'ap.add_argument("--time-budget", type=float,',
+           "the Kaggle command line is refused by the thinker"),
+    Mutant("N3", "notebook", "notebooks/decide/think_gt_api.ipynb", "del key", "pass",
+           "the API key stays in a variable of the notebook"),
+    Mutant("N4", "notebook", "notebooks/decide/think_gt_kaggle.ipynb", 'if LIMIT else \\"\\"', 'if True else \\"\\"',
+           "the full run still passes --limit"),
+    Mutant("N5", "notebook", "notebooks/decide/think_gt_api.ipynb", 'SIMPLICIO_SHA = \\"', 'SIMPLICIO_SHA = \\"0',
+           "one notebook pins something that is not a full commit"),
+    Mutant("N6", "notebook", T + "compare.py", 'ap.add_argument("--thinker", required=True', 'ap.add_argument("--thinker-results", required=True',
+           "the report command of the notebooks is refused by compare"),
+    Mutant("N7", "notebook", "tests/test_flow_75.py", '"GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE",', '"GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE",',
+           "the git commands of the flow tests inherit GIT_DIR from a pre-push hook and commit to the repository being pushed"),
+    # --- the README: a pin that drifts, a heading the code points at, a command that stops parsing
+    Mutant("E1", "readme", T + "README.md", "`Qwen/Qwen3.8-27B-FP8` em `017b9c7af6b5689d5dd426a76e0bc077eb5ca20a`", "`Qwen/Qwen3.8-27B-FP8` em `017b9c7af6b5689d5dd426a76e0bc077eb5ca20b`",
+           "the README pins another FP8 revision than the code"),
+    Mutant("E2", "readme", T + "README.md", "8791ecba4ed4e6eabd7b6708baacb0e2791adc326e0b9483ce6b44c7b505b7db  d3-turbo/results.jsonl.gz",
+           "9791ecba4ed4e6eabd7b6708baacb0e2791adc326e0b9483ce6b44c7b505b7db  d3-turbo/results.jsonl.gz",
+           "the sha256 block of the inputs disagrees with the manifest"),
+    Mutant("E3", "readme", T + "README.md", "## Tempo e custo", "## Tempo",
+           "a heading that modal_app.py points at was renamed"),
+    Mutant("E4", "readme", T + "README.md", "--concurrency 8 --max-tokens 16384 --pack", "--concurrency 8 --max-tokenz 16384 --pack",
+           "a pasted thinker command has a flag the thinker does not know"),
+    Mutant("E5", "readme", T + ".gitignore", "*.jsonl.gz\n", "",
+           "the private pack is no longer ignored by git"),
+    Mutant("E6", "readme", T + "README.md", "(../../docs/adr/0004-pensar-sob-demanda.md)", "(../../docs/adr/0004-pensar.md)",
+           "a relative link points at nothing"),
+    Mutant("E7", "readme", T + "README.md", "**4** o servidor não subiu", "**5** o servidor não subiu",
+           "the README documents another exit code than hosted.py"),
+    Mutant("E8", "readme", T + "README.md", "python -m decide.think.hosted --pack pack.jsonl.gz --work work --limit 3", "python -m decide.think.hosted --pack pack.jsonl.gz --workdir work --limit 3",
+           "the pasted hosted probe has a flag hosted.py does not know"),
 )
 
 

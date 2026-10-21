@@ -72,6 +72,13 @@ def clean_env(**extra: str) -> dict[str, str]:
     return env
 
 
+def notebook_path_ok(rel: str) -> bool:
+    """notebooks/<name>.ipynb, or notebooks/decide/<name>.ipynb (the Simplicio-Decide kit, plan v2): nothing deeper."""
+    parts = rel.split("/")
+    folder_ok = len(parts) == 2 or (len(parts) == 3 and parts[1] == "decide")
+    return parts[0] == "notebooks" and folder_ok and parts[-1].endswith(".ipynb")
+
+
 def git_env() -> dict[str, str]:
     return clean_env(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
                      GIT_CONFIG_NOSYSTEM="1")
@@ -129,8 +136,15 @@ class GateAfterMoveFlowTest(unittest.TestCase):
         self.assertTrue(paths)
         for rel in paths:
             with self.subTest(rel):
-                self.assertTrue(rel.startswith("notebooks/") and rel.count("/") == 1, rel)
+                self.assertTrue(notebook_path_ok(rel), rel)
                 self.assertIn("cells", json.loads((ROOT / rel).read_text(encoding="utf-8")))
+
+    def test_notebook_path_rule(self) -> None:
+        for good in ("notebooks/a.ipynb", "notebooks/decide/a.ipynb"):
+            self.assertTrue(notebook_path_ok(good), good)
+        for bad in ("a.ipynb", "notebooks/x/a.ipynb", "notebooks/decide/x/a.ipynb", "decide/a.ipynb",
+                    "notebooks/decide/a.py", "notebooks/decide", "other/notebooks/a.ipynb"):
+            self.assertFalse(notebook_path_ok(bad), bad)
 
     def test_make_gate_steps_pass(self) -> None:
         r = subprocess.run(["make", "lint", "shellcheck", "phplint", "vllm-args"], cwd=ROOT,

@@ -8,9 +8,11 @@ Modules, in the order of a run:
   `compare`  accuracy, chance-corrected skill, paired bootstrap, the GT verdict line, the offline gate curve;
   `trace`    the `Raciocínio:` block that the hybrid appends to a decider's state (a proposal);
   `serve`    the `vllm serve` command for the thinker on a rented or own GPU (not the Kaggle T4);
+  `hosted`   serve + thinker + compare in one command on a box with a big GPU; `modal_app` runs that on Modal;
   `common`   constants and file helpers; `mutation_check` plants one-line bugs and expects the tests to fail.
+The notebooks that run the same steps are in `notebooks/decide/`; `README.md` here is the guide.
 
 The sample is evaluation data: nothing made from it goes into a training corpus (ADR 0004, item 6).
-Standard library only, except `thinker --backend transformers` (torch, transformers, bitsandbytes).
+Standard library only, except `thinker --backend transformers` (torch, transformers, bitsandbytes) and `modal_app` (modal).
 """
 __version__ = "1"

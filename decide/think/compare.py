@@ -587,8 +587,12 @@ def render_markdown(report: Dict[str, Any]) -> str:
             f"- segundos por linha: total {sc['total']}, mediana {sc['median']}, p80 {sc['p80']}, maximo {sc['max']}"]
     if st["rows"] and st["truncated"] / st["rows"] > 0.10:
         out.append("- AVISO: mais de 10% das linhas bateram no orcamento de tokens; um FAIL assim pode vir do orcamento, nao do modelo. Reexecute as truncadas com `--max-tokens` maior.")
+    thinking_on = ((report.get("thinker") or {}).get("config") or {}).get("chat_template_kwargs", {}).get("enable_thinking", True) is not False
+    if thinking_on and st["rows"] and isinstance(ct.get("median"), (int, float)) and ct["median"] < C.MIN_THINKING_TOKENS:
+        out.append(f"- AVISO: a mediana e de {ct['median']:g} tokens por linha: o modelo quase nao pensou (o endpoint ignorou o pedido de thinking?). "
+                   "Isto nao e o gate GT; ligue o thinking no endpoint e rode de novo com outro `--out` (README, \"Backends\").")
     if st.get("garbled"):
-        out.append(f"- AVISO: {st['garbled']} linhas com saida ilegivel (ruido, nao linguagem). Na T4 isso costuma ser o fp16 estourando; "
+        out.append(f"- AVISO: {st['garbled']} linhas com saida ilegivel (ruido, nao linguagem). Na T4 a causa provavel e o fp16 estourando (UNVERIFIED); "
                    "essas linhas nao dizem nada sobre o modelo, e um FAIL feito delas nao e um veredito (README, \"Se a saida for ruido\").")
     if not cov["complete"]:
         out.append(f"- AVISO: execucao parcial, {cov['missing']} linhas sem resultado e {cov['errors']} com erro transitorio; todos os sistemas foram comparados so nas linhas feitas.")

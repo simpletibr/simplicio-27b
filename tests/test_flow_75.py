@@ -20,6 +20,8 @@ import io
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -30,12 +32,15 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+if str(ROOT / "tests") not in sys.path:
+    sys.path.insert(0, str(ROOT / "tests"))
 
 from decide.think import common as C  # noqa: E402
 from decide.think import compare as K  # noqa: E402
 from decide.think import prompt as P  # noqa: E402
 from decide.think import sample as S  # noqa: E402
 from decide.think import thinker as T  # noqa: E402
+import think_nb_support as NB  # noqa: E402
 
 SECRET = "sk-test-secret-123"
 MODELS = {"m_good": 85, "m_mid": 60, "m_bad": 30, "m_flaky": 70}          # model -> % of rows it answers right
@@ -168,8 +173,18 @@ def scripted(body, count):
     final = {"right": lines(right), "wrong": lines(wrong), "garbage": "I am not sure.", "long": lines(right)}[mode]
     think = "Let me think about this carefully. Maybe the first option, no, the second."
     if count % 2 == 0:
-        return {"reasoning": think, "content": final, "finish": "stop", "usage": (50, 80)}
-    return {"content": think + "\n</think>\n\n" + final, "finish": "stop", "usage": (50, 80)}
+        return {"reasoning": think, "content": final, "finish": "stop", "usage": (50, 400)}
+    return {"content": think + "\n</think>\n\n" + final, "finish": "stop", "usage": (50, 400)}
+
+
+def terse(body, count):
+    """An endpoint that ignored the request for thinking: the answer line and nothing else."""
+    prompt = body["messages"][0]["content"]
+    if "MODE[" not in prompt:
+        return {"content": "A", "finish": "stop", "usage": (5, 3)}
+    right = re.search(r"HINT\[([^\]]*)\]", prompt).group(1)
+    final = "\n".join(f"ANSWER {kv.split('=')[0]}: {kv.split('=')[1]}" for kv in right.split(";"))
+    return {"content": final, "finish": "stop", "usage": (50, 12)}
 
 
 class FakeServer:
@@ -425,6 +440,33 @@ class ThinkerFlow(FlowBase):
         first = next(r for r in srv.requests if "MODE[" in r["body"]["messages"][0]["content"])["body"]
         self.assertEqual((first["temperature"], first["top_p"], first["top_k"], first["max_tokens"]), (1.0, 0.95, 20, 400))
         self.assertEqual(first["chat_template_kwargs"], {"enable_thinking": True})
+
+    def test_an_endpoint_that_does_not_think_is_called_out_in_the_log_and_in_the_report(self) -> None:
+        out = self.results_path()
+        with FakeServer(behavior=terse) as srv:
+            code, text = self.thinker(srv, out, "--limit", "4")
+        self.assertEqual(code, 0, text)
+        self.assertIn("WARNING: 12 tokens per reply on average: the model barely thought", text)
+        rep = self.root / "terse-report"
+        code, md = run_cli(K, ["--pack", str(self.pack), "--thinker", str(out), "--out", str(rep), "--bootstrap", "200"])
+        self.assertEqual(code, 0, md)
+        self.assertIn("AVISO: a mediana e de 12 tokens por linha: o modelo quase nao pensou", md)
+
+    def test_a_thinking_endpoint_and_a_thinking_off_control_get_no_such_warning(self) -> None:
+        out = self.results_path()
+        with FakeServer() as srv:
+            code, text = self.thinker(srv, out, "--limit", "4")
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("barely thought", text)
+        code, md = run_cli(K, ["--pack", str(self.pack), "--thinker", str(out), "--bootstrap", "200"])
+        self.assertNotIn("quase nao pensou", md)
+        control = self.results_path("off.jsonl")
+        with FakeServer(behavior=terse) as srv:
+            code, text = self.thinker(srv, control, "--limit", "4", "--thinking", "off")
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("barely thought", text, "a control without thinking is supposed to be terse")
+        code, md = run_cli(K, ["--pack", str(self.pack), "--thinker", str(control), "--bootstrap", "200"])
+        self.assertNotIn("quase nao pensou", md)
 
     def test_the_key_and_the_questions_never_reach_the_log_or_the_file(self) -> None:
         out = self.results_path()
@@ -732,6 +774,30 @@ class TinyTransformersFlow(unittest.TestCase):
         self.assertTrue(off.render("hi").endswith("</think>\n\n"))
         self.assertTrue(self.backend(reasoning_effort="low").render("hi").endswith("<think>\n"))
 
+    def test_nf4_is_asked_for_in_the_dtype_that_was_chosen(self) -> None:
+        """bitsandbytes is not installed here: a stand-in config object and a loader that sees what the backend asks for."""
+        import torch
+        import transformers
+        real = transformers.AutoModelForCausalLM.from_pretrained
+        for name, dtype in (("float16", torch.float16), ("bfloat16", torch.bfloat16), ("float32", torch.float32)):
+            seen = {}
+
+            def fake_bnb(**kw):
+                seen["bnb"] = kw
+                return "the-config"
+
+            def fake_load(model, **kw):
+                seen["load"] = dict(kw)
+                kw.pop("quantization_config", None)                    # the random model cannot be quantized here
+                return real(model, **kw)
+            with mock.patch.object(transformers, "BitsAndBytesConfig", fake_bnb), \
+                    mock.patch.object(transformers.AutoModelForCausalLM, "from_pretrained", side_effect=fake_load):
+                T.TransformersBackend(model=self.dir, quant="nf4", dtype=name, device_map="cpu", max_tokens=4)
+            self.assertIs(seen["bnb"]["bnb_4bit_compute_dtype"], dtype, name)
+            self.assertEqual(seen["bnb"]["bnb_4bit_quant_type"], "nf4")
+            self.assertEqual(seen["load"]["quantization_config"], "the-config")
+            self.assertIs(seen["load"]["dtype"], dtype, name)
+
     def test_batch_of_different_lengths_gives_one_result_per_item(self) -> None:
         b = self.backend(batch_size=3)
         out = b.generate(self.items(3))
@@ -859,6 +925,722 @@ class TinyHybridFlow(unittest.TestCase):
         for it, got in zip(items, batched):
             want = single.generate([it])[0]
             self.assertEqual((got.reasoning, got.content, got.completion_tokens), (want.reasoning, want.content, want.completion_tokens), it.id)
+
+
+# ------------------------------------------------------------------------------------------- notebooks
+
+GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_TERMINAL_PROMPT": "0"}
+# What `git rev-parse --local-env-vars` lists: the variables that name a repository, its index or its config.
+LOCAL_GIT_VARS = ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY",
+                  "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS",
+                  "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR", "GIT_NAMESPACE")
+
+
+def git_env() -> dict:
+    """The environment for a git command that must touch only the throwaway repository it is aimed at.
+
+    `git push` runs the pre-push hook, so `make check`, so these tests, with GIT_DIR set to the repository being pushed when that is a
+    linked worktree.  A git command that inherits it ignores `-C` and works on THAT repository: it once committed this file's fixtures to
+    the branch being pushed and wrote user.name into the shared .git/config.  The variables that name a repository are dropped and the
+    user's own git config is not read."""
+    env = {k: v for k, v in os.environ.items() if k not in LOCAL_GIT_VARS and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
+    env.update(GIT_ENV)
+    return env
+
+
+class NotebookFlow(FlowBase):
+    """The notebooks of decide/think, cell by cell.
+
+    The shell lines of the API notebook run for real (a subprocess, like `!python -m ...`) against the fake
+    endpoint; the Python cells run with `exec` on fakes for what a CPU box does not have (Colab and Kaggle
+    secrets, nvidia-smi, the free disk, github.com, the vLLM server).  What cannot run here at all is the
+    install of the pins and the model itself: the README lists it as UNVERIFIED.
+    """
+
+    def setUp(self) -> None:
+        self.addCleanup(os.chdir, os.getcwd())                          # the fetch cell changes directory, like a notebook does
+
+    def shell(self, command, ns, env=None):
+        argv = [str(self.manifest) if a == NB.MANIFEST_PATH else a for a in NB.argv_of(command, ns)]      # the synthetic manifest
+        clean = {k: v for k, v in os.environ.items() if not k.endswith("API_KEY") and k not in ("THINK_BASE_URL", "OPENAI_BASE_URL")}
+        return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, timeout=600, env={**clean, **(env or {})})
+
+    def workdir(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        return d
+
+    def run_cell(self, key, needle, ns, replace=()):
+        """exec the one code cell that holds `needle`, with its `!` lines dropped (the other tests run those)."""
+        text = NB.code_cell_with(key, needle)
+        for old, new in replace:
+            self.assertEqual(text.count(old), 1, old)
+            text = text.replace(old, new)
+        src = "\n".join(line[: len(line) - len(line.lstrip())] + "pass" if line.lstrip().startswith("!") else line for line in text.split("\n"))
+        exec(compile(src, f"{key}:{needle[:24]}", "exec"), ns)
+        return ns
+
+    # ---------------------------------------------------------------- the three commands, in the order of the notebook
+
+    def test_the_api_notebook_commands_run_in_order_and_the_second_run_resumes(self) -> None:
+        work = self.workdir()
+        outputs = []
+        with FakeServer(require_key=SECRET) as srv:
+            def prompts():
+                return sum(1 for q in srv.requests if "MODE[" in q["body"]["messages"][0]["content"])
+
+            def go(module, ns, env=None):
+                r = self.shell(NB.commands_of("api", f"decide.think.{module}")[0], ns, env)
+                outputs.append(r.stdout + r.stderr)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                return r.stdout.strip().splitlines()
+
+            probe = NB.parameters("api", PACK=str(self.pack), WORK=str(work), BASE_URL=srv.url, LIMIT="3")
+            self.assertIn("OK", go("sample", probe)[-1])
+            go("thinker", probe, {"THINK_API_KEY": SECRET})
+            self.assertEqual(prompts(), 3)
+            last = go("compare", probe)[-1]
+            self.assertTrue(last.startswith("GT VERDICT:"), last)
+            self.assertIn("PARTIAL", last)
+
+            full = NB.parameters("api", PACK=str(self.pack), WORK=str(work), BASE_URL=srv.url, LIMIT="")
+            go("thinker", full, {"THINK_API_KEY": SECRET})
+            self.assertEqual(prompts(), len(self.rows), "a row was asked twice or not at all")
+            last = go("compare", full)[-1]
+            self.assertTrue(last.startswith("GT VERDICT:"), last)
+            self.assertNotIn("PARTIAL", last)
+        report = json.loads((work / "report" / "report.json").read_text(encoding="utf-8"))
+        self.assertTrue(report["coverage"]["complete"])
+        self.assertEqual(report["coverage"]["rows_scored"], len(self.rows))
+        self.assertTrue((work / "report" / "report.md").is_file())
+        self.assertEqual(len(T.ResultStore.read(work / "results.jsonl")[1]), len(self.rows))
+        for text in outputs + [(work / "results.jsonl").read_text(encoding="utf-8")]:
+            self.assertNotIn(SECRET, text)
+        for marker in ("SYNTH", "HINT["):
+            self.assertFalse(any(marker in o for o in outputs), f"question text reached the log: {marker}")
+
+    def test_the_report_says_which_model_and_revision_the_notebook_declared(self) -> None:
+        for revision, warned in (("", True), (C.QWEN_FP8_REVISION, False)):
+            with self.subTest(revision=revision or "none"):
+                work = self.workdir()
+                with FakeServer() as srv:
+                    ns = NB.parameters("api", PACK=str(self.pack), WORK=str(work), BASE_URL=srv.url, LIMIT="2", REVISION=revision)
+                    for module in ("thinker", "compare"):
+                        r = self.shell(NB.commands_of("api", f"decide.think.{module}")[0], ns)
+                        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                md = (work / "report" / "report.md").read_text(encoding="utf-8")
+                self.assertIn(f"Thinker: {C.QWEN_FP8_MODEL}", md)
+                self.assertEqual("AVISO: modelo ou revisao diferente do par fixado" in md, warned)
+
+    def test_a_different_budget_on_the_same_file_is_refused_not_mixed(self) -> None:
+        work = self.workdir()
+        with FakeServer() as srv:
+            kw = dict(PACK=str(self.pack), WORK=str(work), BASE_URL=srv.url, LIMIT="2")
+            cmd = NB.commands_of("api", "decide.think.thinker")[0]
+            self.assertEqual(self.shell(cmd, NB.parameters("api", **kw)).returncode, 0)
+            r = self.shell(cmd, NB.parameters("api", MAX_TOKENS=8192, **kw))
+        self.assertNotEqual(r.returncode, 0, "a lower budget would mix two protocols in one file")
+
+    # ---------------------------------------------------------------- the cells that need Colab, Kaggle or github
+
+    def test_the_key_cell_reads_the_secret_without_showing_it(self) -> None:
+        needle = "from google.colab import userdata"
+        base = dict(os=os, KEY_NAME="MY_THINK_KEY", MODE="endpoint", BASE_URL="https://example.org/v1", PACK=str(self.pack), WORK=str(self.workdir()))
+        for source in ("env", "none"):
+            with self.subTest(source=source), mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("THINK_API_KEY", None)
+                os.environ.pop("MY_THINK_KEY", None)
+                if source == "env":
+                    os.environ["MY_THINK_KEY"] = SECRET
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    ns = self.run_cell("api", needle, dict(base))
+                self.assertNotIn(SECRET, out.getvalue())
+                self.assertNotIn("key", ns, "the key stays in a variable of the notebook")
+                self.assertEqual(os.environ.get("THINK_API_KEY"), SECRET if source == "env" else None)
+                self.assertIn("chave encontrada" if source == "env" else "sem chave", out.getvalue())
+
+    def test_the_checks_refuse_the_placeholder_endpoint_a_wrong_mode_and_a_missing_pack(self) -> None:
+        needle = "from google.colab import userdata"
+        base = dict(os=os, KEY_NAME="MY_THINK_KEY", MODE="endpoint", BASE_URL="https://example.org/v1", PACK=str(self.pack), WORK=str(self.workdir()))
+        for bad, why in (({"BASE_URL": "https://SEU-ENDPOINT/v1"}, "BASE_URL"), ({"MODE": "local"}, "MODE"), ({"PACK": "/nonexistent/pack.jsonl.gz"}, "pack")):
+            with self.subTest(why), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(AssertionError):
+                    self.run_cell("api", needle, {**base, **bad})
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.run_cell("api", needle, {**base, "MODE": "local-vllm", "BASE_URL": "https://SEU-ENDPOINT/v1"})        # filled in later by the vLLM cell
+
+    def test_the_vllm_cell_starts_the_pinned_fp8_server_on_loopback(self) -> None:
+        from decide.think import serve as serve_module
+        work = self.workdir()
+        calls = []
+
+        class FakePopen:
+            def __init__(self, cmd, **kw):
+                calls.append(("popen", cmd, kw))
+
+        def fake_run(cmd, **kw):
+            calls.append(("run", cmd, kw))
+
+        ns = dict(MODE="local-vllm", MODEL=C.QWEN_FP8_MODEL, REVISION="", WORK=str(work), sys=sys, os=os,
+                  subprocess=type("SP", (), {"run": staticmethod(fake_run), "Popen": FakePopen, "STDOUT": -2}), REV="")
+        with mock.patch.object(serve_module, "wait_ready", return_value=True) as ready, contextlib.redirect_stdout(io.StringIO()):
+            self.run_cell("api", 'if MODE == "local-vllm":', ns)
+        install = next(c for c in calls if c[0] == "run")[1]
+        self.assertEqual(install[-1], f"vllm=={serve_module.VLLM_VERSION}")
+        started = next(c for c in calls if c[0] == "popen")[1]
+        self.assertEqual(started, serve_module.vllm_command(C.QWEN_FP8_MODEL, C.QWEN_FP8_REVISION))
+        self.assertEqual(started[started.index("--host") + 1], "127.0.0.1")
+        ns["log"].close()
+        self.assertEqual(ns["BASE_URL"], serve_module.base_url())
+        self.assertEqual(ns["REV"], f"--revision {C.QWEN_FP8_REVISION}")
+        self.assertEqual(ready.call_args[0][:2], (ns["BASE_URL"], 1800))
+        self.assertTrue((work / "vllm.log").is_file())
+
+    def test_the_vllm_cell_does_nothing_for_an_endpoint(self) -> None:
+        ns = dict(MODE="endpoint", MODEL=C.QWEN_FP8_MODEL, REVISION="", WORK=str(self.workdir()), sys=sys, os=os, subprocess=None, REV="", BASE_URL="https://example.org/v1")
+        self.run_cell("api", 'if MODE == "local-vllm":', ns)
+        self.assertIsNone(ns["server"])
+        self.assertEqual(ns["BASE_URL"], "https://example.org/v1")
+
+    def test_the_last_api_cell_stops_the_server_it_started(self) -> None:
+        class Proc:
+            def __init__(self):
+                self.log = []
+
+            def terminate(self):
+                self.log.append("terminate")
+
+            def wait(self, timeout=None):
+                self.log.append("wait")
+
+        proc = Proc()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.run_cell("api", "server.terminate()", {"server": proc})
+            self.run_cell("api", "server.terminate()", {"server": None})
+        self.assertEqual(proc.log, ["terminate", "wait"])
+
+    def origin(self):
+        """A local repository with two commits, standing in for github.com; returns (path, sha of the first commit)."""
+        path = self.workdir() / "origin"
+        path.mkdir()
+
+        def git(*args):
+            return subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True, text=True, env=git_env()).stdout.strip()
+        git("init", "-q")
+        self.assertEqual(os.path.realpath(git("rev-parse", "--show-toplevel")), os.path.realpath(path), "git must work on the throwaway repository")
+        git("config", "user.email", "t@example.org")
+        git("config", "user.name", "t")
+        git("config", "commit.gpgsign", "false")
+        git("config", "uploadpack.allowAnySHA1InWant", "true")
+        (path / "a.txt").write_text("one", encoding="utf-8")
+        git("add", ".")
+        git("commit", "-q", "-m", "one")
+        first = git("rev-parse", "HEAD")
+        (path / "a.txt").write_text("two", encoding="utf-8")
+        git("commit", "-q", "-am", "two")
+        return path, first
+
+    def run_fetch_cell(self, key, sha, origin, repo):
+        """The fetch cell with github.com swapped for the local repository; returns the checkout path."""
+        real = subprocess.run
+
+        def to_local(cmd, *a, **kw):
+            cmd = [f"file://{origin}" if str(x).startswith("https://github.com/simpletibr/") else x for x in cmd]
+            kw = {**kw, "env": git_env()}
+            if "capture_output" not in kw:
+                kw.setdefault("stderr", subprocess.PIPE)                              # git's complaint about a missing commit is expected here
+            return real(cmd, *a, **kw)
+        needle = 'subprocess.run(["git", "init", "-q", REPO], check=True)'
+        replace = [(m.group(0), f'REPO = {str(repo)!r}') for m in re.finditer(r"(?m)^REPO = .*$", NB.code_cell_with(key, needle))]
+        with mock.patch("subprocess.run", side_effect=to_local), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.run_cell(key, needle, {"SIMPLICIO_SHA": sha}, replace=replace)
+        return out.getvalue()
+
+    @unittest.skipUnless(shutil.which("git"), "git is needed")
+    def test_the_fetch_cell_checks_out_exactly_the_pinned_commit(self) -> None:
+        origin, first = self.origin()
+        for key in ("kaggle", "api"):
+            with self.subTest(key):
+                repo = self.workdir() / "checkout"
+                out = self.run_fetch_cell(key, first, origin, repo)
+                head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, env=git_env()).stdout.strip()
+                self.assertEqual(head, first)
+                self.assertEqual((repo / "a.txt").read_text(encoding="utf-8"), "one", "the later commit must not leak in")
+                self.assertIn(first, out)
+                self.assertEqual(os.path.realpath(os.getcwd()), os.path.realpath(repo))
+                self.run_fetch_cell(key, first, origin, repo)                       # running the cell again is harmless
+
+    @unittest.skipUnless(shutil.which("git"), "git is needed")
+    def test_the_fetch_cell_stops_on_a_commit_that_does_not_exist(self) -> None:
+        origin, _ = self.origin()
+        repo = self.workdir() / "checkout"
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_fetch_cell("kaggle", "0" * 40, origin, repo)
+
+    @unittest.skipUnless(shutil.which("git"), "git is needed")
+    def test_the_git_commands_of_these_tests_ignore_a_repository_named_by_the_environment(self) -> None:
+        """A pre-push hook in a linked worktree exports GIT_DIR; the fixtures of these tests once landed in that repository."""
+        decoy = self.workdir() / "decoy"
+        decoy.mkdir()
+        env = git_env()
+
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=decoy, check=True, capture_output=True, text=True, env=env).stdout.strip()
+        git("init", "-q")
+        for key, value in (("user.email", "d@example.org"), ("user.name", "d"), ("commit.gpgsign", "false")):
+            git("config", key, value)
+        (decoy / "d.txt").write_text("d", encoding="utf-8")
+        git("add", ".")
+        git("commit", "-q", "-m", "decoy")
+
+        def state():
+            return git("rev-parse", "HEAD"), git("status", "--porcelain"), (decoy / ".git" / "config").read_text(encoding="utf-8"), git("for-each-ref")
+        before = state()
+        leak = {"GIT_DIR": str(decoy / ".git"), "GIT_WORK_TREE": str(decoy), "GIT_INDEX_FILE": str(decoy / ".git" / "index"), "GIT_PREFIX": ""}
+        with mock.patch.dict(os.environ, leak):
+            origin, first = self.origin()
+            for key in ("kaggle", "api"):
+                self.run_fetch_cell(key, first, origin, self.workdir() / f"checkout_{key}")
+        self.assertEqual(state(), before, "a git command of these tests worked on the repository the environment named")
+
+    # ---------------------------------------------------------------- the Kaggle checks
+
+    def kaggle_checks(self, gpus, free_gib, *, pack_exists=True, found=(), resume=None, results=None):
+        work = self.workdir()
+        pack = work / "pack.jsonl.gz"
+        if pack_exists:
+            pack.write_bytes(b"x" * 2000)
+        ns = dict(os=os, subprocess=subprocess, PACK=str(pack) if pack_exists else str(work / "missing.gz"), WORK=str(work / "w"),
+                  HF_CACHE=str(work / "hf"), RESUME_FROM=str(work / "previous.jsonl") if resume is not None else str(work / "none.jsonl"))
+        if resume is not None:
+            Path(ns["RESUME_FROM"]).write_text(resume, encoding="utf-8")
+        if results is not None:
+            (work / "w").mkdir()
+            (work / "w" / "results.jsonl").write_text(results, encoding="utf-8")
+        done = subprocess.CompletedProcess([], 0, stdout="".join(f"Tesla T4, {m} MiB\n" for m in gpus))
+        with mock.patch("subprocess.run", return_value=done), mock.patch("shutil.disk_usage", return_value=type("U", (), {"free": int(free_gib * 2**30)})), \
+                mock.patch("glob.glob", return_value=list(found)), mock.patch.dict(os.environ, {}), contextlib.redirect_stdout(io.StringIO()):
+            self.run_cell("kaggle", "nvidia-smi", ns)
+            ns["hf_home"] = os.environ.get("HF_HOME")
+        return ns, work
+
+    def test_kaggle_checks_accept_two_t4_and_set_the_cache(self) -> None:
+        ns, work = self.kaggle_checks([15360, 15360], 100)
+        self.assertEqual(ns["total_mib"], 30720)
+        self.assertEqual(ns["hf_home"], ns["HF_CACHE"])
+        self.assertTrue(Path(ns["WORK"]).is_dir() and Path(ns["HF_CACHE"]).is_dir())
+
+    def test_kaggle_checks_refuse_one_gpu_a_full_disk_and_no_pack(self) -> None:
+        for args, kw in ((([15360], 100), {}), (([15360, 15360], 20), {}), (([15360, 15360], 100), {"pack_exists": False}), (([], 100), {})):
+            with self.subTest(args=args, **kw), self.assertRaises(AssertionError):
+                self.kaggle_checks(*args, **kw)
+
+    def test_kaggle_checks_find_the_pack_under_input_when_the_path_is_wrong(self) -> None:
+        elsewhere = self.workdir() / "pack.jsonl.gz"
+        elsewhere.write_bytes(b"y" * 10)
+        ns, _ = self.kaggle_checks([15360, 15360], 100, pack_exists=False, found=[str(elsewhere)])
+        self.assertEqual(ns["PACK"], str(elsewhere))
+
+    def test_kaggle_resume_copies_a_previous_session_once_and_never_overwrites(self) -> None:
+        ns, _ = self.kaggle_checks([15360, 15360], 100, resume="previous rows\n")
+        self.assertEqual((Path(ns["WORK"]) / "results.jsonl").read_text(encoding="utf-8"), "previous rows\n")
+        ns, _ = self.kaggle_checks([15360, 15360], 100, resume="OLDER rows\n", results="this session's rows\n")
+        self.assertEqual((Path(ns["WORK"]) / "results.jsonl").read_text(encoding="utf-8"), "this session's rows\n")
+
+
+# ------------------------------------------------------------------------------------------- hosted + the Modal app
+
+class FakeProc:
+    """A `vllm serve` process that stays up until it is terminated."""
+
+    def __init__(self, code=None):
+        self.returncode, self.log = code, []
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.log.append("terminate")
+        self.returncode = 0
+
+    def kill(self):
+        self.log.append("kill")
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        self.log.append("wait")
+        return self.returncode
+
+
+def quiet(fn, *args, **kwargs):
+    """(result, what it printed): the thinker and the report print their logs."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        return fn(*args, **kwargs), buf.getvalue()
+
+
+class HostedFlow(FlowBase):
+    """`hosted.run_gate` strings serve, think and compare together; the fake endpoint stands for the server vLLM would start."""
+
+    def workdir(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        return d
+
+    def gate(self, srv, work, *, proc=None, started=None, **kw):
+        from decide.think import hosted as H
+        proc = proc or FakeProc()
+
+        def start(w):
+            if started is not None:
+                started.append(w)
+            return H.Server(proc, srv.url)
+        args = dict(pack=str(self.pack), work=str(work), manifest=str(self.manifest), max_tokens=400, concurrency=3,
+                    start_server=start, wait=lambda server, timeout: True, log=lambda s: None)
+        args.update(kw)
+        return quiet(H.run_gate, **args)[0], proc
+
+    def test_serve_think_compare_in_order_and_the_server_is_stopped(self) -> None:
+        work, started = self.workdir(), []
+        with FakeServer() as srv:
+            code, proc = self.gate(srv, work, started=started)
+        self.assertEqual(code, 0)
+        self.assertEqual(started, [work])
+        self.assertEqual(proc.log, ["terminate", "wait"])
+        header, recs = T.ResultStore.read(work / "results.jsonl")
+        self.assertEqual((header["config"]["model"], header["config"]["revision"]), (C.QWEN_FP8_MODEL, C.QWEN_FP8_REVISION))
+        self.assertTrue(header["config"]["endpoint"].startswith("http://127.0.0.1:"))
+        self.assertEqual(len(recs), len(self.rows))
+        report = json.loads((work / "report" / "report.json").read_text(encoding="utf-8"))
+        self.assertTrue(report["coverage"]["complete"])
+        self.assertIn("GT VERDICT:", (work / "report" / "report.md").read_text(encoding="utf-8"))
+
+    def test_the_pinned_revision_follows_the_model_and_none_reads_the_branch(self) -> None:
+        for model, revision, expected in ((C.QWEN_MODEL, None, C.QWEN_REVISION), (C.QWEN_FP8_MODEL, "none", None),
+                                          (C.QWEN_FP8_MODEL, "abc1234", "abc1234")):
+            with self.subTest(model=model, revision=revision):
+                work = self.workdir()
+                with FakeServer() as srv:
+                    self.assertEqual(self.gate(srv, work, model=model, revision=revision, limit=1)[0], 0)
+                self.assertEqual(T.ResultStore.read(work / "results.jsonl")[0]["config"]["revision"], expected)
+
+    def test_a_manifest_that_does_not_match_starts_nothing(self) -> None:
+        work, started = self.workdir(), []
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        first = next(iter(manifest["benchmarks"].values()))
+        first["run_ids"][0] = first["run_ids"][0] + "-changed"
+        bad = work / "other-manifest.json"
+        bad.write_text(json.dumps(manifest), encoding="utf-8")
+        with FakeServer() as srv:
+            code, _ = self.gate(srv, work, manifest=str(bad), started=started)
+        self.assertEqual(code, 2)
+        self.assertEqual(started, [], "no GPU box and no download for a pack that is not the sample")
+        self.assertFalse((work / "results.jsonl").exists())
+
+    def test_a_server_that_dies_gives_exit_4_and_the_tail_of_its_log(self) -> None:
+        from decide.think import hosted as H
+        work, logs = self.workdir(), []
+        (work / "vllm.log").write_text("loading weights\nCUDA out of memory\n", encoding="utf-8")
+        with FakeServer() as srv:
+            dead = H.Server(FakeProc(code=1), srv.url, work / "vllm.log")
+            code, proc = self.gate(srv, work, start_server=lambda w: dead, wait=H.wait_until_up, log=logs.append)
+        self.assertEqual(code, H.EXIT_NO_SERVER)
+        self.assertTrue(any("CUDA out of memory" in line for line in logs), logs)
+        self.assertFalse((work / "results.jsonl").exists())
+
+    def test_a_second_run_resumes_and_another_protocol_is_refused_without_a_new_report(self) -> None:
+        work = self.workdir()
+        with FakeServer() as srv:
+            def prompts():
+                return sum(1 for q in srv.requests if "MODE[" in q["body"]["messages"][0]["content"])
+            self.assertEqual(self.gate(srv, work, limit=3)[0], 0)
+            self.assertEqual(prompts(), 3)
+            self.assertEqual(self.gate(srv, work)[0], 0)
+            self.assertEqual(prompts(), len(self.rows), "a row was asked twice or not at all")
+            stamp = (work / "report" / "report.json").stat().st_mtime_ns
+            code, proc = self.gate(srv, work, thinker_extra=["--thinking", "off"])
+        self.assertEqual(code, 2)
+        self.assertEqual((work / "report" / "report.json").stat().st_mtime_ns, stamp, "a refused run must not rewrite the report")
+        self.assertEqual(proc.log, ["terminate", "wait"])
+
+    def test_consecutive_errors_exit_3_and_the_report_is_still_written(self) -> None:
+        work = self.workdir()
+
+        def down(body, count):
+            return {"status": 503, "text": "overloaded"} if "MODE[" in body["messages"][0]["content"] else scripted(body, count)
+        with FakeServer(down) as srv:
+            code, _ = self.gate(srv, work, concurrency=1, thinker_extra=["--retries", "0", "--max-consecutive-errors", "2"])
+        self.assertEqual(code, 3)
+        self.assertIn("INCONCLUSIVE", (work / "report" / "report.md").read_text(encoding="utf-8"))
+
+    def test_the_server_is_stopped_even_when_the_thinker_raises(self) -> None:
+        from unittest import mock
+        from decide.think import hosted as H
+        work = self.workdir()
+        proc = FakeProc()
+        with FakeServer() as srv, mock.patch.object(H.thinker, "main", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                self.gate(srv, work, proc=proc)
+        self.assertEqual(proc.log, ["terminate", "wait"])
+
+    def test_the_cli_runs_the_whole_gate_with_a_server_that_is_already_up(self) -> None:
+        """`main` starts vLLM itself; here the start is replaced by the endpoint of the fake server."""
+        from unittest import mock
+        from decide.think import hosted as H
+        work = self.workdir()
+        with FakeServer() as srv, mock.patch.object(H, "start_vllm", side_effect=lambda w, *a, **k: H.Server(FakeProc(), srv.url)), \
+                mock.patch.object(H, "wait_until_up", return_value=True):
+            code, text = quiet(H.main, ["--pack", str(self.pack), "--work", str(work), "--manifest", str(self.manifest), "--max-tokens", "400",
+                                        "--concurrency", "3", "--limit", "4"])
+        self.assertEqual(code, 0, text)
+        self.assertEqual(len(T.ResultStore.read(work / "results.jsonl")[1]), 4)
+        self.assertIn("GT VERDICT:", text)
+
+
+def fake_modal():
+    """A stand-in for the `modal` client that records how the app is declared (the real client is not installed in CI)."""
+    import types
+    mod, rec = types.ModuleType("modal"), {"app": [], "functions": [], "entrypoints": [], "volumes": []}
+
+    class Image:
+        def __init__(self, calls=()):
+            self.calls = tuple(calls)
+
+        @classmethod
+        def debian_slim(cls, python_version=None):
+            return cls([("debian_slim", python_version)])
+
+        def pip_install(self, *packages, **kw):
+            return Image(self.calls + (("pip_install", packages),))
+
+        def env(self, values):
+            return Image(self.calls + (("env", dict(values)),))
+
+        def add_local_dir(self, source, remote, **kw):
+            return Image(self.calls + (("add_local_dir", Path(source), remote, tuple(kw.get("ignore", ()))),))
+
+    class Volume:
+        def __init__(self, name):
+            self.name, self.commits = name, 0
+
+        @classmethod
+        def from_name(cls, name, create_if_missing=False):
+            rec["volumes"].append((name, create_if_missing))
+            return cls(name)
+
+        def commit(self):
+            self.commits += 1
+
+    class Retries:
+        def __init__(self, **kw):
+            self.kw = kw
+
+    class Called:
+        def __init__(self, fn):
+            self.fn = fn
+
+        def remote(self, *a, **k):
+            return self.fn(*a, **k)
+
+        def __call__(self, *a, **k):
+            return self.fn(*a, **k)
+
+    class App:
+        def __init__(self, name, **kw):
+            rec["app"].append((name, kw))
+
+        def function(self, **kw):
+            def deco(fn):
+                rec["functions"].append((fn.__name__, kw))
+                return Called(fn)
+            return deco
+
+        def local_entrypoint(self, **kw):
+            def deco(fn):
+                rec["entrypoints"].append(fn.__name__)
+                return fn
+            return deco
+    for cls in (Image, Volume, Retries, App):
+        setattr(mod, cls.__name__, cls)
+    return mod, rec
+
+
+class ModalAppFlow(FlowBase):
+    """modal_app.py against a stand-in client: how it declares the function, and what the function and the entrypoint do.
+    That it builds, finds a GPU and runs on a Modal account is UNVERIFIED (README)."""
+
+    def load(self, gpu=None):
+        from unittest import mock
+        stub, rec = fake_modal()
+        env = {"SIMPLICIO_THINK_GPU": gpu} if gpu else {}
+        spec = importlib.util.spec_from_file_location("decide.think.modal_app", ROOT / "decide" / "think" / "modal_app.py")
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(sys.modules, {"modal": stub}), mock.patch.dict(os.environ, env):
+            if not gpu:
+                os.environ.pop("SIMPLICIO_THINK_GPU", None)
+            spec.loader.exec_module(module)
+        return module, rec
+
+    def workdir(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        return d
+
+    def test_the_function_is_declared_with_the_gpu_volumes_and_pinned_image(self) -> None:
+        module, rec = self.load()
+        self.assertEqual(rec["app"], [("simplicio-think-gt", {"include_source": False})])
+        (name, kw), = rec["functions"]
+        self.assertEqual(name, "gate")
+        self.assertEqual((kw["gpu"], kw["timeout"], kw["max_containers"]), ("H100", 12 * 3600, 1))
+        self.assertEqual(kw["retries"].kw["max_retries"], 2)
+        self.assertEqual({path: vol.name for path, vol in kw["volumes"].items()},
+                         {"/root/.cache/huggingface": "simplicio-think-hf-cache", "/state": "simplicio-think-gt-state"})
+        self.assertEqual(sorted(rec["volumes"]), [("simplicio-think-gt-state", True), ("simplicio-think-hf-cache", True)])
+        calls = dict((c[0], c[1:]) for c in kw["image"].calls)
+        self.assertEqual(calls["debian_slim"], ("3.12",))
+        self.assertEqual(calls["pip_install"], (("vllm==0.31.0",),))
+        self.assertEqual(calls["env"][0]["PYTHONPATH"], "/root")
+        source, remote, ignore = calls["add_local_dir"]
+        self.assertEqual((source, remote), (ROOT / "decide" / "think", "/root/decide/think"))
+        self.assertTrue((source / "gt-sample-manifest.json").is_file(), "the container needs the manifest")
+        self.assertIn("**/__pycache__", ignore)
+        self.assertEqual(rec["entrypoints"], ["main"])
+
+    def test_the_gpu_comes_from_the_environment(self) -> None:
+        _, rec = self.load(gpu="A100-80GB")
+        self.assertEqual(rec["functions"][0][1]["gpu"], "A100-80GB")
+
+    def test_the_script_mode_is_refused_with_the_command_to_use(self) -> None:
+        from unittest import mock
+        stub, _ = fake_modal()
+        spec = importlib.util.spec_from_file_location("modal_app_as_script", ROOT / "decide" / "think" / "modal_app.py")
+        module = importlib.util.module_from_spec(spec)
+        module.__package__ = ""
+        with mock.patch.dict(sys.modules, {"modal": stub}):
+            with self.assertRaises(RuntimeError) as cm:
+                spec.loader.exec_module(module)
+        self.assertIn("modal run -m decide.think.modal_app", str(cm.exception))
+
+    def run_function(self, module, tmp, *, result=0, boom=False, **kw):
+        from unittest import mock
+        from decide.think import hosted as H
+        calls = {}
+
+        def fake_run_gate(**kwargs):
+            calls.update(kwargs)
+            calls["pack_bytes"] = Path(kwargs["pack"]).read_bytes()
+            report = Path(kwargs["work"]) / "report"
+            report.mkdir(parents=True, exist_ok=True)
+            (report / "report.md").write_text("# Gate GT\n\nGT VERDICT: FAIL (delta_below_min) | thinker 40.0%\n\n- other line\n", encoding="utf-8")
+            (report / "report.json").write_text('{"x": 1}', encoding="utf-8")
+            if boom:
+                raise RuntimeError("boom")
+            return result
+        with mock.patch.object(module, "STATE", str(tmp)), mock.patch.object(module, "PACK_PATH", str(tmp / "pack.jsonl.gz")), \
+                mock.patch.object(H, "run_gate", side_effect=fake_run_gate):
+            out = module.gate(b"PACKBYTES", **kw)
+        return out, calls
+
+    def test_the_function_runs_the_gate_in_the_volume_and_returns_the_small_things(self) -> None:
+        module, _ = self.load()
+        tmp = self.workdir()
+        out, calls = self.run_function(module, tmp, run="mine", limit=3, max_tokens=8192, concurrency=4)
+        self.assertEqual(calls["pack_bytes"], b"PACKBYTES")
+        self.assertEqual(calls["work"], str(tmp / "mine"))
+        self.assertEqual((calls["limit"], calls["max_tokens"], calls["concurrency"]), (3, 8192, 4))
+        self.assertEqual(calls["time_budget_s"], float(12 * 3600 - 3600))
+        self.assertNotIn("manifest", calls, "the committed manifest of the container is the default")
+        self.assertEqual(out["exit"], 0)
+        self.assertEqual(out["verdict"], "GT VERDICT: FAIL (delta_below_min) | thinker 40.0%")
+        self.assertEqual(out["report_json"], '{"x": 1}')
+        self.assertEqual(out["results_in_volume"], "mine/results.jsonl")
+        self.assertNotIn("results", out, "the results (questions and reasoning) stay in the Volume")
+        self.assertIn("# Gate GT", out["report_md"])
+
+    def test_both_volumes_are_committed_at_the_end_and_when_the_gate_raises(self) -> None:
+        module, _ = self.load()
+        before = (module.state_volume.commits, module.cache_volume.commits)
+        self.run_function(module, self.workdir())
+        self.assertGreater(module.state_volume.commits, before[0])
+        self.assertGreater(module.cache_volume.commits, before[1])
+        after = (module.state_volume.commits, module.cache_volume.commits)
+        with self.assertRaises(RuntimeError):
+            self.run_function(module, self.workdir(), boom=True)
+        self.assertGreater(module.state_volume.commits, after[0])
+        self.assertGreater(module.cache_volume.commits, after[1])
+
+    def test_a_failed_commit_does_not_stop_the_run(self) -> None:
+        module, _ = self.load()
+
+        def refuse():
+            raise OSError("volume busy")
+        module.state_volume.commit = refuse
+        out, _ = quiet(self.run_function, module, self.workdir())[0]
+        self.assertEqual(out["exit"], 0)
+
+    def entrypoint(self, module, pack, out_dir, *, remote=None, manifest=None, **kw):
+        from unittest import mock
+        from decide.think import hosted as H
+        canned = {"exit": 0, "report_md": "# r\n\nGT VERDICT: PASS | x\n", "report_json": "{}", "verdict": "GT VERDICT: PASS | x",
+                  "results_in_volume": "gt/results.jsonl"}
+        seen = []
+        module.gate = type("G", (), {"remote": staticmethod(lambda *a: (seen.append(a), remote or canned)[1])})
+        with mock.patch.object(H, "DEFAULT_MANIFEST", Path(manifest or self.manifest)):
+            try:
+                quiet(module.main, pack=str(pack), out=str(out_dir), **kw)
+            except SystemExit as e:                                   # the entrypoint always ends with the exit code of the gate
+                return e.code, seen
+        raise AssertionError("the entrypoint returned instead of exiting")
+
+    def test_the_entrypoint_checks_the_pack_before_renting_anything(self) -> None:
+        module, _ = self.load()
+        work = self.workdir()
+        bad = work / "bad.jsonl.gz"
+        bad.write_bytes(b"not a pack")
+        code, seen = self.entrypoint(module, bad, work / "out")
+        self.assertIn("nothing was rented", str(code))
+        code, seen2 = self.entrypoint(module, work / "missing.jsonl.gz", work / "out")
+        self.assertIn("nothing was rented", str(code))
+        self.assertEqual(seen + seen2, [], "the GPU function must not be called for a pack that is not the sample")
+
+    def test_the_entrypoint_sends_the_pack_writes_the_report_and_exits_with_the_gate_code(self) -> None:
+        module, _ = self.load()
+        work = self.workdir()
+        code, seen = self.entrypoint(module, self.pack, work / "out", limit=3, max_tokens=4096, concurrency=2, run="r1")
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, [(self.pack.read_bytes(), "r1", 3, 4096, 2)])
+        self.assertIn("GT VERDICT: PASS", (work / "out" / "report.md").read_text(encoding="utf-8"))
+        self.assertEqual((work / "out" / "report.json").read_text(encoding="utf-8"), "{}")
+        failing = {"exit": 3, "report_md": "", "report_json": "", "verdict": "", "results_in_volume": "gt/results.jsonl"}
+        code, _ = self.entrypoint(module, self.pack, work / "out2", remote=failing)
+        self.assertEqual(code, 3)
+        self.assertFalse((work / "out2" / "report.md").exists())
+
+    def test_the_entrypoint_says_how_to_fetch_the_private_results(self) -> None:
+        from unittest import mock
+        from decide.think import hosted as H
+        module, _ = self.load()
+        module.gate = type("G", (), {"remote": staticmethod(lambda *a: {"exit": 0, "report_md": "", "report_json": "", "verdict": "",
+                                                                       "results_in_volume": "gt/results.jsonl"})})
+        out = io.StringIO()
+        with mock.patch.object(H, "DEFAULT_MANIFEST", Path(self.manifest)), contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit):
+                module.main(pack=str(self.pack), out=str(self.workdir() / "o"))
+        self.assertIn("modal volume get simplicio-think-gt-state gt/results.jsonl", out.getvalue())
+        self.assertIn("no report", out.getvalue())
+
+    @unittest.skipUnless(importlib.util.find_spec("modal"), "modal is not installed: the app was read against modal 1.6.2 only")
+    def test_the_installed_client_accepts_the_declarations(self) -> None:
+        import warnings
+        spec = importlib.util.spec_from_file_location("decide.think.modal_app_real", ROOT / "decide" / "think" / "modal_app.py")
+        module = importlib.util.module_from_spec(spec)
+        module.__package__ = "decide.think"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            spec.loader.exec_module(module)
+            self.assertEqual(list(module.app.registered_functions), ["gate"])
+            self.assertEqual(list(module.app.registered_entrypoints), ["main"])
 
 
 if __name__ == "__main__":

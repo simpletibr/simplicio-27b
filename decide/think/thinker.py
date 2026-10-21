@@ -29,6 +29,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import signal
 import sys
 import threading
@@ -52,6 +53,12 @@ INSTRUCT_SAMPLING = {"temperature": 0.7, "top_p": 0.80, "top_k": 20, "min_p": 0.
 FINAL_TAIL_CHARS = 2000
 FINGERPRINT_EXCLUDE = ("max_tokens", "seed", "endpoint")      # the budget is handled on its own; the others do not change the protocol
 USER_AGENT = "simplicio-think-gt/1"
+DTYPE_SHORT = {"float16": "fp16", "bfloat16": "bf16", "float32": "fp32"}
+
+
+def nf4_config_kwargs(compute_dtype: Any) -> Dict[str, Any]:
+    """Arguments of the BitsAndBytesConfig of the NF4 backend: 4-bit NormalFloat weights, double quantization, matmuls in `compute_dtype`."""
+    return {"load_in_4bit": True, "bnb_4bit_quant_type": "nf4", "bnb_4bit_compute_dtype": compute_dtype, "bnb_4bit_use_double_quant": True}
 
 
 class BackendError(RuntimeError):
@@ -594,10 +601,10 @@ class TransformersBackend:
         if self.tok.pad_token_id is None:
             self.tok.pad_token = self.tok.eos_token
         config = transformers.AutoConfig.from_pretrained(model, trust_remote_code=trust_remote_code, **rev)
+        torch_dtype = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[dtype]
         qc = None
         if quant == "nf4":
-            qc = transformers.BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.float16,
-                                                 bnb_4bit_use_double_quant=True)
+            qc = transformers.BitsAndBytesConfig(**nf4_config_kwargs(torch_dtype))      # the NF4 matmuls run in the dtype you chose, not always in fp16
         elif quant != "none":
             raise ValueError(f"unknown quantization {quant!r} (nf4 or none)")
         kwargs: Dict[str, Any] = {"device_map": device_map, "trust_remote_code": trust_remote_code, **rev}
@@ -607,7 +614,6 @@ class TransformersBackend:
             kwargs["attn_implementation"] = attn_implementation
         if gpu_mem_gib and torch.cuda.is_available():
             kwargs["max_memory"] = {i: f"{gpu_mem_gib}GiB" for i in range(torch.cuda.device_count())}
-        torch_dtype = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[dtype]
         multimodal = any(a.endswith("ForConditionalGeneration") for a in (getattr(config, "architectures", None) or [])) or hasattr(config, "vision_config")
         order = {"causal": ["AutoModelForCausalLM"], "image-text": ["AutoModelForImageTextToText"],
                  "auto": ["AutoModelForImageTextToText", "AutoModelForCausalLM"] if multimodal else ["AutoModelForCausalLM", "AutoModelForImageTextToText"]}[model_class]
@@ -698,6 +704,27 @@ def _env_first(*names: str) -> Optional[str]:
     return None
 
 
+# The extra body is copied into the header of the results file and into the report, which people paste into issues.
+SECRET_KEY = re.compile(r"^(api[-_]?key|x-api-key|secret|client[-_]?secret|password|authorization|(access|auth|bearer|id|refresh)[-_]?token|token)$", re.I)
+SECRET_VALUE = re.compile(r"^(sk-[A-Za-z0-9_-]{16,}|Bearer\s+\S{8,}|hf_[A-Za-z0-9]{20,})")
+
+
+def refuse_secrets(obj: Any, what: str, path: str = "") -> None:
+    """Stop a key that was typed into a JSON option: it would be written to the results header and to the report."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if SECRET_KEY.match(str(k)):
+                raise SystemExit(f"{what}: `{path}{k}` looks like a secret. Put the key in the environment (THINK_API_KEY), "
+                                 "not in an option: this JSON is written to the results file and to the report.")
+            refuse_secrets(v, what, f"{path}{k}.")
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            refuse_secrets(v, what, f"{path.rstrip('.')}[{i}].")
+    elif isinstance(obj, str) and SECRET_VALUE.match(obj):
+        raise SystemExit(f"{what}: the value at `{path.rstrip('.')}` looks like a key or a token. Put it in the environment (THINK_API_KEY), "
+                         "not in an option: this JSON is written to the results file and to the report.")
+
+
 def _json_arg(text: Optional[str], what: str) -> Dict[str, Any]:
     if not text:
         return {}
@@ -707,6 +734,7 @@ def _json_arg(text: Optional[str], what: str) -> Dict[str, Any]:
         raise SystemExit(f"{what} must be a JSON object: {e}")
     if not isinstance(obj, dict):
         raise SystemExit(f"{what} must be a JSON object")
+    refuse_secrets(obj, what)
     return obj
 
 
@@ -744,7 +772,9 @@ def build_parser() -> argparse.ArgumentParser:
     t = ap.add_argument_group("transformers backend")
     t.add_argument("--quant", choices=("nf4", "none"), default="nf4")
     t.add_argument("--batch-size", type=int, default=1)
-    t.add_argument("--dtype", choices=("float16", "bfloat16", "float32"), default="float16")
+    t.add_argument("--dtype", choices=("float16", "bfloat16", "float32"), default="float16",
+                   help="dtype of the weights that stay in 16 bits and of the NF4 matmuls (default float16: a T4 has no native bf16; "
+                        "bfloat16 is the model's own dtype and runs emulated on a T4, slower, not tried). It is part of the protocol: another dtype needs another --out")
     t.add_argument("--device-map", default="auto")
     t.add_argument("--gpu-mem-gib", type=float, help="cap per GPU in GiB, to leave room for the cache")
     t.add_argument("--model-class", choices=("auto", "causal", "image-text"), default="auto")
@@ -771,7 +801,8 @@ def make_config(args: argparse.Namespace) -> Dict[str, Any]:
     return {"backend": args.backend, "model": args.model, "revision": revision, "prompt_version": C.PROMPT_VERSION,
             "sampling": sampling, "chat_template_kwargs": {"enable_thinking": thinking}, "reasoning_effort": args.reasoning_effort,
             "extra_body": _json_arg(args.extra_body, "--extra-body"), "standard_only": bool(args.standard_only),
-            "quantization": ("nf4-fp16" if args.quant == "nf4" else "none") if args.backend == "transformers" else None,
+            "quantization": (f"nf4-{DTYPE_SHORT[args.dtype]}" if args.quant == "nf4" else "none") if args.backend == "transformers" else None,
+            "dtype": args.dtype if args.backend == "transformers" else None,
             "max_tokens": args.max_tokens, "seed": args.seed, "endpoint": endpoint}
 
 
@@ -791,13 +822,17 @@ def make_backend(args: argparse.Namespace, config: Dict[str, Any], log: Callable
                                attn_implementation=args.attn_implementation, trust_remote_code=args.trust_remote_code, log=log)
 
 
-def summarize(stats: RunStats, store: ResultStore) -> str:
+def summarize(stats: RunStats, store: ResultStore, *, thinking: bool = True) -> str:
     latest = store.latest()
     by = Counter(r.get("status") for r in latest.values())
     trunc = sum(bool(r.get("truncated")) for r in latest.values())
-    return (f"[think] this run: {stats.done}/{stats.total} rows ({stats.ok} ok, {stats.failed} failed, {stats.errors} error), "
+    text = (f"[think] this run: {stats.done}/{stats.total} rows ({stats.ok} ok, {stats.failed} failed, {stats.errors} error), "
             f"{stats.completion_tokens} tokens, stopped: {stats.stopped or 'all pending rows done'}\n"
             f"[think] file now: {len(latest)} rows ({by.get('ok', 0)} ok, {by.get('failed', 0)} failed, {by.get('error', 0)} to retry), {trunc} cut by the budget")
+    if thinking and stats.ok and stats.completion_tokens / stats.ok < C.MIN_THINKING_TOKENS:
+        text += (f"\n[think] WARNING: {stats.completion_tokens / stats.ok:.0f} tokens per reply on average: the model barely thought. "
+                 "Check that the endpoint has thinking on (README, Backends); a run like this is not the GT protocol.")
+    return text
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -846,7 +881,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     finally:
         for sig, handler in previous.items():                  # leave the caller's Ctrl-C alone (a notebook kernel, a test runner)
             signal.signal(sig, handler)
-    log(summarize(stats, store))
+    log(summarize(stats, store, thinking=args.thinking == "on"))
     return 3 if stats.stopped and "consecutive errors" in stats.stopped else 0
 
 

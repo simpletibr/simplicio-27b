@@ -9,11 +9,17 @@ text is ever written to this repository.
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import inspect
+import io
 import json
 import os
 import random
 import re
+import shlex
+import shutil
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -21,15 +27,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+if str(ROOT / "tests") not in sys.path:
+    sys.path.insert(0, str(ROOT / "tests"))
 
 from decide.think import answers as A  # noqa: E402
 from decide.think import common as C  # noqa: E402
 from decide.think import compare as K  # noqa: E402
+from decide.think import hosted as H  # noqa: E402
 from decide.think import prompt as P  # noqa: E402
 from decide.think import sample as S  # noqa: E402
 from decide.think import serve as SV  # noqa: E402
 from decide.think import thinker as T  # noqa: E402
 from decide.think import trace as TR  # noqa: E402
+import think_nb_support as NB  # noqa: E402
 
 
 def opts(keys, texts=None):
@@ -799,7 +809,7 @@ def q_options(row):
 def fake_config(**over):
     cfg = {"backend": "fake", "model": "m", "revision": None, "prompt_version": C.PROMPT_VERSION,
            "sampling": dict(C.THINKING_SAMPLING), "chat_template_kwargs": {"enable_thinking": True},
-           "reasoning_effort": None, "extra_body": {}, "quantization": None, "max_tokens": 1000, "seed": None, "endpoint": None}
+           "reasoning_effort": None, "extra_body": {}, "quantization": None, "dtype": None, "max_tokens": 1000, "seed": None, "endpoint": None}
     cfg.update(over)
     return cfg
 
@@ -896,7 +906,7 @@ class ConfigContract(unittest.TestCase):
 
     def test_fingerprint_follows_what_changes_the_answers(self) -> None:
         a = T.fingerprint_of(fake_config())
-        for over in ({"model": "other"}, {"revision": "abc"}, {"quantization": "nf4"}, {"reasoning_effort": "low"}, {"backend": "x"},
+        for over in ({"model": "other"}, {"revision": "abc"}, {"quantization": "nf4"}, {"dtype": "bfloat16"}, {"reasoning_effort": "low"}, {"backend": "x"},
                      {"prompt_version": "think-gt-prompt/2"}, {"chat_template_kwargs": {"enable_thinking": False}},
                      {"sampling": {**C.THINKING_SAMPLING, "temperature": 0.6}}, {"extra_body": {"a": 1}}):
             self.assertNotEqual(a, T.fingerprint_of(fake_config(**over)), over)
@@ -1577,7 +1587,7 @@ class DigestContract(unittest.TestCase):
 
 
 class TraceContract(unittest.TestCase):
-    """The `Raciocínio:` block that the hybrid appends to the state (ADR 0004, item 6).  PROPOSAL: SCHEMA.md has no such block yet."""
+    """The `Raciocínio:` block that the hybrid appends to the state (ADR 0004, item 6; format in SCHEMA.md section 10, issue #69)."""
 
     def test_exact_layout(self) -> None:
         self.assertEqual(TR.MARKER, "Raciocínio:")
@@ -1876,7 +1886,7 @@ class MutationToolContract(unittest.TestCase):
     def test_the_groups_cover_the_places_that_decide_the_verdict(self) -> None:
         from decide.think import mutation_check as MC
         groups = {m.group for m in MC.MUTANTS}
-        self.assertTrue({"answers", "bootstrap", "verdict", "scoring", "resume", "sample", "trace", "serve", "report"} <= groups)
+        self.assertTrue({"answers", "bootstrap", "verdict", "scoring", "resume", "sample", "trace", "serve", "report", "hosted", "notebook"} <= groups)
 
 
 class CommittedManifestContract(unittest.TestCase):
@@ -1962,6 +1972,27 @@ class ProvenanceContract(unittest.TestCase):
         self.assertIsNone(self.config("--backend", "openai", "--model", C.QWEN_FP8_MODEL)["revision"])
         self.assertEqual(self.config("--backend", "openai", "--model", C.QWEN_FP8_MODEL, "--revision", C.QWEN_FP8_REVISION)["revision"], C.QWEN_FP8_REVISION)
 
+    def test_the_compute_dtype_is_part_of_the_protocol_and_the_quantization_label_follows_it(self) -> None:
+        base = self.config("--backend", "transformers")
+        self.assertEqual((base["dtype"], base["quantization"]), ("float16", "nf4-fp16"))
+        for flag, short in (("bfloat16", "bf16"), ("float32", "fp32")):
+            cfg = self.config("--backend", "transformers", "--dtype", flag)
+            self.assertEqual((cfg["dtype"], cfg["quantization"]), (flag, f"nf4-{short}"))
+            self.assertNotEqual(T.fingerprint_of(cfg), T.fingerprint_of(base), flag)
+        plain = self.config("--backend", "transformers", "--quant", "none", "--dtype", "bfloat16")
+        self.assertEqual((plain["quantization"], plain["dtype"]), ("none", "bfloat16"))
+        api = self.config("--backend", "openai")
+        self.assertEqual((api["quantization"], api["dtype"]), (None, None), "an endpoint has no dtype of ours to declare")
+
+    def test_the_nf4_matmuls_run_in_the_dtype_that_was_chosen(self) -> None:
+        marker = object()
+        kw = T.nf4_config_kwargs(marker)
+        self.assertIs(kw["bnb_4bit_compute_dtype"], marker)
+        self.assertEqual((kw["load_in_4bit"], kw["bnb_4bit_quant_type"], kw["bnb_4bit_use_double_quant"]), (True, "nf4", True))
+        src = inspect.getsource(T.TransformersBackend.__init__)
+        self.assertIn("nf4_config_kwargs(torch_dtype)", src, "the backend must hand the chosen dtype to the NF4 config, not a literal fp16")
+        self.assertNotIn("bnb_4bit_compute_dtype=torch.float16", src)
+
     def test_serve_names_the_model_as_the_thinker_asks_for_it(self) -> None:
         self.assertEqual(SV.vllm_command().count("--served-model-name"), 1)
         cmd = SV.vllm_command()
@@ -2017,6 +2048,670 @@ class GarbledOutputContract(unittest.TestCase):
         self.assertIn("fp16", md)
         quiet = K.render_markdown(K.build_report(*scenario({25: [(False, {"m": True})] * 5}), B=20, seed=1))
         self.assertNotIn("saida ilegivel", quiet)
+
+
+class ExtraBodySecretContract(unittest.TestCase):
+    """--extra-body is copied into the results header and the report, which get pasted into issues: a key must not get in."""
+
+    KEY = "sk-abcdefghijklmnopqrstuvwxyz0123"
+
+    def refused(self, text):
+        with self.assertRaises(SystemExit) as cm:
+            T._json_arg(text, "--extra-body")
+        message = str(cm.exception)
+        self.assertIn("THINK_API_KEY", message)
+        self.assertNotIn(self.KEY, message, "the refusal must not print the secret it refuses")
+        return message
+
+    def test_a_key_named_like_a_secret_is_refused_at_any_depth(self) -> None:
+        for name in ("api_key", "API-KEY", "apiKey", "Authorization", "password", "client_secret", "access_token", "token"):
+            self.assertIn(name, self.refused(json.dumps({"a": {"b": [{name: "x"}]}})), name)
+
+    def test_a_value_shaped_like_a_key_is_refused_wherever_it_sits(self) -> None:
+        for value in (self.KEY, "Bearer abcdefghijkl", "hf_" + "A" * 30):
+            self.refused(json.dumps({"headers": [{"note": value}]}))
+
+    def test_the_fields_a_provider_really_takes_pass(self) -> None:
+        for obj in ({"enable_thinking": True}, {"thinking": {"type": "enabled", "budget_tokens": 4000}}, {"max_tokens": 5},
+                    {"reasoning": {"effort": "high"}}, {"token_limit": 3}, {"thinking_budget": 100}, {"note": "Bearer"}, {"id": "sk-short"}):
+            self.assertEqual(T._json_arg(json.dumps(obj), "--extra-body"), obj)
+
+    def test_the_cli_stops_before_a_results_file_exists(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            pack, out = Path(d) / "pack.jsonl.gz", Path(d) / "r.jsonl"
+            C.write_jsonl_gz(pack, [prow(25, 0, picks={"m": "A"})])
+            with self.assertRaises(SystemExit):
+                T.main(["--pack", str(pack), "--out", str(out), "--backend", "openai", "--base-url", "http://127.0.0.1:1/v1",
+                        "--extra-body", json.dumps({"api_key": self.KEY})])
+            self.assertFalse(out.exists())
+
+
+class NoThinkingContract(unittest.TestCase):
+    """An endpoint that ignores the request for thinking answers with a bare line: say so, do not score it as a quiet FAIL."""
+
+    @staticmethod
+    def md(tokens, **cfg):
+        rows, recs = scenario({25: [(False, {"m": True})] * 5})
+        for r in recs:
+            r["tokens"] = {"completion": tokens}
+        header = {"config": fake_config(model=C.QWEN_MODEL, revision=C.QWEN_REVISION, backend="openai", **cfg), "config_fingerprint": "f"}
+        return K.render_markdown(K.build_report(rows, recs, header=header, B=20, seed=1))
+
+    def test_the_threshold_is_one_constant(self) -> None:
+        self.assertEqual(C.MIN_THINKING_TOKENS, 100)
+
+    def test_a_median_below_it_warns_and_exactly_at_it_does_not(self) -> None:
+        self.assertIn("AVISO: a mediana e de 99 tokens por linha: o modelo quase nao pensou", self.md(99))
+        self.assertNotIn("quase nao pensou", self.md(C.MIN_THINKING_TOKENS))
+        self.assertNotIn("quase nao pensou", self.md(5000))
+
+    def test_the_warning_points_at_the_fix(self) -> None:
+        md = self.md(10)
+        self.assertIn("Isto nao e o gate GT", md)
+        self.assertIn("outro `--out`", md)
+
+    def test_a_thinking_off_control_is_expected_to_be_terse(self) -> None:
+        self.assertNotIn("quase nao pensou", self.md(12, chat_template_kwargs={"enable_thinking": False}))
+
+    def test_rows_without_token_counts_are_not_guessed_about(self) -> None:
+        rows, recs = scenario({25: [(False, {"m": True})] * 5})
+        for r in recs:
+            del r["tokens"]
+        header = {"config": fake_config(model=C.QWEN_MODEL, revision=C.QWEN_REVISION), "config_fingerprint": "f"}
+        self.assertNotIn("quase nao pensou", K.render_markdown(K.build_report(rows, recs, header=header, B=20, seed=1)))
+
+    def test_a_results_file_without_a_header_is_read_as_a_thinking_run(self) -> None:
+        rows, recs = scenario({25: [(False, {"m": True})] * 5})
+        self.assertIn("quase nao pensou", K.render_markdown(K.build_report(rows, recs, B=20, seed=1)))
+
+    def store(self):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return T.ResultStore.open(Path(tmp.name) / "r.jsonl", fake_config(), "p" * 64, 5)
+
+    def test_the_thinker_summary_warns_on_a_short_average_and_only_for_a_thinking_run(self) -> None:
+        store = self.store()
+        short = T.RunStats(total=3, done=3, ok=3, completion_tokens=3 * 99)
+        self.assertIn("WARNING: 99 tokens per reply on average: the model barely thought", T.summarize(short, store))
+        self.assertNotIn("barely thought", T.summarize(short, store, thinking=False))
+        enough = T.RunStats(total=3, done=3, ok=3, completion_tokens=3 * C.MIN_THINKING_TOKENS)
+        self.assertNotIn("barely thought", T.summarize(enough, store))
+        nothing_ok = T.RunStats(total=3, done=3, errors=3)
+        self.assertNotIn("barely thought", T.summarize(nothing_ok, store), "no ok row, no average (and no division by zero)")
+
+
+# ------------------------------------------------------------------------------------------- notebooks
+
+def parse_cli(parser, argv):
+    """Parse the way the CLI does, but fail with argparse's own message instead of exiting."""
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            return parser.parse_args(argv)
+    except SystemExit as e:
+        raise AssertionError(f"argparse refused {argv}: {err.getvalue().strip().splitlines()[-1:]}") from e
+
+
+CLI_PARSERS = {"decide.think.thinker": T.build_parser, "decide.think.compare": K.build_parser, "decide.think.sample": S.build_parser}
+
+
+def parsed_commands(key, **params):
+    """({variable: value} of the parameter cell, {thinker|compare|sample: Namespace}) with the real parsers."""
+    ns = NB.parameters(key, **params)
+    out = {}
+    for module, build in CLI_PARSERS.items():
+        for cmd in NB.commands_of(key, module):
+            argv = NB.argv_of(cmd, ns)
+            out[module.rsplit(".", 1)[1]] = parse_cli(build(), argv[3:])           # [python, -m, module, ...]
+    return ns, out
+
+
+class NotebookFileContract(unittest.TestCase):
+    """notebooks/decide/think_gt_*.ipynb: the two ways to run the gate (issue #75).  Read as data; no cell runs here."""
+
+    KEYS = tuple(NB.NOTEBOOKS)
+
+    def test_the_two_notebooks_are_where_the_layout_rule_allows(self) -> None:
+        self.assertEqual(sorted(p.name for p in NB.NB_DIR.glob("*.ipynb") if p.name.startswith("think_gt_")),
+                         ["think_gt_api.ipynb", "think_gt_kaggle.ipynb"])
+        self.assertEqual(NB.NB_DIR, ROOT / "notebooks" / "decide")
+
+    def test_nbformat_4_and_nothing_left_by_a_run(self) -> None:
+        for key in self.KEYS:
+            nb = NB.load(key)
+            self.assertEqual(nb["nbformat"], 4, key)
+            ids = []
+            for cell in nb["cells"]:
+                self.assertIn(cell["cell_type"], ("markdown", "code"), key)
+                self.assertTrue(isinstance(cell["source"], list) and all(isinstance(s, str) for s in cell["source"]), key)
+                ids.append(cell.get("id"))
+                if cell["cell_type"] == "code":
+                    self.assertEqual((cell["outputs"], cell["execution_count"]), ([], None), f"{key}: a run left its output in the file")
+            self.assertNotIn(None, ids, key)
+            self.assertEqual(len(set(ids)), len(ids), f"{key}: cell ids repeat")
+
+    def test_no_secret_no_wildcard_bind_no_picture(self) -> None:
+        for key, path in NB.NOTEBOOKS.items():
+            text = path.read_text(encoding="utf-8")
+            self.assertNotRegex(text, r"sk-[A-Za-z0-9_-]{8,}|hf_[A-Za-z0-9]{20,}|Bearer\s", key)
+            self.assertNotIn("0.0.0.0", text, key)
+            self.assertNotIn("image/png", text, key)
+
+    def test_the_first_code_cell_is_the_one_the_user_edits(self) -> None:
+        for key in self.KEYS:
+            first = NB.code_cells(key)[0]
+            self.assertTrue(first.startswith("# 1. Parâmetros"), key)
+            for name in ("SIMPLICIO_SHA", "PACK", "WORK", "MAX_TOKENS", "LIMIT", "EXTRA"):
+                self.assertRegex(first, rf"(?m)^{name}\s*=", f"{key}: {name}")
+
+    def test_the_shell_lines_use_only_plain_variables_and_no_dollar(self) -> None:
+        for key in self.KEYS:
+            ns = NB.parameters(key)
+            ns.update({"BASE_URL": "u", "REV": ""})
+            for _, cmd in NB.shell_commands(key):
+                self.assertNotIn("$", cmd, f"{key}: IPython would read $name as a Python variable: {cmd}")
+                for expr in NB.INTERPOLATION.findall(cmd):
+                    self.assertTrue(expr.isidentifier() and expr in ns, f"{key}: {{{expr}}} is not a variable of the parameter cell")
+
+    def test_the_python_of_the_cells_has_no_undefined_name_or_syntax_error(self) -> None:
+        ruff = shutil.which("ruff")
+        if ruff is None:
+            self.skipTest("ruff is not on the PATH (make check has it)")
+        for key in self.KEYS:
+            r = subprocess.run([ruff, "check", "--no-cache", "--select", "F,E9", "--stdin-filename", f"{key}.py", "-"],
+                               input=NB.python_source(key), capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, f"{key}:\n{r.stdout}{r.stderr}")
+
+
+class NotebookPinContract(unittest.TestCase):
+    KEYS = tuple(NB.NOTEBOOKS)
+
+    @staticmethod
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+
+    def test_both_notebooks_pin_the_same_full_commit(self) -> None:
+        shas = {key: NB.pinned_sha(key) for key in self.KEYS}
+        for key, sha in shas.items():
+            self.assertRegex(sha, r"^[0-9a-f]{40}$", key)
+        self.assertEqual(len(set(shas.values())), 1, shas)
+
+    def test_the_code_is_fetched_by_that_commit_and_checked(self) -> None:
+        for key in self.KEYS:
+            code = "\n".join(NB.code_cells(key))
+            self.assertIn('"fetch", "-q", "--depth", "1", "https://github.com/simpletibr/simplicio-27b.git", SIMPLICIO_SHA', code, key)
+            self.assertIn('["git", "-C", REPO, "checkout", "-q", "FETCH_HEAD"]', code, key)
+            self.assertIn("assert head == SIMPLICIO_SHA", code, key)
+            self.assertNotRegex(code, r"git clone|releases/latest|raw\.githubusercontent|refs/heads|\bmain\b|\bmaster\b", key)
+
+    def test_the_pinned_commit_holds_the_code_these_tests_cover(self) -> None:
+        """What the user runs is what was tested: every module and the manifest are the same blobs at the pinned commit."""
+        sha = NB.pinned_sha("api")
+        if shutil.which("git") is None or self.git("rev-parse", "--git-dir").returncode != 0:
+            self.skipTest("not a git checkout")
+        if self.git("cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
+            self.skipTest(f"commit {sha} is not in this clone (git fetch origin {sha})")
+        wanted = re.compile(r"^decide/think/(?:[A-Za-z0-9_]+\.py|gt-sample-manifest\.json)$")
+        here = sorted(str(p.relative_to(ROOT)) for p in (ROOT / "decide" / "think").iterdir() if wanted.match(str(p.relative_to(ROOT))))
+        there = sorted(f for f in self.git("ls-tree", "-r", "--name-only", sha, "decide/think").stdout.split() if wanted.match(f))
+        self.assertEqual(there, here, "a module was added or removed after the commit the notebooks pin")
+        stale = [rel for rel in here
+                 if self.git("rev-parse", f"{sha}:{rel}").stdout.strip() != self.git("hash-object", rel).stdout.strip()]
+        self.assertEqual(stale, [], "these changed after the commit the notebooks pin: change SIMPLICIO_SHA in both notebooks "
+                                   "to a pushed commit that has them")
+
+    def test_kaggle_installs_the_four_pins_of_the_colab_notebooks(self) -> None:
+        installs = [c for _, c in NB.shell_commands("kaggle") if re.match(r"pip install\b", c)]
+        self.assertEqual(len(installs), 1, installs)
+        names = [t for t in shlex.split(installs[0]) if not t.startswith("-") and t not in ("pip", "install")]
+        self.assertEqual(names, ["transformers==5.5.0", "accelerate==1.15.0", "bitsandbytes==0.50.2", "huggingface_hub==1.33.0"])
+        train = (ROOT / "notebooks/Simplicio_27B_Training_Colab.ipynb").read_text(encoding="utf-8")
+        for pin in names:
+            self.assertIn(pin, train, f"{pin} is not a pin of the Colab Training notebook")
+
+    def test_vllm_only_in_the_api_notebook_and_only_at_the_repository_pin(self) -> None:
+        self.assertEqual(SV.VLLM_VERSION, "0.31.0")
+        api = "\n".join(NB.code_cells("api"))
+        self.assertEqual(re.findall(r"vllm==[0-9][0-9.]*", api), [f"vllm=={SV.VLLM_VERSION}"])
+        self.assertNotRegex("\n".join(NB.code_cells("kaggle")), r"(?i)vllm", "a T4 cannot run the pinned vLLM (README, Backends)")
+        for key in self.KEYS:
+            self.assertEqual([c for _, c in NB.shell_commands(key) if re.search(r"pip install.*(?<![=\w])vllm(?!==)", c)], [], key)
+
+
+class NotebookCommandContract(unittest.TestCase):
+    """The commands in the cells are parsed by the real argparse parsers, so a renamed flag breaks a test, not a Kaggle session."""
+
+    KEYS = tuple(NB.NOTEBOOKS)
+    API_REV = C.QWEN_FP8_REVISION
+
+    def test_every_decide_think_command_parses(self) -> None:
+        variants = {"kaggle": [{}, {"LIMIT": ""}, {"BATCH_SIZE": 1, "MAX_TOKENS": 32768, "TIME_BUDGET_H": 1.5}],
+                    "api": [{}, {"LIMIT": ""}, {"REVISION": self.API_REV, "CONCURRENCY": 2}, {"STANDARD_ONLY": True},
+                            {"EXTRA_BODY": '{"enable_thinking": true, "note": "it\'s"}'}]}
+        for key in self.KEYS:
+            for params in variants[key]:
+                with self.subTest(key=key, **{k: str(v)[:20] for k, v in params.items()}):
+                    _, cli = parsed_commands(key, **params)
+                    self.assertEqual(sorted(cli), ["compare", "sample", "thinker"])
+
+    def test_the_three_commands_hand_files_to_each_other(self) -> None:
+        for key in self.KEYS:
+            ns, cli = parsed_commands(key)
+            self.assertEqual(cli["thinker"].pack, cli["compare"].pack, key)
+            self.assertEqual(cli["thinker"].pack, cli["sample"].pack, key)
+            self.assertEqual(cli["thinker"].pack, ns["PACK"], key)
+            self.assertEqual(cli["thinker"].out, cli["compare"].thinker, key)
+            self.assertEqual(cli["thinker"].out, ns["WORK"] + "/results.jsonl", key)
+            self.assertEqual(cli["compare"].out, ns["WORK"] + "/report", key)
+            self.assertEqual(cli["sample"].cmd, "verify", key)
+            self.assertEqual(cli["thinker"].manifest, cli["sample"].manifest, key)
+            self.assertEqual(cli["thinker"].manifest, NB.MANIFEST_PATH, key)
+        self.assertTrue((ROOT / NB.MANIFEST_PATH).is_file())
+
+    def test_the_notebooks_run_the_protocol_as_registered(self) -> None:
+        for key in self.KEYS:
+            _, cli = parsed_commands(key)
+            th = cli["thinker"]
+            self.assertEqual(th.thinking, "on", key)
+            self.assertEqual(th.max_tokens, T.DEFAULT_MAX_TOKENS, f"{key}: a notebook budget that is not the registered one")
+            self.assertEqual([k for k in C.THINKING_SAMPLING if getattr(th, k) is not None], [], f"{key}: sampling is the model card's")
+            self.assertEqual((th.overwrite, th.no_preflight, th.no_reasoning, th.seed, th.reasoning_effort), (False, False, False, None, None), key)
+            self.assertEqual(cli["compare"].bootstrap, C.BOOTSTRAP_B, key)
+            self.assertEqual((cli["compare"].seed, cli["compare"].min_delta), (C.SEED, C.GT_MIN_DELTA_PTS), key)
+            self.assertFalse(cli["compare"].ignore_pack_mismatch, key)
+
+    def test_the_first_run_is_a_probe_of_three_rows(self) -> None:
+        for key in self.KEYS:
+            ns, cli = parsed_commands(key)
+            self.assertEqual((ns["LIMIT"], cli["thinker"].limit), ("3", 3), key)
+            _, full = parsed_commands(key, LIMIT="")
+            self.assertIsNone(full["thinker"].limit, key)
+
+    def test_kaggle_runs_the_nf4_transformers_backend_with_the_pinned_model(self) -> None:
+        ns, cli = parsed_commands("kaggle")
+        th = cli["thinker"]
+        self.assertEqual((th.backend, th.quant, th.dtype, th.model), ("transformers", "nf4", "float16", C.QWEN_MODEL))
+        self.assertEqual(th.batch_size, ns["BATCH_SIZE"])
+        self.assertEqual(T.make_config(th)["revision"], C.QWEN_REVISION, "the default is the pinned revision")
+        self.assertEqual(th.time_budget_s, ns["TIME_BUDGET_H"] * 3600)
+        self.assertLessEqual(ns["TIME_BUDGET_H"], 9, "a Kaggle session is 9 to 12 hours; the run must stop before it")
+        code = "\n".join(NB.code_cells("kaggle"))
+        self.assertIn('shutil.copy(RESUME_FROM, f"{WORK}/results.jsonl")', code)
+
+    def test_api_runs_the_openai_backend_and_declares_what_it_was_told(self) -> None:
+        ns, cli = parsed_commands("api")
+        th = cli["thinker"]
+        self.assertEqual((th.backend, th.model, th.revision, th.concurrency), ("openai", ns["MODEL"], None, ns["CONCURRENCY"]))
+        self.assertIn(ns["MODEL"], C.PINNED_REVISIONS)
+        _, cli = parsed_commands("api", REVISION=self.API_REV)
+        self.assertEqual(T.make_config(cli["thinker"])["revision"], self.API_REV)
+        _, cli = parsed_commands("api", STANDARD_ONLY=True, EXTRA_BODY='{"a": "b c"}')
+        self.assertTrue(cli["thinker"].standard_only)
+        self.assertEqual(json.loads(cli["thinker"].extra_body), {"a": "b c"})
+
+    def test_the_key_never_reaches_a_command_line_or_the_screen(self) -> None:
+        api = "\n".join(NB.code_cells("api"))
+        for _, cmd in NB.shell_commands("api"):
+            self.assertNotRegex(cmd, r"(?i)api[-_]?key|bearer|authorization|THINK_API_KEY|OPENAI_API_KEY|\bhf_", cmd)
+        self.assertNotRegex(api, r"print\([^)]*(\bkey\b|environ|KEY_NAME)")
+        self.assertIn('os.environ["THINK_API_KEY"] = key', api)
+        self.assertIn("del key", api)
+        self.assertEqual(NB.parameters("api")["KEY_NAME"], "THINK_API_KEY", "the thinker reads this variable first")
+        for key in self.KEYS:
+            self.assertNotRegex("\n".join(NB.code_cells(key)), r"(?m)^\s*!\s*(env|printenv|set|export)\b", key)
+
+    def test_the_local_vllm_cell_is_built_from_the_serve_module(self) -> None:
+        api = "\n".join(NB.code_cells("api"))
+        for needle in ("from decide.think import common, serve", "serve.vllm_command(MODEL, revision)", "serve.base_url()",
+                       "serve.wait_ready(BASE_URL, 1800", 'REV = f"--revision {revision}" if revision else ""', "server.terminate()"):
+            self.assertIn(needle, api)
+        self.assertEqual(NB.parameters("api")["MODE"], "endpoint", "a hosted endpoint is the default, not a 30 GiB download")
+
+    def test_the_text_states_the_numbers_of_the_protocol(self) -> None:
+        manifest = json.loads((ROOT / NB.MANIFEST_PATH).read_text(encoding="utf-8"))
+        rows, benches = manifest["pack"]["rows"], len(manifest["benchmarks"])
+        both = [f"{rows} linhas", f"**+{int(C.GT_MIN_DELTA_PTS)} pontos**", f"IC {int(round(100 * C.CI_LEVEL))}%", "ADR 0004", "nunca entra em treino"]
+        for key in self.KEYS:
+            text = "\n".join(NB.markdown_cells(key))
+            for needle in both:
+                self.assertIn(needle, text, f"{key}: {needle}")
+            self.assertRegex(text, r"(?i)privado", key)
+            self.assertIn("UNVERIFIED", text, key)
+        kaggle = "\n".join(NB.markdown_cells("kaggle"))
+        self.assertIn(f"{benches} provas", kaggle)
+        self.assertIn(f"{C.PER_BENCHMARK} por prova", kaggle)
+
+    def test_the_area_readme_cites_both_notebooks(self) -> None:
+        readme = (ROOT / "decide" / "think" / "README.md").read_text(encoding="utf-8")
+        for path in NB.NOTEBOOKS.values():
+            self.assertIn(str(path.relative_to(ROOT)), readme)
+
+
+# ------------------------------------------------------------------------------------------- the README
+
+README = ROOT / "decide" / "think" / "README.md"
+README_PARSERS = {**CLI_PARSERS, "decide.think.hosted": H.build_parser, "decide.think.serve": SV.build_parser}
+
+
+def plain(text):
+    """Lower case, no accents: how the code spells a heading it points at."""
+    import unicodedata
+    return "".join(ch for ch in unicodedata.normalize("NFD", text) if not unicodedata.combining(ch)).casefold()
+
+
+def readme_text():
+    return README.read_text(encoding="utf-8")
+
+
+def readme_blocks(text):
+    return re.findall(r"```[^\n]*\n(.*?)```", text, re.S)
+
+
+def readme_lines(text):
+    """Every command line of every fenced block, backslash continuations joined."""
+    out = []
+    for block in readme_blocks(text):
+        buf = ""
+        for line in block.splitlines():
+            if line.rstrip().endswith("\\"):
+                buf += line.rstrip()[:-1] + " "
+                continue
+            out.append((buf + line).strip())
+            buf = ""
+    return out
+
+
+def modal_main_params():
+    """(all parameters, required ones) of `main` in modal_app.py, read from the source: importing it needs `modal`."""
+    import ast
+    tree = ast.parse((ROOT / "decide" / "think" / "modal_app.py").read_text(encoding="utf-8"))
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    names = [a.arg for a in main.args.args]
+    return names, names[:len(names) - len(main.args.defaults)]
+
+
+class ReadmeContract(unittest.TestCase):
+    """decide/think/README.md says what the code does: a pasted command that stopped parsing, a pin that drifted or a heading
+    the code points at that was renamed breaks a test, not somebody's afternoon."""
+
+    def test_the_two_notebooks_are_cited_by_path(self) -> None:
+        for path in NB.NOTEBOOKS.values():
+            self.assertIn(str(path.relative_to(ROOT)), readme_text())
+
+    def test_every_heading_the_code_points_at_exists(self) -> None:
+        headings = {plain(h) for h in re.findall(r"^#{1,6}\s+(.+?)\s*$", readme_text(), re.M)}
+        cited = set()
+        for path in sorted((ROOT / "decide" / "think").glob("*.py")) + sorted((ROOT / "tests").glob("test_*_75.py")):
+            for m in re.finditer(r'README, (?:\\?"([^"\\]+)\\?"|([A-Z][A-Za-z]+))', path.read_text(encoding="utf-8")):
+                cited.add(plain(m.group(1) or m.group(2)))
+        self.assertTrue({"backends", "tempo e custo", "se a saida for ruido"} <= cited, f"the scan found {sorted(cited)}")
+        self.assertEqual(sorted(cited - headings), [], "a heading was renamed or removed")
+
+    def test_the_relative_links_resolve(self) -> None:
+        links = [m for m in re.findall(r"\]\(([^)\s]+)\)", readme_text()) if not m.startswith(("http://", "https://", "#"))]
+        self.assertTrue(links)
+        for link in links:
+            self.assertTrue((README.parent / link.split("#")[0]).exists(), link)
+
+    def test_there_is_no_link_to_main_that_the_layout_test_would_have_to_resolve(self) -> None:
+        self.assertNotRegex(readme_text(), r"github\.com/simpletibr/simplicio-27b/(?:blob|tree)/main/")
+
+    def test_every_python_command_parses_with_the_real_parser_of_its_module(self) -> None:
+        seen = set()
+        for line in readme_lines(readme_text()):
+            m = re.match(r"python -m (decide\.think\.(\w+))(.*)$", line)
+            if not m:
+                continue
+            module, name, rest = m.groups()
+            self.assertTrue((ROOT / "decide" / "think" / f"{name}.py").is_file(), line)
+            seen.add(module)
+            if module in README_PARSERS:
+                parse_cli(README_PARSERS[module](), shlex.split(rest))
+        self.assertEqual(sorted(seen), ["decide.think.compare", "decide.think.hosted", "decide.think.mutation_check", "decide.think.sample",
+                                        "decide.think.serve", "decide.think.thinker"])
+
+    def test_the_modal_commands_use_the_arguments_of_the_entrypoint(self) -> None:
+        names, required = modal_main_params()
+        flags_ok = {"--" + n.replace("_", "-") for n in names}
+        runs = [shlex.split(line) for line in readme_lines(readme_text()) if line.startswith("modal run ")]
+        self.assertTrue(runs)
+        for tokens in runs:
+            self.assertEqual(tokens[:4], ["modal", "run", "-m", "decide.think.modal_app"], tokens)
+            flags = {t for t in tokens[4:] if t.startswith("--")}
+            self.assertLessEqual(flags, flags_ok, tokens)
+            self.assertTrue({"--" + n.replace("_", "-") for n in required} <= flags, tokens)
+
+    def test_the_pins_in_the_text_are_the_ones_in_the_code(self) -> None:
+        text = readme_text()
+        for model, rev in C.PINNED_REVISIONS.items():
+            self.assertRegex(text, rf"`{re.escape(model)}` em `{rev}`")
+        self.assertEqual(re.findall(r"vllm==[0-9][0-9.]*", text), [f"vllm=={SV.VLLM_VERSION}"])
+        modal_pin = re.findall(r"modal==[0-9][0-9.]*", (ROOT / "decide" / "think" / "modal_app.py").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(set(re.findall(r"modal==[0-9][0-9.]*", text))), sorted(set(modal_pin)))
+        self.assertIn(str(C.SEED), text)
+        self.assertIn("16.384", text)
+        self.assertEqual(T.DEFAULT_MAX_TOKENS, 16384)
+        self.assertIn("+10,0", text)
+        self.assertEqual(C.GT_MIN_DELTA_PTS, 10.0)
+        self.assertIn("10.000 reamostras", text)
+        self.assertEqual(C.BOOTSTRAP_B, 10_000)
+        self.assertIn(f"max(32768, orçamento + {H.CONTEXT_MARGIN})", text)
+        self.assertIn(f"**{H.EXIT_NO_SERVER}** o servidor não subiu", text)
+
+    def test_the_pack_and_the_inputs_are_the_ones_of_the_manifest(self) -> None:
+        manifest = json.loads(CommittedManifestContract.PATH.read_text(encoding="utf-8"))
+        text = readme_text()
+        self.assertIn(manifest["pack"]["content_sha256"], text)
+        rows = re.findall(r"^\| (\S+) \| `([^`]+)` \| `([0-9a-f]{40})` \| `([^`]+)` \|$", text, re.M)
+        self.assertEqual(sorted(r[0] for r in rows), manifest["decision_models"])
+        self.assertEqual(len({r[2] for r in rows}), len(rows), "one revision per repository")
+        sums = {}
+        for digest, rel in re.findall(r"^([0-9a-f]{64})  (\S+)$", text, re.M):
+            sums[rel.split("/")[0]] = (digest, rel.split("/")[1])
+        self.assertEqual(sorted(sums), manifest["decision_models"])
+        for model, repo, rev, path in rows:
+            self.assertEqual(sums[model][0], manifest["inputs"]["results"][model]["sha256"], model)
+            self.assertEqual(sums[model][1], path.rsplit("/", 1)[1], f"{model}: the file in the sha256 block is the one in the table")
+        built = [shlex.split(line) for line in readme_lines(text) if line.startswith("python -m decide.think.sample build")]
+        self.assertEqual(len(built), 1)
+        named = sorted(a.split("=", 1)[0] for i, a in enumerate(built[0]) if i and built[0][i - 1] == "--results")
+        self.assertEqual(named, manifest["decision_models"])
+        for rel, info in manifest["inputs"]["suite_files"].items():
+            self.assertIn(f"`{rel}`", text)
+
+    def test_the_unverified_list_names_what_nobody_has_run(self) -> None:
+        text = readme_text()
+        tail = text[text.index("## O que não foi verificado"):]
+        for word in ("GPU", "bitsandbytes", "vLLM", "Modal", "fp16", "latência", "SCHEMA.md"):
+            self.assertIn(word, tail)
+        self.assertIn("UNVERIFIED", text)
+
+    def test_the_folder_ignores_the_private_files_by_name(self) -> None:
+        patterns = (README.parent / ".gitignore").read_text(encoding="utf-8").splitlines()
+        for pattern in ("*.jsonl", "*.jsonl.gz", "pack*/", "work/", "report/"):
+            self.assertIn(pattern, patterns)
+        self.assertFalse([p for p in patterns if p and not p.startswith("#") and "json" in p and not p.startswith("*.jsonl")],
+                         "the manifest is tracked: no pattern may catch .json")
+
+    def test_the_folder_keeps_the_private_files_out_of_git(self) -> None:
+        import subprocess
+        probe = subprocess.run(["git", "rev-parse", "--git-dir"], cwd=ROOT, capture_output=True, text=True)
+        if probe.returncode != 0:
+            self.skipTest("not a git checkout")
+        def ignored(name):
+            return subprocess.run(["git", "check-ignore", "-q", f"decide/think/{name}"], cwd=ROOT).returncode == 0
+        for private in ("pack.jsonl.gz", "results.jsonl", "pack-out/pack.jsonl.gz", "work/results.jsonl", "report/report.md"):
+            self.assertTrue(ignored(private), private)
+        for public in ("gt-sample-manifest.json", "README.md", "thinker.py"):
+            self.assertFalse(ignored(public), public)
+
+
+# ------------------------------------------------------------------------------------------- hosted: serve + think + compare
+
+class FakeProc:
+    """A `vllm serve` process that is up until it is terminated (or already ended, with `code`)."""
+
+    def __init__(self, code=None, hangs=False):
+        self.returncode, self.hangs, self.log = code, hangs, []
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.log.append("terminate")
+        if not self.hangs:
+            self.returncode = 0
+
+    def kill(self):
+        self.log.append("kill")
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        self.log.append("wait")
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired("vllm", timeout)
+        return self.returncode
+
+
+class HostedContract(unittest.TestCase):
+    def test_the_context_covers_the_prompt_and_the_whole_budget(self) -> None:
+        self.assertEqual(H.context_length(16384), 32768)
+        self.assertEqual(H.context_length(1), 32768)
+        self.assertEqual(H.context_length(40000), 40000 + H.CONTEXT_MARGIN)
+
+    def test_the_server_command_is_the_one_of_serve_py(self) -> None:
+        from unittest import mock
+        import tempfile
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(H.subprocess, "Popen") as popen:
+            server = H.start_vllm(Path(d), C.QWEN_FP8_MODEL, C.QWEN_FP8_REVISION, port=8123, max_tokens=40000, concurrency=64,
+                                  gpu_memory_utilization=0.8, tensor_parallel_size=2)
+            cmd = popen.call_args[0][0]
+            self.assertEqual(cmd, SV.vllm_command(C.QWEN_FP8_MODEL, C.QWEN_FP8_REVISION, port=8123, max_model_len=40000 + H.CONTEXT_MARGIN,
+                                                  max_num_seqs=64, gpu_memory_utilization=0.8, tensor_parallel_size=2))
+            self.assertEqual(popen.call_args.kwargs["stderr"], subprocess.STDOUT)
+            self.assertEqual(server.url, "http://127.0.0.1:8123/v1")
+            self.assertTrue((Path(d) / "vllm.log").is_file())
+            server.stop()
+            self.assertIsNone(server.log_file)
+
+    def test_few_requests_still_get_the_default_number_of_sequences(self) -> None:
+        from unittest import mock
+        import tempfile
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(H.subprocess, "Popen") as popen:
+            H.start_vllm(Path(d), C.QWEN_FP8_MODEL, None, concurrency=4).stop()
+            cmd = popen.call_args[0][0]
+            self.assertEqual(cmd[cmd.index("--max-num-seqs") + 1], "32")
+            self.assertNotIn("--revision", cmd)
+
+    def test_a_missing_vllm_binary_says_how_to_get_it(self) -> None:
+        from unittest import mock
+        import tempfile
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(H.subprocess, "Popen", side_effect=FileNotFoundError("vllm")):
+            with self.assertRaises(FileNotFoundError) as cm:
+                H.start_vllm(Path(d), C.QWEN_FP8_MODEL, None)
+        self.assertIn(f"pip install vllm=={SV.VLLM_VERSION}", str(cm.exception))
+
+    def test_stop_asks_nicely_then_kills_and_closes_the_log(self) -> None:
+        import io
+        quiet, stubborn, done = FakeProc(), FakeProc(hangs=True), FakeProc(code=0)
+        for proc in (quiet, stubborn, done):
+            log = io.StringIO()
+            H.Server(proc, "u", log_file=log).stop(timeout_s=0.01)
+            self.assertTrue(log.closed)
+        self.assertEqual(quiet.log, ["terminate", "wait"])
+        self.assertEqual(stubborn.log, ["terminate", "wait", "kill", "wait"])
+        self.assertEqual(done.log, [])
+        H.Server(None, "u").stop()                                    # an endpoint that was already up has no process
+
+    def test_alive_follows_the_process(self) -> None:
+        self.assertTrue(H.Server(None, "u").alive())
+        self.assertTrue(H.Server(FakeProc(), "u").alive())
+        self.assertFalse(H.Server(FakeProc(code=1), "u").alive())
+
+    def test_tail_is_the_last_lines_of_the_log(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "vllm.log"
+            path.write_text("\n".join(f"line {i}" for i in range(50)), encoding="utf-8")
+            self.assertEqual(H.Server(None, "u", path).tail(3), "line 47\nline 48\nline 49")
+            self.assertEqual(H.Server(None, "u", Path(d) / "missing.log").tail(), "")
+            self.assertEqual(H.Server(None, "u").tail(), "")
+
+    @staticmethod
+    def fake_clock():
+        now = [0.0]
+        return now, (lambda: now[0])
+
+    def test_wait_returns_true_as_soon_as_the_server_answers(self) -> None:
+        now, clock = self.fake_clock()
+        seen = []
+
+        def ready(url, timeout):
+            seen.append((url, timeout))
+            now[0] += timeout
+            return len(seen) == 3
+        self.assertTrue(H.wait_until_up(H.Server(FakeProc(), "http://h/v1"), 600, slice_s=15, ready=ready, clock=clock))
+        self.assertEqual(len(seen), 3)
+        self.assertEqual({u for u, _ in seen}, {"http://h/v1"})
+        self.assertTrue(all(t <= 15 for _, t in seen))
+
+    def test_wait_gives_up_when_the_process_ended_without_asking_the_endpoint(self) -> None:
+        _, clock = self.fake_clock()
+
+        def ready(url, timeout):
+            raise AssertionError("the endpoint must not be asked once the process is gone")
+        self.assertFalse(H.wait_until_up(H.Server(FakeProc(code=1), "u"), 600, ready=ready, clock=clock))
+
+    def test_wait_gives_up_at_the_deadline_and_never_waits_past_it(self) -> None:
+        now, clock = self.fake_clock()
+        seen = []
+
+        def ready(url, timeout):
+            seen.append(timeout)
+            now[0] += timeout
+            return False
+        self.assertFalse(H.wait_until_up(H.Server(None, "u"), 40, slice_s=15, ready=ready, clock=clock))
+        self.assertEqual(seen, [15, 15, 10])
+
+    def test_a_server_that_dies_midway_stops_the_wait(self) -> None:
+        now, clock = self.fake_clock()
+        proc, seen = FakeProc(), []
+
+        def ready(url, timeout):
+            seen.append(timeout)
+            now[0] += timeout
+            proc.returncode = 1 if len(seen) == 2 else None
+            return False
+        self.assertFalse(H.wait_until_up(H.Server(proc, "u"), 600, slice_s=15, ready=ready, clock=clock))
+        self.assertEqual(len(seen), 2)
+
+    def test_the_parser_defaults_are_the_registered_protocol(self) -> None:
+        args = H.build_parser().parse_args(["--pack", "p", "--work", "w"])
+        self.assertEqual((args.model, args.max_tokens, args.concurrency, args.port), (C.QWEN_FP8_MODEL, T.DEFAULT_MAX_TOKENS, 16, SV.DEFAULT_PORT))
+        self.assertEqual(Path(args.manifest), ROOT / "decide" / "think" / "gt-sample-manifest.json")
+        self.assertTrue(Path(args.manifest).is_file())
+        self.assertIsNone(args.limit)
+
+    def test_a_missing_pack_is_a_message_and_exit_2_not_a_traceback(self) -> None:
+        import io
+        import tempfile
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(err):
+            self.assertEqual(H.main(["--pack", str(Path(d) / "nope.jsonl.gz"), "--work", d]), 2)
+        self.assertIn("nope.jsonl.gz", err.getvalue())
+
+    def test_the_exit_codes_are_the_documented_ones(self) -> None:
+        self.assertEqual(H.EXIT_NO_SERVER, 4)
+        for code in ("0 done", "2 the thinker or the pack refused", "3 the thinker", "4 the server did not come up"):
+            self.assertIn(code, H.__doc__)
+
+    def test_modal_pins_the_vllm_of_the_repository(self) -> None:
+        text = (ROOT / "decide" / "think" / "modal_app.py").read_text(encoding="utf-8")
+        self.assertIn(f'VLLM_PIN = "vllm=={SV.VLLM_VERSION}"', text)
+        self.assertEqual(re.findall(r"modal==[0-9][0-9.]*", text), ["modal==1.6.2"], "one exact client version, the one this app was read against")
+        self.assertEqual(re.findall(r"\bimport modal\b", (ROOT / "decide" / "think" / "hosted.py").read_text(encoding="utf-8")), [])
 
 
 if __name__ == "__main__":

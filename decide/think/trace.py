@@ -4,8 +4,17 @@ The hybrid of ADR 0004 ("pensar sob demanda") has the thinker reason about a que
 read state + reasoning to return its probabilities.  This module is the one place that writes and reads
 the block, so the training side (decide/data) and the inference side (the gate) cannot drift apart.
 
-Layout (a PROPOSAL: decide/data/SCHEMA.md, commit 8f12f94, has no such block yet, and ADR 0004 item 6
-says the format will live there; when it does, this module is the thing to change or to check against):
+The format is decided in section 10 of decide/data/SCHEMA.md (issue #69; it was on the branch decide/69-treino,
+not on main, when this was checked): an optional top-level `reasoning` string of the request, shown as a part headed
+`Raciocínio:` between the state and the first question, and a folded form for an engine that only knows `state`,
+`describe(state) + "\n\nRaciocínio:\n" + reasoning` (`fold_reasoning` of decide/train/protocol.py there).  This module
+is the thinker side of that contract: it turns a row of results.jsonl into the text of `reasoning` and writes and
+reads the folded form.  Where it and SCHEMA.md differ, SCHEMA.md wins and this module changes.  What differs, found
+by READING fold_reasoning (not by running it): the trailing whitespace of the state is removed here, marker lines
+inside the trace are neutralized, and a row cut by the thinker's budget is refused unless `allow_truncated` is set
+(SCHEMA.md keeps a `length` trace, so set it when writing traces for the corpus).
+
+Folded layout:
 
     <state, trailing whitespace removed>
     <one empty line>

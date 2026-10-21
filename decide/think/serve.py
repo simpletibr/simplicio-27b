@@ -89,7 +89,7 @@ def wait_ready(url: str, timeout_s: float, *, api_key: Optional[str] = None, int
         sleep(interval_s)
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m decide.think.serve", description=__doc__.split("\n\n")[0])
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--print", action="store_true", help="print the command")
@@ -111,7 +111,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--enforce-eager", action="store_true")
     ap.add_argument("--download-dir")
     ap.add_argument("extra", nargs="*", help="more vllm flags, after --")
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
     if args.wait_url:
         ok = wait_ready(args.wait_url, args.timeout, api_key=os.environ.get("VLLM_API_KEY"))
         print(f"[serve] {args.wait_url} {'answers' if ok else 'did not answer in time'}")
