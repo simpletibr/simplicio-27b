@@ -1,0 +1,6 @@
+# Versions decide/rental and its tests ran with (2026-10-21, CPU, Python 3.13).  The orchestrator only needs these three; the
+# trainer's own packages are in decide/train/requirements.txt and the kit's in notebooks/decide/requirements.txt (Squad A).
+# huggingface_hub is only for the real Hub (--execute without --hub local:<folder>).  Not checked on a rented GPU machine (UNVERIFIED).
+pyarrow==26.0.0
+PyYAML==6.0.3
+huggingface_hub==1.33.0
