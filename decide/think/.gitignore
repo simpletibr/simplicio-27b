@@ -1,0 +1,8 @@
+# The GT pack and the thinker's results hold benchmark text (GPQA and BBH ask not to publish it in plain text) and the
+# model's reasoning about it.  They never go into git (README, "Amostra e pacote").  The manifest, gt-sample-manifest.json,
+# has ids and hashes only and stays tracked.
+*.jsonl
+*.jsonl.gz
+pack*/
+work/
+report/
