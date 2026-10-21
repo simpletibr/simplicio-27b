@@ -163,7 +163,9 @@ def fold_reasoning(request: Mapping[str, Any], *, max_chars: int = REASONING_MAX
     """A copy of the request without the ``reasoning`` key and with the reasoning appended to the state text.
 
     The one definition of the ``Raciocínio:`` block (decide/data/SCHEMA.md, section 10): the state loses the whitespace at its end,
-    then comes one blank line, the label line and the reasoning after :func:`_clean_reasoning` and clipped to ``max_chars``.  A state
+    then comes one blank line, the label line and the reasoning after :func:`_clean_reasoning`, clipped to ``max_chars`` and cleaned again
+    (the cut can leave the label alone on a line of the tail, which is then neutralized like any other; the block can be one character
+    longer than ``max_chars`` when that happens).  A state
     that already has a label line is refused (:class:`RequestError`), never overwritten.  :func:`messages` builds its prompt from
     this copy, and an engine that only knows ``state`` calls this before it sends the request; the golden cases both sides must
     reproduce are in ``tests/fold_reasoning_cases.json``.  A request without ``reasoning`` is returned as it is (a copy).
@@ -177,7 +179,7 @@ def fold_reasoning(request: Mapping[str, Any], *, max_chars: int = REASONING_MAX
     state = describe(folded["state"])
     if has_reasoning_block(state):
         raise RequestError(f"the state already holds a {REASONING_LABEL} block, so the request cannot also carry a 'reasoning'")
-    body = _clip_reasoning(_clean_reasoning(reasoning), max_chars)
+    body = _clean_reasoning(_clip_reasoning(_clean_reasoning(reasoning), max_chars))          # a cut in the middle of a line can leave the label alone
     if not body.strip():
         raise RequestError("'reasoning' is empty after cleaning and clipping")
     head = state.rstrip()
