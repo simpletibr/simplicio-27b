@@ -4,15 +4,16 @@ The hybrid of ADR 0004 ("pensar sob demanda") has the thinker reason about a que
 read state + reasoning to return its probabilities.  This module is the one place that writes and reads
 the block, so the training side (decide/data) and the inference side (the gate) cannot drift apart.
 
-The format is decided in section 10 of decide/data/SCHEMA.md (issue #69; it was on the branch decide/69-treino,
-not on main, when this was checked): an optional top-level `reasoning` string of the request, shown as a part headed
-`Raciocínio:` between the state and the first question, and a folded form for an engine that only knows `state`,
-`describe(state) + "\n\nRaciocínio:\n" + reasoning` (`fold_reasoning` of decide/train/protocol.py there).  This module
-is the thinker side of that contract: it turns a row of results.jsonl into the text of `reasoning` and writes and
-reads the folded form.  Where it and SCHEMA.md differ, SCHEMA.md wins and this module changes.  What differs, found
-by READING fold_reasoning (not by running it): the trailing whitespace of the state is removed here, marker lines
-inside the trace are neutralized, and a row cut by the thinker's budget is refused unless `allow_truncated` is set
-(SCHEMA.md keeps a `length` trace, so set it when writing traces for the corpus).
+The format is decided in section 10 of decide/data/SCHEMA.md (issue #69): an optional top-level `reasoning` string of the
+request, shown as a part headed `Raciocínio:` between the state and the first question, and a folded form for an engine that
+only knows `state`, `describe(state).rstrip() + "\n\nRaciocínio:\n" + reasoning` (`fold_reasoning` of decide/train/protocol.py).
+This module is the thinker side of that contract: it turns a row of results.jsonl into the text of `reasoning` and writes and
+reads the folded form.  The two sides must give the same folded state, and the golden cases both reproduce are in
+tests/fold_reasoning_cases.json (a test of this repository reads them, and fails if one diverges).  This module repeats the rule
+instead of importing decide/train, which is not standard library only and belongs to another squad; the golden file is the lock.
+Where it and SCHEMA.md differ, SCHEMA.md wins and this module changes.  What this module adds: a row cut by the thinker's budget
+is refused unless `allow_truncated` is set (SCHEMA.md keeps a `length` trace, so set it when writing traces for the corpus).
+A state that is not a string (a mapping, a list) is written as JSON, like `describe` there.
 
 Folded layout:
 
@@ -70,12 +71,17 @@ def _refuse_eval_data(source_id: Optional[str]) -> None:
                                   "a training corpus (ADR 0004, item 6)")
 
 
+def describe_state(state: Any) -> str:
+    """The text of a state: a string as it is, anything else as JSON (`describe` of decide/train/protocol.py)."""
+    return state if isinstance(state, str) else json.dumps(state, ensure_ascii=False)
+
+
 def _is_marker(line: str) -> bool:
     return unicodedata.normalize("NFC", line).strip() == MARKER
 
 
-def has_trace(state: str) -> bool:
-    return any(_is_marker(line) for line in state.split("\n"))
+def has_trace(state: Any) -> bool:
+    return any(_is_marker(line) for line in describe_state(state).split("\n"))
 
 
 def _clean(text: Optional[str]) -> str:
@@ -123,7 +129,7 @@ def render_trace(reasoning: Optional[str] = None, final: Optional[str] = None, *
     return clip("\n\n".join(p for p in parts if p), max_chars)
 
 
-def attach_trace(state: str, trace: Optional[str], *, source_id: Optional[str] = None) -> str:
+def attach_trace(state: Any, trace: Optional[str], *, source_id: Optional[str] = None) -> str:
     """`state` followed by the block.  An empty trace adds nothing.  Refuses a state that already has a block, and, when the
     request is named by `source_id`, one of the gate's sample (evaluation data)."""
     body = _clean(trace)
@@ -132,7 +138,25 @@ def attach_trace(state: str, trace: Optional[str], *, source_id: Optional[str] =
     _refuse_eval_data(source_id)
     if has_trace(state):
         raise TraceError("the state already has a Raciocínio: block; split_trace() it first")
-    head = state.rstrip()
+    head = describe_state(state).rstrip()
+    return (head + "\n\n" if head else "") + MARKER + "\n" + body
+
+
+def fold_reasoning(state: Any, reasoning: Any, *, max_chars: int = DEFAULT_MAX_CHARS) -> str:
+    """The folded state of SCHEMA.md section 10: `fold_reasoning` of decide/train/protocol.py, for a state and a reasoning text.
+
+    The state loses the whitespace at its end, then come one blank line (none for an empty state), the label line and the reasoning
+    after `_clean`, clipped to `max_chars`.  A state that already has a label line, a `reasoning` that is not a non-empty string
+    and one that is empty after cleaning and clipping are refused, never repaired.
+    """
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        raise TraceError("'reasoning' must be a non-empty string")
+    if has_trace(state):
+        raise TraceError("the state already holds a Raciocínio: block, so it cannot also take a reasoning")
+    body = clip(_clean(reasoning), max_chars)
+    if not body.strip():
+        raise TraceError("'reasoning' is empty after cleaning and clipping")
+    head = describe_state(state).rstrip()
     return (head + "\n\n" if head else "") + MARKER + "\n" + body
 
 

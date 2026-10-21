@@ -28,6 +28,7 @@ import urllib.request
 from typing import Callable, List, Optional, Sequence
 
 from . import common as C
+from .thinker import open_no_redirect
 
 VLLM_VERSION = "0.31.0"                      # must equal the pin of the repository (scripts/check_vllm_args.py)
 DEFAULT_PORT = 8000
@@ -70,9 +71,12 @@ def base_url(host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> str:
 
 
 def wait_ready(url: str, timeout_s: float, *, api_key: Optional[str] = None, interval_s: float = 5.0,
-               opener: Callable = urllib.request.urlopen, sleep: Callable[[float], None] = time.sleep,
+               opener: Callable = open_no_redirect, sleep: Callable[[float], None] = time.sleep,
                clock: Callable[[], float] = time.monotonic) -> bool:
-    """Poll GET {url}/models until the server answers (any HTTP answer except a 5xx counts: 401 means up, key needed)."""
+    """Poll GET {url}/models until the server answers (any HTTP answer except a 5xx counts: 401 means up, key needed, and so does a 3xx).
+
+    The default opener never follows a redirect: the poll carries the key, and urllib would resend it to whatever host the answer names.
+    """
     deadline = clock() + timeout_s
     req = urllib.request.Request(url.rstrip("/") + "/models", headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
     while True:
