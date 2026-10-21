@@ -240,7 +240,7 @@ class PolicyContract(unittest.TestCase):
 
     def test_denylist_wins_over_allow(self) -> None:
         for hf_id in ("tasksource/bigbench", "suzgunmirac/BIG-Bench-Hard", "Idavidrein/gpqa", "cais/hle",
-                      "facebook/anli", "ParticleMedia/RAGTruth"):
+                      "facebook/anli", "ParticleMedia/RAGTruth", "Rowan/hellaswag"):
             src = SRC.Source(key="x", hf_id=hf_id, license="mit", decision="allow", evidence="e", adapter="mcq")
             with self.assertRaises(SRC.PolicyError, msg=hf_id):
                 SRC.check_policy({"x": src})

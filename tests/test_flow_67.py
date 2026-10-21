@@ -7,12 +7,15 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from decide_b_support import (
     ROOT, board_index, choice_request, kit_row, lorem, needs_pyarrow, needs_yaml, write_jsonl,
@@ -621,8 +624,111 @@ class RegistryQuality(unittest.TestCase):
         held_out = [k for k, s in self.registry.items() if SRC.usable(s, role="heldout")]
         self.assertTrue(trainable and held_out)
         self.assertFalse(set(trainable) & set(held_out))
-        for denied in ("bbh", "tasksource_bigbench", "gpqa", "hle", "anli", "ragtruth"):
+        for denied in ("bbh", "tasksource_bigbench", "gpqa", "hle", "anli", "ragtruth", "hellaswag"):
             self.assertEqual(self.registry[denied].decision, "deny", denied)
+
+    def test_hellaswag_is_denied_because_of_its_wikihow_content(self) -> None:
+        # review of PR #74: SCHEMA section 8 sends any NC/ND source to the denylist "without exception"; HellaSwag's
+        # contexts come from WikiHow (CC BY-NC-SA) and ActivityNet, whatever the dataset card says
+        hellaswag = self.registry["hellaswag"]
+        self.assertEqual(hellaswag.decision, "deny")
+        self.assertIn("WikiHow", hellaswag.evidence + hellaswag.notes)
+        self.assertIsNotNone(SRC.denylist_reason(hellaswag))
+        self.assertFalse(SRC.usable(hellaswag, include_review=True))
+
+    # sources with no parquet on main: the Hub only has the auto-converted branch (refs/convert/parquet)
+    CONVERT_BRANCH = ("wanli", "twitter_fin_sentiment", "ethics_commonsense", "cosmos_qa")
+
+    def test_every_usable_source_is_pinned_to_the_commit_its_license_was_checked_at(self) -> None:
+        # review of PR #74: no source set `revision`, so the build downloaded whatever `main` was that day
+        sha = re.compile(r"^[0-9a-f]{40}$")
+        for key, src in self.registry.items():
+            if src.decision == "deny":
+                continue
+            self.assertRegex(src.revision or "", sha, f"{key}: set `revision:` to the full commit sha")
+            self.assertIn(src.revision[:8], src.evidence, f"{key}: the evidence must cite the pinned revision")
+            if key in self.CONVERT_BRANCH:
+                self.assertRegex(src.convert_revision or "", sha, f"{key}: its parquet files live on refs/convert/parquet; pin that commit too")
+            else:
+                self.assertIsNone(src.convert_revision, key)
+
+    def test_the_review_sources_are_pinned_too(self) -> None:
+        for key in ("arc_easy", "arc_challenge", "winogrande"):
+            self.assertRegex(self.registry[key].revision or "", r"^[0-9a-f]{40}$", key)
+
+
+@needs_pyarrow
+class HubReaderPins(unittest.TestCase):
+    """HubReader never follows a moving branch: it lists and downloads at the commit sources.yaml pins."""
+
+    MAIN, CONVERT = "a" * 40, "b" * 40
+
+    def setUp(self) -> None:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.local = Path(self.tmp.name) / "train.parquet"
+        pq.write_table(pa.table({"text": ["a", "b"], "label": [0, 1]}), self.local)
+        self.calls: list = []
+        self.listing = {self.MAIN: ["README.md", "data/train-00000-of-00001.parquet"], self.CONVERT: ["default/train/0000.parquet"],
+                        None: ["README.md", "data/train-00000-of-00001.parquet"], "refs/convert/parquet": ["default/train/0000.parquet"]}
+        outer = self
+
+        class HfApi:
+            def __init__(self, token=None) -> None:
+                pass
+
+            def list_repo_files(self, repo_id, repo_type=None, revision=None):
+                outer.calls.append(("list", repo_id, revision))
+                return list(outer.listing[revision]) if revision in outer.listing else []
+
+        def hf_hub_download(repo_id, filename, repo_type=None, revision=None, token=None, cache_dir=None):
+            outer.calls.append(("get", repo_id, filename, revision))
+            return str(outer.local)
+
+        fake = types.ModuleType("huggingface_hub")
+        fake.HfApi, fake.hf_hub_download = HfApi, hf_hub_download
+        patcher = mock.patch.dict(sys.modules, {"huggingface_hub": fake})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def source(self, **kw) -> SRC.Source:
+        return SRC.Source(key="t", hf_id="o/d", license="mit", decision="allow", evidence="fixture", adapter="classification", **kw)
+
+    def test_a_pinned_source_is_listed_and_downloaded_at_its_revision(self) -> None:
+        ds = R.HubReader().open(self.source(revision=self.MAIN))
+        self.assertEqual([dict(r) for r in ds.rows()], [{"text": "a", "label": 0}, {"text": "b", "label": 1}])
+        self.assertEqual(self.calls, [("list", "o/d", self.MAIN), ("get", "o/d", "data/train-00000-of-00001.parquet", self.MAIN)])
+
+    def test_the_convert_revision_is_used_for_sources_without_parquet_on_main(self) -> None:
+        R.HubReader().open(self.source(revision=self.MAIN, convert_revision=self.CONVERT))
+        self.assertEqual(self.calls, [("list", "o/d", self.CONVERT), ("get", "o/d", "default/train/0000.parquet", self.CONVERT)])
+
+    def test_a_source_without_a_pin_is_refused_before_any_network_call(self) -> None:
+        for kw in ({}, {"revision": "main"}, {"revision": "a" * 39}, {"revision": "A" * 40}):
+            with self.assertRaises(ValueError, msg=kw) as caught:
+                R.HubReader().open(self.source(**kw))
+            self.assertIn("revision", str(caught.exception))
+        self.assertEqual(self.calls, [])
+
+    def test_a_pinned_revision_without_parquet_is_an_error_not_a_fallback(self) -> None:
+        self.listing[self.MAIN] = ["README.md"]
+        with self.assertRaises(FileNotFoundError):
+            R.HubReader().open(self.source(revision=self.MAIN))
+        self.assertEqual(self.calls, [("list", "o/d", self.MAIN)], "no silent move to refs/convert/parquet")
+
+    def test_hub_latest_is_the_explicit_way_to_follow_main(self) -> None:
+        ds = B.make_reader("hub-latest").open(self.source())
+        self.assertEqual(len(list(ds.rows())), 2)
+        self.assertEqual(self.calls[0], ("list", "o/d", None))
+        self.listing[None] = ["README.md"]
+        self.calls.clear()
+        R.HubReader(allow_unpinned=True).open(self.source())
+        self.assertEqual(self.calls[:2], [("list", "o/d", None), ("list", "o/d", "refs/convert/parquet")])
+        with self.assertRaises(ValueError):
+            B.make_reader("hub").open(self.source())
 
 
 class CliSmoke(unittest.TestCase):
