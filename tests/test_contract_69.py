@@ -428,12 +428,15 @@ class ScheduleContract(unittest.TestCase):
     def test_plan_counts_steps(self) -> None:
         plan = SC.plan_steps(rows=1000, effective_batch=256, epochs=2)
         self.assertEqual((plan.total_steps, plan.per_epoch), (8, 4))
-        self.assertEqual(plan.batch_indices(0, seed=1)[0], SC.epoch_order(1000, seed=1, epoch=0)[:256])
-        last = plan.batch_indices(3, seed=1)
-        self.assertEqual(len(last), 1000 - 3 * 256, "the last batch of an epoch is the remainder")
-        self.assertEqual(plan.batch_indices(4, seed=1)[0], SC.epoch_order(1000, seed=1, epoch=1)[:256])
+        self.assertEqual(plan.batch_indices(0, seed=1), SC.epoch_order(1000, seed=1, epoch=0)[:256])
+        self.assertEqual(plan.batch_indices(3, seed=1), SC.epoch_order(1000, seed=1, epoch=0)[768:], "the last batch of an epoch is the remainder")
+        self.assertEqual(len(plan.batch_indices(3, seed=1)), 1000 - 3 * 256)
+        self.assertEqual(plan.batch_indices(4, seed=1), SC.epoch_order(1000, seed=1, epoch=1)[:256])
         with self.assertRaises(IndexError):
             plan.batch_indices(8, seed=1)
+        self.assertEqual(SC.plan_steps(rows=512, effective_batch=256, epochs=1).total_steps, 2)
+        with self.assertRaises(ValueError):
+            SC.plan_steps(rows=0, effective_batch=256, epochs=1)
 
 
 @needs_torch
