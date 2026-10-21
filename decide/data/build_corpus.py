@@ -117,7 +117,8 @@ def build_corpus(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: An
         rows, stats = convert_source(source, reader.open(source), seed=seed, cap=cap)
         parts = _write_rows(out, source.key, rows, dev_percent, shard_rows)
         report[source.key] = {"config_hash": cfg, "rows": len(rows), "parts": parts, "stats": stats, "license": source.license,
-                              "decision": source.decision, "revision": source.revision, "kind": source.kind}
+                              "decision": source.decision, "revision": source.revision, "convert_revision": source.convert_revision,
+                              "kind": source.kind}
         S.write_manifest(_done_path(out, source.key), report[source.key])
     for name, rows in sorted((extra_rows or {}).items()):
         cfg = _config_hash(None, {"seed": seed, "dev_percent": dev_percent, "extra": S.digest(S.canonical_json(
@@ -138,7 +139,8 @@ def build_corpus(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: An
         "schema_version": S.SCHEMA_VERSION, "kind": "corpus", "seed": seed, "dev_percent": dev_percent,
         "include_review": include_review, "caps_scale": caps_scale, "shard_rows": shard_rows,
         "rows": sum(r["rows"] for r in report.values()),
-        "sources": {k: {kk: v[kk] for kk in ("rows", "license", "decision", "revision", "kind", "stats")} for k, v in sorted(report.items())},
+        "sources": {k: {kk: v.get(kk) for kk in ("rows", "license", "decision", "revision", "convert_revision", "kind", "stats")}
+                    for k, v in sorted(report.items())},
         "parts": parts,
         "resumed": sorted(resumed),
         "removed_stale": removed,
@@ -150,9 +152,11 @@ def build_corpus(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: An
 def make_reader(spec: str) -> Any:
     if spec == "hub":
         return HubReader()
+    if spec == "hub-latest":
+        return HubReader(allow_unpinned=True)
     if spec.startswith("local:"):
         return LocalReader(Path(spec[len("local:"):]))
-    raise ValueError("--reader must be 'hub' or 'local:<dir>'")
+    raise ValueError("--reader must be 'hub' (pinned revisions), 'hub-latest' (follow main, to explore) or 'local:<dir>'")
 
 
 def inspect(source: SRC.Source, reader: Any, rows: int = 2) -> None:
@@ -174,7 +178,7 @@ def inspect(source: SRC.Source, reader: Any, rows: int = 2) -> None:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", help="output directory (parquet parts + manifest.json)")
-    ap.add_argument("--reader", default="hub", help="'hub' or 'local:<dir>'")
+    ap.add_argument("--reader", default="hub", help="'hub' (the revisions pinned in sources.yaml), 'hub-latest' (follow main) or 'local:<dir>'")
     ap.add_argument("--sources", type=Path, default=None, help="alternative sources.yaml")
     ap.add_argument("--include-review", action="store_true", help="also use sources marked 'review' (your call, see SCHEMA.md)")
     ap.add_argument("--only", default=None, help="comma-separated source keys")

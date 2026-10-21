@@ -1,8 +1,9 @@
 """Dataset readers: local files (tests, offline, your own data) and the Hugging Face Hub (parquet files).
 
 A reader's ``open(source)`` returns an object with ``features`` and a re-iterable ``rows()``.
-The Hub reader needs ``huggingface_hub`` and ``pyarrow`` and the network; it is not exercised by the unit tests
-(it was run by hand, see the PR).  It never executes code from a dataset repository: it only downloads parquet.
+The Hub reader needs ``huggingface_hub`` and ``pyarrow`` and the network; the unit tests exercise it with a fake
+``huggingface_hub`` (the real one was run by hand, see the PR).  It never executes code from a dataset repository: it
+only downloads parquet, at a pinned commit.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 
 from . import schema as S
-from .sources import Source
+from .sources import REVISION, Source
 
 CONVERT_REVISION = "refs/convert/parquet"
 
@@ -138,23 +139,34 @@ class UrlReader:
 
 
 class HubReader:
-    """Downloads the parquet files of a split from the Hub (main, or ``refs/convert/parquet`` for script repos)."""
+    """Downloads the parquet files of a split from the Hub, at the commit that ``sources.yaml`` pins.
 
-    def __init__(self, token: Optional[str] = None, cache_dir: Optional[str] = None) -> None:
-        self.token, self.cache_dir = token, cache_dir
+    ``source.convert_revision`` (the auto-converted ``refs/convert/parquet`` commit, for repositories that only ship a
+    loading script or no parquet on main) wins over ``source.revision``.  A source with no 40-hex pin is refused
+    before any network call: a build must not download whatever a branch points at that day, and the license was
+    checked at one commit.  ``allow_unpinned`` (``--reader hub-latest``) follows ``main`` and falls back to the
+    convert branch, only to explore a source that is not in the registry yet.
+    """
+
+    def __init__(self, token: Optional[str] = None, cache_dir: Optional[str] = None, *, allow_unpinned: bool = False) -> None:
+        self.token, self.cache_dir, self.allow_unpinned = token, cache_dir, allow_unpinned
 
     def open(self, source: Source) -> ParquetDataset | ListDataset:
         if source.files:
             return UrlReader(self.cache_dir).open(source)
+        pinned = source.convert_revision or source.revision
+        if not REVISION.match(pinned or "") and not self.allow_unpinned:
+            raise ValueError(f"{source.key}: `revision` must be the full 40-hex commit sha of {source.hf_id} (got {pinned!r}); pin it in sources.yaml "
+                             "(or use --reader hub-latest to explore a source that is not registered yet)")
         from huggingface_hub import HfApi, hf_hub_download
 
         api = HfApi(token=self.token)
-        revision = source.revision
+        revision = pinned if REVISION.match(pinned or "") else source.revision
         files = select_parquet_files(api.list_repo_files(source.hf_id, repo_type="dataset", revision=revision), source.config, source.split)
-        if not files:
+        if not files and self.allow_unpinned:
             revision = CONVERT_REVISION
             files = select_parquet_files(api.list_repo_files(source.hf_id, repo_type="dataset", revision=revision), source.config, source.split)
         if not files:
-            raise FileNotFoundError(f"{source.hf_id}: no parquet files for config={source.config!r} split={source.split!r}")
+            raise FileNotFoundError(f"{source.hf_id}@{revision}: no parquet files for config={source.config!r} split={source.split!r}")
         local = [Path(hf_hub_download(source.hf_id, f, repo_type="dataset", revision=revision, token=self.token, cache_dir=self.cache_dir)) for f in files]
         return ParquetDataset(local, parquet_features(local[0]))

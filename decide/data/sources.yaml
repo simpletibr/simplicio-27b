@@ -2,13 +2,20 @@
 #
 # Negar por padrao. Uma fonte so treina com decision: allow + licenca em LICENSE_ALLOW + evidence.
 # Conferido em 2026-10-21 na API do Hugging Face (cardData.license e sha da revisao). O card pode estar errado
-# ou nao cobrir o conteudo de origem: por isso HellaSwag (WikiHow), ARC/BoolQ (CC BY-SA) e as fontes sem metadado
-# de licenca ficam em review. review so entra com --include-review, decisao do dono.
+# ou nao cobrir o conteudo de origem: por isso ARC (CC BY-SA) e as fontes sem metadado de licenca ficam em review,
+# e o HellaSwag (contextos do WikiHow, CC BY-NC-SA, e do ActivityNet) fica em deny. review so entra com
+# --include-review, decisao do dono.
+#
+# revision: sha completo (40 hex) do commit do repositorio em que a licenca e os campos foram conferidos. O leitor do
+# Hub baixa SO nesse commit (`--reader hub-latest` e o modo explicito para explorar uma fonte nova). Repositorios sem
+# parquet na main (WANLI, twitter-financial-news-sentiment, hendrycks/ethics, cosmos_qa) leem os parquet automaticos
+# da branch refs/convert/parquet: convert_revision fixa esse commit tambem. Se um sha sumir do Hub o build falha
+# (nao cai para a main): refaca a conferencia de licenca e atualize os dois campos juntos.
 #
 # role: heldout = nunca treina; alimenta o privado caseiro (proxy_private.py).
-# fields_verified: true = `python -m decide.data.build_corpus --inspect <chave> --reader hub` rodou em 2026-10-21 e as
+# fields_verified: true = `python -m decide.data.build_corpus --inspect <chave> --reader hub-latest` rodou em 2026-10-21 e as
 # duas primeiras linhas converteram com o ouro certo (conferido a olho em clinc_oos, go_emotions, twitter_fin_sentiment,
-# qasc, hellaswag, winogrande, arc_easy, gsm8k, medmcqa, mmlu_validation); false = nao conferido, rode o inspect antes.
+# qasc, winogrande, arc_easy, gsm8k, medmcqa, mmlu_validation); false = nao conferido, rode o inspect antes.
 
 sources:
   # ------------------------------------------------------------------ treino (allow)
@@ -17,6 +24,7 @@ sources:
     config: plus
     split: train
     license: cc-by-3.0
+    revision: 155b9c710419136e17307b80d0a13e68cd46b4ec
     decision: allow
     evidence: "API do HF, cardData.license=cc-by-3.0, sha 155b9c71 (2026-10-21); kit docs/suite.md: CLINC150 CC BY 3.0 (atribuicao no card)"
     adapter: classification
@@ -27,6 +35,7 @@ sources:
     hf_id: PolyAI/banking77
     split: train
     license: cc-by-4.0
+    revision: 90d4e2ee5521c04fc1488f065b8b083658768c57
     decision: allow
     evidence: "API do HF, cardData.license=cc-by-4.0, sha 90d4e2ee (2026-10-21); atribuicao no card"
     adapter: classification
@@ -43,6 +52,7 @@ sources:
     config: main
     split: train
     license: mit
+    revision: 740312add88f781978c0658806c59bc2815b9866
     decision: allow
     evidence: "API do HF, cardData.license=mit, sha 740312ad (2026-10-21)"
     adapter: gsm8k
@@ -55,6 +65,7 @@ sources:
     config: all
     split: validation
     license: mit
+    revision: c30699e8356da336a370243923dbaf21066bb9fe
     decision: allow
     evidence: "API do HF, cardData.license=mit, sha c30699e8 (2026-10-21); so validation (1531 linhas); auxiliary_train NAO entra: mistura RACE, ARC e outras licencas"
     adapter: mcq
@@ -65,6 +76,7 @@ sources:
     hf_id: openlifescienceai/medmcqa
     split: train
     license: apache-2.0
+    revision: 91c6572c454088bf71b679ad90aa8dffcd0d5868
     decision: allow
     evidence: "API do HF, cardData.license=apache-2.0, sha 91c6572c (2026-10-21)"
     adapter: mcq
@@ -75,6 +87,8 @@ sources:
     hf_id: alisawuffles/WANLI
     split: train
     license: cc-by-4.0
+    revision: 61c95318fd71c55b6ba355d76253254615f387ec
+    convert_revision: 397c41b3d2c0225b0f3d6029e1a0e3ae28fc29f8
     decision: allow
     evidence: "API do HF, cardData.license=cc-by-4.0, sha 61c95318 (2026-10-21); atribuicao no card"
     adapter: nli
@@ -86,6 +100,7 @@ sources:
     hf_id: google/civil_comments
     split: train
     license: cc0-1.0
+    revision: f2970eb3a55777454c94069077cc8d9b5866312d
     decision: allow
     evidence: "API do HF, cardData.license=cc0-1.0, sha f2970eb3 (2026-10-21)"
     adapter: binary
@@ -98,6 +113,8 @@ sources:
     hf_id: zeroshot/twitter-financial-news-sentiment
     split: train
     license: mit
+    revision: ccbe24de388e287beb92dd393a335c376b350ac3
+    convert_revision: 3e6bbcfb0c378a3017cea4ba198a4ce2594cd4c1
     decision: allow
     role: heldout
     evidence: "API do HF, cardData.license=mit, sha ccbe24de (2026-10-21); card: LABEL_0 Bearish, LABEL_1 Bullish, LABEL_2 Neutral"
@@ -110,6 +127,7 @@ sources:
     config: simplified
     split: train
     license: apache-2.0
+    revision: add492243ff905527e67aeb8b80c082af02207c3
     decision: allow
     role: heldout
     evidence: "API do HF, cardData.license=apache-2.0, sha add49224 (2026-10-21)"
@@ -122,6 +140,8 @@ sources:
     config: commonsense
     split: train
     license: mit
+    revision: b8b47c589f8bee77175b8648e5497278b68da48a
+    convert_revision: 6deab74c03e30f13540266e373ce31f8466169f8
     decision: allow
     role: heldout
     evidence: "API do HF, cardData.license=mit, sha b8b47c58 (2026-10-21)"
@@ -132,6 +152,7 @@ sources:
     hf_id: allenai/qasc
     split: train
     license: cc-by-4.0
+    revision: a34ba204eb9a33b919c10cc08f4f1c8dae5ec070
     decision: allow
     role: heldout
     evidence: "API do HF, cardData.license=cc-by-4.0, sha a34ba204 (2026-10-21)"
@@ -142,6 +163,8 @@ sources:
     hf_id: allenai/cosmos_qa
     split: train
     license: cc-by-4.0
+    revision: 28d9d5e2aae025e73e11177891a88dba51190013
+    convert_revision: ed50fe83db62b355759053b1cd5eef344ee371e0
     decision: allow
     role: heldout
     evidence: "API do HF, cardData.license=cc-by-4.0, sha 28d9d5e2 (2026-10-21); card: licenca CC BY 4.0 informada por e-mail da autora"
@@ -150,23 +173,14 @@ sources:
     fields_verified: true
 
   # ------------------------------------------------------------------ review (so com --include-review)
-  hellaswag:
-    hf_id: Rowan/hellaswag
-    split: train
-    license: mit
-    decision: review
-    evidence: "API do HF 2026-10-21: sem licenca no metadado do card; o texto do README diz MIT"
-    adapter: mcq
-    args: {question: ctx, choices: endings, answer: label, answer_kind: index}
-    fields_verified: true
-    notes: "conteudo de origem inclui WikiHow (CC BY-NC-SA) e ActivityNet; a licenca do dataset pode nao cobrir isso"
   arc_easy:
     hf_id: allenai/ai2_arc
     config: ARC-Easy
     split: train
     license: cc-by-sa-4.0
+    revision: 210d026faf9955653af8916fad021475a3f00453
     decision: review
-    evidence: "API do HF, cardData.license=cc-by-sa-4.0 (2026-10-21); share-alike"
+    evidence: "API do HF, cardData.license=cc-by-sa-4.0, sha 210d026f (2026-10-21); share-alike"
     adapter: mcq
     args: {question: question, choices: choices, answer: answerKey, answer_kind: letter, id: id}
     fields_verified: true
@@ -175,8 +189,9 @@ sources:
     config: ARC-Challenge
     split: train
     license: cc-by-sa-4.0
+    revision: 210d026faf9955653af8916fad021475a3f00453
     decision: review
-    evidence: "API do HF, cardData.license=cc-by-sa-4.0 (2026-10-21); share-alike"
+    evidence: "API do HF, cardData.license=cc-by-sa-4.0, sha 210d026f (2026-10-21); share-alike"
     adapter: mcq
     args: {question: question, choices: choices, answer: answerKey, answer_kind: letter, id: id}
     fields_verified: true
@@ -185,8 +200,9 @@ sources:
     config: winogrande_xl
     split: train
     license: unknown
+    revision: 01e74176c63542e6b0bcb004dcdea22d94fb67b5
     decision: review
-    evidence: "API do HF 2026-10-21: sem licenca no metadado do card"
+    evidence: "API do HF 2026-10-21, sha 01e74176: sem licenca no metadado do card"
     adapter: mcq
     args: {question: sentence, choices: [option1, option2], answer: answer, answer_kind: index, answer_offset: 1}
     fields_verified: true
@@ -198,6 +214,14 @@ sources:
     decision: deny
     evidence: "kit hub/0.3/manifest.json: carrega o canary do BIG-bench, nunca em corpus de treino"
     adapter: none
+  hellaswag:
+    hf_id: Rowan/hellaswag
+    revision: 218ec52e09a7e7462a5400043bb9a69a41d06b76
+    license: mit
+    decision: deny
+    evidence: "API do HF 2026-10-21, sha 218ec52e: sem licenca no metadado do card (o README diz MIT), mas os contextos vem do WikiHow (CC BY-NC-SA) e do ActivityNet"
+    adapter: none
+    notes: "SCHEMA 8: fonte com conteudo NC/ND vai para a lista negra, sem excecao; a licenca MIT do dataset nao cobre o conteudo de origem. Fica em deny ate haver parecer juridico por escrito"
   tasksource_bigbench:
     hf_id: tasksource/bigbench
     license: apache-2.0

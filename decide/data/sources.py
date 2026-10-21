@@ -25,7 +25,10 @@ DENYLIST = (
     (re.compile(r"(^|/)hle($|[-_/])", re.I), "HLE: gated evaluation data"),
     (re.compile(r"(^|/)anli$|facebook/anli|adversarial[-_ ]?nli", re.I), "ANLI is CC BY-NC 4.0"),
     (re.compile(r"ragtruth", re.I), "RAGTruth contexts are non-commercial or may not be redistributed"),
+    (re.compile(r"hellaswag", re.I), "HellaSwag contexts come from WikiHow (CC BY-NC-SA) and ActivityNet, whatever the dataset card says"),
 )
+#: A pinned Hub revision: the full commit sha (a branch name or a short sha can move or be ambiguous).
+REVISION = re.compile(r"^[0-9a-f]{40}$")
 _BAD_LICENSE = re.compile(r"(^|[-_ ])n[cd]($|[-_ .\d])|non-?commercial|no-?deriv", re.I)
 
 
@@ -43,7 +46,12 @@ class Source:
     adapter: str
     config: Optional[str] = None
     split: str = "train"
+    #: Full commit sha of the dataset repository the license and the fields were checked at; the Hub reader downloads
+    #: only at a pinned revision.
     revision: Optional[str] = None
+    #: Full sha of ``refs/convert/parquet`` for repositories with no parquet files on the main branch: the data is read
+    #: from that auto-converted commit instead of from ``revision``.
+    convert_revision: Optional[str] = None
     args: Dict[str, Any] = field(default_factory=dict)
     lang: str = "en"
     kind: str = "benchmark_train"
