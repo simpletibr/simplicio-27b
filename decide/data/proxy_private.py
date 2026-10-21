@@ -103,13 +103,26 @@ def load_board(board: Union[str, Path, Mapping[str, Any]]) -> Mapping[str, Any]:
 
 
 def board_models(board: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """engine / name -> the model's ``v03`` block (Full ``v``, ``same_skills``, ``new_domains``, ``pub``)."""
+    """engine -> the model's ``v03`` block (Full ``v``, ``same_skills``, ``new_domains``, ``pub``).
+
+    The engine is the canonical id of a model (unique on the real board: 208 models, 208 engines)."""
     out: Dict[str, Dict[str, Any]] = {}
     for m in board.get("models", []):
         v03 = m.get("v03")
         if isinstance(v03, Mapping) and isinstance(v03.get("v"), (int, float)):
             out[str(m.get("engine"))] = dict(v03)
-            out.setdefault(str(m.get("name")), dict(v03))
+    return out
+
+
+def board_aliases(board: Mapping[str, Any]) -> Dict[str, List[str]]:
+    """display name -> the engines that carry it.  A name carried by two models identifies neither."""
+    out: Dict[str, List[str]] = {}
+    for m in board.get("models", []):
+        v03 = m.get("v03")
+        if isinstance(v03, Mapping) and isinstance(v03.get("v"), (int, float)):
+            engines = out.setdefault(str(m.get("name")), [])
+            if str(m.get("engine")) not in engines:
+                engines.append(str(m.get("engine")))
     return out
 
 
@@ -137,17 +150,41 @@ def select_models(board: Mapping[str, Any], *, max_params_b: Optional[float] = N
 
 def validate_against_board(proxy_scores: Mapping[str, float], board: Union[str, Path, Mapping[str, Any]], *,
                            min_models: int = DEFAULT_MIN_MODELS, min_rho: float = DEFAULT_MIN_RHO, seed: int = 0) -> Dict[str, Any]:
-    """Gate G1: Spearman(proxy, board Full) over the models present in both."""
-    known = board_models(load_board(board))
-    matched = sorted(m for m in proxy_scores if m in known)
-    unmatched = sorted(m for m in proxy_scores if m not in known)
-    result: Dict[str, Any] = {"n": len(matched), "models": matched, "unmatched": unmatched, "min_models": min_models, "min_rho": min_rho,
+    """Gate G1: Spearman(proxy, board Full) over the models present in both.
+
+    A key of ``proxy_scores`` is a board engine, or a display name that belongs to exactly one model (the engine wins
+    when a name equals another model's engine).  Every key is resolved to the engine, which is what is counted, so a
+    model never counts twice.  Two keys for the same model are refused (``passed`` false, ``duplicates``): the n of the
+    "at least 6 open models" bar and the correlation would be inflated by repeats."""
+    loaded = load_board(board)
+    known, aliases = board_models(loaded), board_aliases(loaded)
+    keys_of: Dict[str, List[str]] = {}
+    unmatched: List[str] = []
+    ambiguous: List[str] = []
+    for key in sorted(proxy_scores):
+        if key in known:
+            keys_of.setdefault(key, []).append(key)
+        elif len(aliases.get(key, [])) == 1:
+            keys_of.setdefault(aliases[key][0], []).append(key)
+        elif key in aliases:
+            ambiguous.append(key)
+        else:
+            unmatched.append(key)
+    matched = sorted(keys_of)
+    duplicates = {engine: keys for engine, keys in sorted(keys_of.items()) if len(keys) > 1}
+    scores = {engine: float(proxy_scores[keys[0]]) for engine, keys in keys_of.items()}
+    result: Dict[str, Any] = {"n": len(matched), "models": matched, "unmatched": unmatched, "ambiguous": ambiguous, "duplicates": duplicates,
+                              "min_models": min_models, "min_rho": min_rho,
                               "rho_full": None, "rho_new_domains": None, "rho_same_skills": None, "rho_pub": None, "p_value": None,
                               "passed": False, "reason": ""}
+    if duplicates:
+        result["reason"] = (f"{len(duplicates)} board models are listed under more than one key ({'; '.join(f'{e}: {k}' for e, k in duplicates.items())}); "
+                            "give every model once, by engine")
+        return result
     if len(matched) < 2:
         result["reason"] = f"need at least {min_models} models, matched {len(matched)}"
         return result
-    xs = [float(proxy_scores[m]) for m in matched]
+    xs = [scores[m] for m in matched]
     for key, field in (("rho_full", "v"), ("rho_new_domains", "new_domains"), ("rho_same_skills", "same_skills"), ("rho_pub", "pub")):
         ys = [known[m].get(field) for m in matched]
         if all(isinstance(v, (int, float)) for v in ys):
