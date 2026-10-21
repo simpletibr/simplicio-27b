@@ -1513,6 +1513,83 @@ class HfHubContract(unittest.TestCase):
         self.assertTrue({"repo_id", "revision", "repo_type"} <= set(inspect.signature(HfApi.list_repo_files).parameters))
         self.assertTrue({"repo_id", "repo_type"} <= set(inspect.signature(HfApi.repo_info).parameters))
 
+    # ---------------------------------------------------------------- what the Hub says when something is wrong
+
+    def failing(self, error):
+        """An api whose every call raises ``error``."""
+        class Api:
+            def __getattr__(self, name):
+                def fail(*args, **kwargs):
+                    raise error
+                return fail
+
+        return Api()
+
+    def test_a_missing_or_unreadable_repo_is_a_hub_error_that_names_the_repo_and_the_likely_cause(self) -> None:
+        try:
+            import httpx
+            from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError, RevisionNotFoundError
+        except ImportError:
+            self.skipTest("huggingface_hub is not installed")
+        from decide.rental import hub as H
+
+        response = httpx.Response(404, request=httpx.Request("GET", "https://huggingface.co/api/models/me/day"))
+        cases = [(RepositoryNotFoundError("404 Client Error.\n\nRepository Not Found for url: https://huggingface.co/api/models/me/day.", response=response), "token"),
+                 (GatedRepoError("403 Client Error.", response=response), "terms"),
+                 (RevisionNotFoundError("404 Client Error.", response=response), "revision")]
+        for error, hint in cases:
+            hub = self.hub(self.failing(error), snapshot=lambda **kw: (_ for _ in ()).throw(error))
+            for call in (lambda: hub.ensure_repo("me/day", kind="model"), lambda: hub.files("me/day", kind="model"),
+                         lambda: hub.download("me/day", Path("x"), kind="model", revision="c" * 40)):
+                with self.assertRaises(H.HubError, msg=type(error).__name__) as caught:
+                    call()
+                self.assertIn("me/day", str(caught.exception))
+                self.assertIn(type(error).__name__, str(caught.exception))
+                self.assertIn(hint, str(caught.exception))
+                self.assertIsNone(caught.exception.__cause__, "the original traceback is not chained: it can carry request details")
+
+    def test_an_upload_that_fails_is_a_hub_error_too(self) -> None:
+        from decide.rental import hub as H
+
+        class Api(self.Api):
+            def upload_folder(self, **kw):
+                raise ConnectionError("connection reset by peer")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(H.HubError) as caught:
+                self.hub(Api()).upload("me/day", Path(tmp), kind="model")
+        self.assertIn("me/day", str(caught.exception))
+        self.assertIn("connection reset", str(caught.exception))
+
+    def test_the_token_never_reaches_the_message_of_an_error(self) -> None:
+        from decide.rental import hub as H
+
+        token = "hf_" + "q" * 30
+        saved = os.environ.get("DECIDE_TEST_HF_TOKEN")
+        self.addCleanup(lambda: os.environ.pop("DECIDE_TEST_HF_TOKEN", None) if saved is None else os.environ.__setitem__("DECIDE_TEST_HF_TOKEN", saved))
+        os.environ["DECIDE_TEST_HF_TOKEN"] = token
+        try:
+            hub = H.HfHub.from_env("DECIDE_TEST_HF_TOKEN")
+        except ImportError:
+            self.skipTest("huggingface_hub is not installed")
+        hub._api = self.failing(RuntimeError(f"401 for https://huggingface.co with Authorization: Bearer {token}"))
+        with self.assertRaises(H.HubError) as caught:
+            hub.files("me/day", kind="model")
+        self.assertNotIn(token, str(caught.exception))
+        self.assertIn("***", str(caught.exception))
+        self.assertNotIn("q" * 30, repr(hub) + json.dumps(vars(hub), default=repr))
+
+    def test_a_programming_error_in_the_caller_is_not_dressed_up_as_a_hub_error(self) -> None:
+        from decide.rental import hub as H
+
+        class Api(self.Api):
+            def list_repo_files(self, repo_id, *, revision, repo_type):
+                raise ImportError("a missing package")
+
+        with self.assertRaises(ImportError):
+            self.hub(Api()).files("me/day", kind="model")
+        self.assertTrue(issubclass(H.HubError, Exception))
+
 
 def use_the_kit():
     """Make decide.sd importable (the kit is Squad A's and may not be in this checkout); skip when it is not."""
