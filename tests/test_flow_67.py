@@ -475,6 +475,7 @@ class DecontaminationFlow(unittest.TestCase):
         (directory / "toy-9999.parquet").write_bytes(b"looks like a part of this corpus, is not one")
         (directory / "other.done.json").write_text('{"made": "by hand"}', encoding="utf-8")
         (directory / "toy-9999.parquet.done.json").write_text('{"part": "toy-9999.parquet", "note": "a marker-shaped file"}', encoding="utf-8")
+        (directory / "copy.done.json").write_text(json.dumps({"part": "notes.parquet", "input_sha256": "0" * 64, "fingerprint": "x"}), encoding="utf-8")   # right shape, wrong name
         (directory / "other.rejected.jsonl").write_text("{}\n", encoding="utf-8")
         (directory / "readme.txt").write_text("keep me", encoding="utf-8")
         return self.fingerprints(directory)
@@ -704,6 +705,16 @@ class ProxyFlow(unittest.TestCase):
                 self.build(corpus_manifest=manifest)
             self.assertIn("sources", str(caught.exception))
         self.assertEqual(self.build(corpus_manifest={"sources": {}})["corpus_leak_check"], {"checked": False, "sources_only": True})
+
+    def test_a_folder_of_another_tool_is_refused_before_the_sources_are_read(self) -> None:
+        proxy = self.root / "proxy"
+        proxy.mkdir()
+        S.write_manifest(proxy / "manifest.json", {"kind": "corpus", "tool": "decontaminate", "parts": []})
+        reader = mock.Mock(wraps=self.reader)
+        with self.assertRaises(S.ManifestError):
+            P.build_proxy(proxy, sources=self.sources, reader=reader, per_source=10, skip_leak_check=True)
+        reader.open.assert_not_called()
+        self.assertFalse((proxy / "proxy.parquet").exists())
 
     def test_proxy_example_ids_are_unique(self) -> None:
         self.build()
