@@ -5,9 +5,13 @@ no torch.  The tests that need the scoring kit or pyarrow skip cleanly when thos
 """
 from __future__ import annotations
 
+import copy
 import gzip
 import json
 import math
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -744,6 +748,221 @@ class SpecSourcesContract(HermeticTestCase):
         self.assertEqual(info["counts"], {"ok": 2})
         for row in ev.read_results(self.dir / "s2" / "runs" / "x").values():
             self.assertFalse(set(self.HOSTILE) & set(row), sorted(set(self.HOSTILE) & set(row)))
+
+
+class ReasoningContract(HermeticTestCase):
+    """A request that carries `reasoning` reaches the engine with it, whatever shape its row has: the engine decides (it refuses, today),
+    the row builder does not drop it on the way."""
+
+    TEXT = "step 1: the user asked twice"
+
+    def forms(self):
+        suite = kit_row(0)
+        suite["reasoning"] = self.TEXT
+        flat = {"example_id": "e1", "state": "state-1", "questions": {"q1": {"type": "choice", "instructions": "pick", "criteria": {"A": "a", "B": "b"}}},
+                "reasoning": self.TEXT, "gold": {"q1": "A"}}
+        nested = {"example_id": "e2", "request": {"state": "state-2", "reasoning": self.TEXT, "questions": flat["questions"]}, "gold": {"q1": "A"}}
+        as_json = {"example_id": "e3", "request": json.dumps(nested["request"]), "gold": {"q1": "A"}}
+        return {"suite row": suite, "flat row": flat, "request object": nested, "request as JSON text": as_json}
+
+    def test_every_shape_of_row_keeps_reasoning_in_the_request(self):
+        for name, row in self.forms().items():
+            with self.subTest(name):
+                self.assertEqual(ev.item_from_row(row).inputs.get("reasoning"), self.TEXT)
+
+    def test_rows_without_reasoning_do_not_gain_the_key(self):
+        row = kit_row(0)
+        self.assertNotIn("reasoning", ev.item_from_row(row).inputs)
+
+    def test_the_engine_gets_it_and_its_refusal_becomes_a_final_unsupported_row(self):
+        class Refuses(StubEngine):
+            def _answer(self, request):
+                if request.get("reasoning") is not None:
+                    return Unsupported("this engine does not render 'reasoning'")
+                return super()._answer(request)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = list(self.forms().values())[:2]
+            write_jsonl(Path(tmp) / "req.jsonl", rows)
+            engine = Refuses()
+            out = ev.run_requests(engine, Path(tmp) / "req.jsonl", Path(tmp) / "run", log=lambda t: None, table=False)
+            self.assertEqual(out["counts"], {"unsupported": 2})
+            again = Refuses()
+            self.assertEqual(ev.run_requests(again, Path(tmp) / "req.jsonl", Path(tmp) / "run", log=lambda t: None, table=False)["rows"], 0)
+            self.assertEqual(again.seen, [])                                 # unsupported is final: a resume does not ask again
+
+
+class Recording(StubEngine):
+    """Keeps every request it is asked for and refuses `reasoning` as the real engine does."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.requests = []
+
+    def _answer(self, request):
+        if request.get("reasoning") is not None:
+            return Unsupported("this engine does not render 'reasoning'")
+        return super()._answer(request)
+
+    def batch(self, requests):
+        self.requests.extend(copy.deepcopy(list(requests)))
+        return super().batch(requests)
+
+
+class FoldReasoningContract(HermeticTestCase):
+    """`reasoning="fold"` is asked for, never implied: the default refuses, `fold` puts the reasoning in the state with the training
+    protocol's own `fold_reasoning` (one definition, the golden cases of `tests/fold_reasoning_cases.json`), so the model is asked at
+    evaluation the question it was trained on."""
+
+    CASES = Path(__file__).with_name("fold_reasoning_cases.json")
+    QUESTIONS = {"q1": {"type": "choice", "instructions": "pick", "criteria": {"A": "a", "B": "b"}}}
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+
+    def golden(self):
+        if not self.CASES.is_file():
+            self.fail(f"{self.CASES} is missing: the golden cases of the fold are part of this contract, a missing file is not a skip")
+        cases = json.loads(self.CASES.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(cases), 10)
+        return cases
+
+    def row(self, i, state=None, **extra):
+        return {"example_id": f"e{i}", "state": f"state-{i}" if state is None else state, "questions": self.QUESTIONS, "gold": {"q1": "A"}, **extra}
+
+    def run_rows(self, rows, engine=None, out="run", **options):
+        write_jsonl(self.dir / "req.jsonl", rows)
+        engine = engine or Recording()
+        info = ev.run_requests(engine, self.dir / "req.jsonl", self.dir / out, log=lambda t: None, table=False, **options)
+        return engine, info
+
+    def results(self, out="run"):
+        return ev.read_results(self.dir / out)
+
+    # ---- the default refuses, with or without saying so
+    def test_the_default_hands_reasoning_to_the_engine_which_refuses(self):
+        for options in ({}, {"reasoning": "refuse"}):
+            with self.subTest(options):
+                engine, info = self.run_rows([self.row(0, reasoning="because")], out="run-" + str(len(options)), **options)
+                self.assertEqual(info["counts"], {"unsupported": 1})
+                self.assertEqual(engine.requests[0]["reasoning"], "because")
+                self.assertEqual(engine.requests[0]["state"], "state-0")
+                self.assertNotIn("reasoning_mode", self.results("run-" + str(len(options)))["e0"])
+
+    def test_the_modes_are_named_and_anything_else_is_refused_before_any_work(self):
+        self.assertEqual(ev.REASONING_MODES, ("refuse", "fold"))
+        for bad in ("Fold", "both", "", None, True, "drop"):
+            with self.subTest(bad), self.assertRaisesRegex(ev.EvaluateError, "reasoning"):
+                self.run_rows([self.row(0, reasoning="because")], out="never", reasoning=bad)
+            self.assertFalse((self.dir / "never").exists())
+
+    # ---- fold
+    def test_fold_gives_the_engine_the_folded_state_and_not_the_key(self):
+        engine, info = self.run_rows([self.row(0, reasoning="step 1\nstep 2")], reasoning="fold")
+        self.assertEqual(info["counts"], {"ok": 1})
+        request = engine.requests[0]
+        self.assertNotIn("reasoning", request)
+        self.assertEqual(request["state"], "state-0\n\nRaciocínio:\nstep 1\nstep 2")
+        self.assertEqual(request["questions"], self.QUESTIONS)
+
+    def test_fold_runs_the_golden_cases_end_to_end(self):
+        cases = [c for c in self.golden() if c["max_chars"] is None]
+        self.assertGreaterEqual(len(cases), 9)
+        rows = [self.row(i, state=c["state"], reasoning=c["reasoning"]) for i, c in enumerate(cases)]
+        engine, info = self.run_rows(rows, reasoning="fold")
+        self.assertEqual(info["counts"], {"ok": len(cases)})
+        for case, request in zip(cases, engine.requests):
+            self.assertEqual(request["state"], case["folded_state"], case["name"])
+            self.assertNotIn("reasoning", request, case["name"])
+
+    def test_fold_request_is_the_protocols_fold_for_every_golden_case_including_the_clipped_one(self):
+        for case in self.golden():
+            with self.subTest(case["name"]):
+                folded = ev.fold_request({"state": case["state"], "reasoning": case["reasoning"], "questions": self.QUESTIONS},
+                                         max_chars=case["max_chars"])
+                self.assertEqual(folded["state"], case["folded_state"])
+                self.assertNotIn("reasoning", folded)
+
+    def test_fold_request_does_not_change_its_argument(self):
+        request = {"state": "s", "reasoning": "r", "questions": self.QUESTIONS}
+        before = copy.deepcopy(request)
+        ev.fold_request(request)
+        self.assertEqual(request, before)
+
+    def test_a_row_without_reasoning_goes_to_the_engine_as_it_is_in_either_mode(self):
+        for mode in ("refuse", "fold"):
+            with self.subTest(mode):
+                engine, info = self.run_rows([self.row(0), self.row(1, reasoning=None)], out="run-" + mode, reasoning=mode)
+                self.assertEqual(info["counts"], {"ok": 2})
+                self.assertEqual(engine.requests[0], {"state": "state-0", "questions": self.QUESTIONS})
+                self.assertEqual(engine.requests[1]["state"], "state-1")
+                self.assertNotIn("reasoning_mode", self.results("run-" + mode)["e0"])
+
+    def test_the_row_and_the_environment_say_what_was_done(self):
+        self.run_rows([self.row(0, reasoning="because"), self.row(1)], reasoning="fold")
+        by = self.results()
+        self.assertEqual(by["e0"]["reasoning_mode"], "fold")
+        self.assertNotIn("reasoning_mode", by["e1"])
+        env = json.loads((self.dir / "run" / ev.ENVIRONMENT_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(env["reasoning"], "fold")
+        self.run_rows([self.row(0)], out="plain")
+        self.assertEqual(json.loads((self.dir / "plain" / ev.ENVIRONMENT_NAME).read_text(encoding="utf-8"))["reasoning"], "refuse")
+
+    def test_a_request_that_cannot_be_folded_is_an_unsupported_row_the_engine_never_sees(self):
+        rows = [self.row(0, state="already\n\nRaciocínio:\nold", reasoning="new"), self.row(1, reasoning="   "), self.row(2, reasoning="fine")]
+        engine, info = self.run_rows(rows, reasoning="fold")
+        self.assertEqual(info["counts"], {"unsupported": 2, "ok": 1})
+        self.assertEqual([r["questions"] and r["state"] for r in engine.requests], ["state-2\n\nRaciocínio:\nfine"])
+        by = self.results()
+        for run_id in ("e0", "e1"):
+            self.assertEqual(by[run_id]["status"], "unsupported")
+            self.assertIn("fold", by[run_id]["error"])
+            self.assertEqual(by[run_id]["reasoning_mode"], "fold")
+
+    # ---- a resume keeps one meaning per output directory
+    def test_rows_refused_under_the_default_are_asked_again_when_fold_is_requested(self):
+        self.run_rows([self.row(0, reasoning="because"), self.row(1)])
+        self.assertEqual(self.results()["e0"]["status"], "unsupported")
+        engine, info = self.run_rows([self.row(0, reasoning="because"), self.row(1)], reasoning="fold")
+        self.assertEqual((info["rows"], info["skipped"]), (1, 1))
+        self.assertEqual(self.results()["e0"]["status"], "ok")
+        self.assertEqual(self.results()["e0"]["reasoning_mode"], "fold")
+        self.assertEqual(engine.requests[0]["state"], "state-0\n\nRaciocínio:\nbecause")
+
+    def test_a_second_fold_run_does_no_work_and_does_not_repeat_the_unfoldable_rows(self):
+        rows = [self.row(0, state="x\n\nRaciocínio:\ny", reasoning="new"), self.row(1, reasoning="fine")]
+        self.run_rows(rows, reasoning="fold")
+        engine, info = self.run_rows(rows, reasoning="fold")
+        self.assertEqual((info["rows"], info["skipped"]), (0, 2))
+        self.assertEqual(engine.requests, [])
+
+    def test_an_output_with_folded_rows_is_not_resumed_without_the_fold(self):
+        self.run_rows([self.row(0, reasoning="because")], reasoning="fold")
+        before = (self.dir / "run" / ev.RESULTS_NAME).read_text(encoding="utf-8")
+        with self.assertRaisesRegex(ev.EvaluateError, "folded"):
+            self.run_rows([self.row(0, reasoning="because"), self.row(1, reasoning="more")])
+        self.assertEqual((self.dir / "run" / ev.RESULTS_NAME).read_text(encoding="utf-8"), before)
+
+    def test_a_fresh_start_may_change_the_mode(self):
+        self.run_rows([self.row(0, reasoning="because")], reasoning="fold")
+        engine, info = self.run_rows([self.row(0, reasoning="because")], resume=False)
+        self.assertEqual(info["counts"], {"unsupported": 1})
+
+    # ---- one definition, no import cycle
+    def test_importing_the_kit_does_not_import_the_training_package(self):
+        code = "import sys, decide.sd.evaluate, decide.sd.api; sys.exit(1 if any(m == 'decide.train' or m.startswith('decide.train.') for m in sys.modules) else 0)"
+        root = Path(__file__).resolve().parent.parent
+        env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(root), str(root / "tests")])}
+        done = subprocess.run([sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_the_fold_rule_is_not_copied_into_the_kit(self):
+        text = Path(ev.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("Raciocínio", text)
+        self.assertIn("decide.train.protocol", text)
 
 
 class OriginContract(HermeticTestCase):
