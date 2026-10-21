@@ -1,0 +1,35 @@
+# Perfil econômico do dia alugado: 1x B200, LoRA r128, 1 seed (PLAN.md seção 6, padrão).
+# Os números de `plan` são o texto do plano, só para sair ao lado da estimativa; tudo aqui é UNVERIFIED até o dia rodar.
+# Não entram aqui caminhos, semente, dispositivo nem segredo: o orquestrador cuida deles.
+version: 1
+name: econ_b200
+title: "Econômico: 1x B200, LoRA r128, 1 seed"
+plan: {hours: "~14", usd: "~90", status: UNVERIFIED}
+hardware:
+  gpu: B200
+  gpus: 1
+  host_ram_gb: 128          # o otimizador na CPU de um LoRA r128 usa ~14 GB; o resto é folga para o cache de arquivos
+  disk_gb: 400              # checkpoint inicial 52 GB + um checkpoint por seed + corpus, alvos e resultados
+workload:
+  examples: 250000          # PLAN.md seção 6
+  tokens_per_example: 1000  # suposição (UNVERIFIED); a média medida no corpus limpo de 2026-10-21 foi 371, sem raciocínio
+  seeds: 1
+train:                      # opções de `python -m decide.train.train`
+  mode: lora
+  lora_rank: 128
+  lora_alpha: 128
+  epochs: 1
+  effective_batch: 256
+  batch_rows: 32
+  token_budget: 16384
+  max_length: 8192
+  alpha: 0.5
+  warmup_ratio: 0.15
+  reasoning: "off"          # entre aspas: `off` sem aspas é falso em YAML
+  resume_every: 50
+train_with_traces:          # vale no lugar de `train` quando o passo dos traços do pensador rodou (GT passou)
+  reasoning: mixed
+  reasoning_fraction: 0.5
+thinker:                    # só para a estimativa dos traços (UNVERIFIED)
+  examples: 100000
+  mean_tokens: 1500

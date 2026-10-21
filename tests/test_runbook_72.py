@@ -28,10 +28,7 @@ RUNBOOK = ROOT / "decide" / "RUNBOOK.md"
 #: (who brings them, the name the section "Avisos de hoje" must use for them).
 NOT_ON_MAIN: Dict[str, Tuple[str, str]] = {
     "decide/modal": ("Squad A, part 2 of the kit", "decide/modal"),
-    "decide/rental": ("F6 (#71)", "decide/rental"),
-    "decide/config.rental.yaml": ("F6 (#71)", "decide/config.rental.yaml"),
     "notebooks/decide/docs": ("Squad A, part 2 of the kit", "notebooks/decide/docs"),
-    "tests/test_flow_71.py": ("F6 (#71)", "decide/rental"),
 }
 WARNINGS = "Avisos de hoje"
 #: Phrases of the two warnings the owner must see before any session (taken out only together with the correction pull requests).
@@ -46,9 +43,9 @@ def section(text: str, title: str) -> str:
     return match.group(1) if match else ""
 
 
-def missing_from_main(name: str, root: Path) -> Tuple[bool, str]:
-    """(is it in NOT_ON_MAIN, which entry) for a path or a module path that is not in ``root``."""
-    for prefix in NOT_ON_MAIN:
+def missing_from_main(name: str, root: Path, not_on_main: Dict[str, Tuple[str, str]] = NOT_ON_MAIN) -> Tuple[bool, str]:
+    """(is it in ``not_on_main``, which entry) for a path or a module path that is not in ``root``."""
+    for prefix in not_on_main:
         if name == prefix or name.startswith(prefix + "/"):
             return True, prefix
     return False, ""
@@ -87,7 +84,7 @@ def runbook_problems(text: str, root: Path, help_of: HelpOf, not_on_main: Dict[s
         module, args = match.group(1), match.group(2)
         is_python = joined[max(0, match.start() - 7):match.start()] == "python "
         if not module_exists(module, root):
-            absent, prefix = missing_from_main(module.replace(".", "/"), root)
+            absent, prefix = missing_from_main(module.replace(".", "/"), root, not_on_main)
             if absent:
                 named[prefix] = True
             else:
@@ -114,7 +111,7 @@ def runbook_problems(text: str, root: Path, help_of: HelpOf, not_on_main: Dict[s
         if not re.match(r"^(?:decide|notebooks|docs|tests|scripts|data)/[\w./*-]+$", token) or "*" in token:
             continue
         if not path_exists(token, root):
-            absent, prefix = missing_from_main(token.rstrip("/"), root)
+            absent, prefix = missing_from_main(token.rstrip("/"), root, not_on_main)
             if absent:
                 named[prefix] = True
             else:
@@ -154,8 +151,11 @@ class RunbookAgainstTheTreeTest(unittest.TestCase):
 class CheckerNoticesTest(unittest.TestCase):
     """The checker itself: a RUNBOOK that lies is caught (so the test above is not green by construction)."""
 
-    WARN = ("## Avisos de hoje (leia)\n\n" + " ".join(WARNING_PHRASES) + " decide/modal decide/rental decide/config.rental.yaml "
-            "notebooks/decide/docs tests/test_flow_71.py\n\n## 0. Como ler\n")
+    #: what the checker is given as "not on main yet": fixed here, so these tests do not change when the real NOT_ON_MAIN does
+    DECLARED = {"decide/later": ("someone", "decide/later"), "notebooks/decide/docs": ("someone", "notebooks/decide/docs"),
+                "decide/later.yaml": ("someone", "decide/later.yaml")}
+    WARN = ("## Avisos de hoje (leia)\n\n" + " ".join(WARNING_PHRASES) + " decide/later decide/later.yaml "
+            "notebooks/decide/docs\n\n## 0. Como ler\n")
 
     def tree(self, files: Sequence[str]) -> Path:
         root = Path(tempfile.mkdtemp(prefix="runbook-tree-"))
@@ -170,7 +170,7 @@ class CheckerNoticesTest(unittest.TestCase):
         return "usage: x {build,score} ...\n  --inputs INPUTS\n  --out OUT\n  --use-this\n"
 
     def check(self, body: str, files: Sequence[str] = ("decide/train/soup.py",), warn: str = None) -> List[str]:
-        return runbook_problems((self.WARN if warn is None else warn) + body, self.tree(files), self.helps)
+        return runbook_problems((self.WARN if warn is None else warn) + body, self.tree(files), self.helps, self.DECLARED)
 
     def test_a_good_runbook_has_no_problems(self) -> None:
         self.assertEqual(self.check("```\npython -m decide.train.soup --inputs a b \\\n    --out c\n```\n"), [])
@@ -187,18 +187,18 @@ class CheckerNoticesTest(unittest.TestCase):
         self.assertTrue(any("--nope" in p for p in self.check("```\npython -m decide.train.soup --inputs a \\\n    --nope\n```\n")))
 
     def test_a_missing_module_is_allowed_only_if_declared_and_named_in_the_warnings(self) -> None:
-        body = "`python -m decide.rental.run --profile x`\n"
+        body = "`python -m decide.later.run --profile x`\n"
         self.assertEqual(self.check(body), [])
         problems = self.check(body, warn="## Avisos de hoje\n\n" + " ".join(WARNING_PHRASES) + "\n\n## 0. x\n")
-        self.assertTrue(any("decide/rental" in p and "does not name" in p for p in problems), problems)
+        self.assertTrue(any("decide/later" in p and "does not name" in p for p in problems), problems)
 
     def test_a_missing_path_is_a_problem_unless_declared(self) -> None:
         self.assertTrue(any("decide/nothing/file.py" in p for p in self.check("see `decide/nothing/file.py`\n")))
         self.assertEqual(self.check("see `notebooks/decide/docs/04_rodada_paga.md`\n"), [])
 
     def test_a_declared_path_that_now_exists_is_a_problem(self) -> None:
-        problems = self.check("text\n", files=("decide/train/soup.py", "decide/rental/run.py"))
-        self.assertTrue(any("decide/rental is now on this checkout" in p for p in problems), problems)
+        problems = self.check("text\n", files=("decide/train/soup.py", "decide/later/run.py"))
+        self.assertTrue(any("decide/later is now on this checkout" in p for p in problems), problems)
 
     def test_the_warnings_are_required(self) -> None:
         self.assertTrue(any("has no section" in p for p in self.check("text\n", warn="## 0. Como ler\n")))
@@ -212,7 +212,7 @@ class CheckerNoticesTest(unittest.TestCase):
         def helps(module: str, sub: Tuple[str, ...]) -> str:
             seen.append((module, sub))
             return self.helps(module, sub)
-        runbook_problems(self.WARN + "`python -m decide.train.soup build --out c`\n", self.tree(["decide/train/soup.py"]), helps)
+        runbook_problems(self.WARN + "`python -m decide.train.soup build --out c`\n", self.tree(["decide/train/soup.py"]), helps, self.DECLARED)
         self.assertIn(("decide.train.soup", ("build",)), seen)
 
 

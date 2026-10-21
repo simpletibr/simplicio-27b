@@ -1,0 +1,33 @@
+# Perfil completo do dia alugado: 8x H100, full fine-tuning, 2 seeds (PLAN.md seção 6). Só entra se o G2 mostrar ganho >= +1,0.
+# ATENÇÃO: com DDP cada GPU guarda os pesos e os gradientes em bf16 (~104,3 GB) e uma H100 tem 80 GB. Este perfil NÃO CABE em
+# 8x H100; o estimador avisa (ddp_does_not_fit). Use H200 ou B200 (`--gpu H200`) ou escreva FSDP em decide/train (UNVERIFIED: conta de tamanho).
+version: 1
+name: full_8xh100
+title: "Completo: 8x H100, full fine-tuning, 2 seeds"
+plan: {hours: "12-16", usd: "380-510", status: UNVERIFIED}
+hardware:
+  gpu: H100
+  gpus: 8
+  host_ram_gb: 512          # o otimizador na CPU de um full fine-tune usa ~417 GB só no rank 0
+  disk_gb: 1000
+workload:
+  examples: 600000          # PLAN.md seção 6
+  tokens_per_example: 1000  # suposição (UNVERIFIED)
+  seeds: 2
+train:
+  mode: full
+  epochs: 1
+  effective_batch: 256
+  batch_rows: 16
+  token_budget: 8192
+  max_length: 8192
+  alpha: 0.5
+  warmup_ratio: 0.15
+  reasoning: "off"
+  resume_every: 50
+train_with_traces:
+  reasoning: mixed
+  reasoning_fraction: 0.5
+thinker:
+  examples: 200000
+  mean_tokens: 1500
