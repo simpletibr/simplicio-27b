@@ -37,7 +37,10 @@ WARNINGS = "Avisos de hoje"
 WARNING_PHRASES = ("think_gt_kaggle.ipynb", "backend `transformers`")
 #: What only the retired warning about the kit said.  Text of a warning that was taken out must not stay anywhere in the RUNBOOK.
 RETIRED_PHRASES = ("Não rode sessões de GPU do kit", "bloqueantes abertos", "bloqueantes do kit", "sem GPU até as correções",
-                   "as correções dele ainda não entraram", "O G2 espera isso", "PR de correção (avisos 1 e 2)")
+                   "as correções dele ainda não entraram", "O G2 espera isso", "PR de correção (avisos 1 e 2)",
+                   # part 2: the fold is on main since #95 (opt-in, no command-line flag), and the 10% rule counts two kinds of row (decide/think/compare.py)
+                   "o motor do kit ainda não chama", "o motor do kit chamar", "faltam duas coisas", "de 10% das que responderam",
+                   "Esta seção ainda não foi revista")
 
 HelpOf = Callable[[str, Tuple[str, ...]], str]
 
@@ -159,6 +162,60 @@ class RunbookAgainstTheTreeTest(unittest.TestCase):
             return cache[(module, sub)]
 
         self.assertEqual(runbook_problems(RUNBOOK.read_text(encoding="utf-8"), ROOT, help_of), [])
+
+
+class RunbookFactsTest(unittest.TestCase):
+    """What the RUNBOOK says about the thinker gate and the fold of the reasoning (part 2), against the constants it quotes.
+
+    The numbers and names below are read from the code, so a change there fails this test and the RUNBOOK has to be revised in the same change."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.text = RUNBOOK.read_text(encoding="utf-8")
+
+    def test_the_unreadable_share_is_stated_as_the_gate_applies_it(self) -> None:
+        """INCONCLUSIVE when ``reasoning_hidden + no_close`` is over the share of the rows that answered (``decide/think/compare.py``): both kinds of row, not only the hidden ones."""
+        from decide.think import common, compare
+
+        self.assertIn(f"{compare.MAX_UNREADABLE_SHARE:.0%} das linhas que responderam", self.text)
+        self.assertIn(f"{common.MIN_THINKING_TOKENS} tokens", self.text)
+        self.assertIn("linhas que esconderam o raciocínio ou pararam sem fechar o pensamento", self.text)
+        self.assertIn("reasoning_hidden + no_close", self.text)
+
+    def test_the_session_of_the_day_says_which_gt_report_turns_the_traces_on(self) -> None:
+        from decide.rental import gates
+        from decide.think import compare
+
+        self.assertEqual(gates.GT_REPORT_FORMAT, compare.REPORT_FORMAT, "the day reads the format the gate writes")
+        day = section(self.text, "Sessão 8")
+        for phrase in (compare.REPORT_FORMAT, "--gt-report", "`PASS`", "EXPLORATORY", "INCONCLUSIVE"):
+            self.assertIn(phrase, day, f"the session of the rented day does not say {phrase!r}")
+
+    def test_the_fold_is_described_as_the_kit_has_it(self) -> None:
+        import inspect
+
+        from decide.sd import evaluate
+        from decide.train import protocol
+
+        self.assertEqual(inspect.signature(evaluate.run_requests).parameters["reasoning"].default, "refuse")
+        for mode in evaluate.REASONING_MODES:
+            self.assertIn(f'"{mode}"', self.text)
+        self.assertIn('reasoning="fold"', self.text)
+        self.assertIn(f"{protocol.REASONING_MAX_CHARS} caracteres", self.text)
+        self.assertIn(protocol.REASONING_LABEL, self.text)
+        self.assertIn("decide.sd.evaluate.run_requests", self.text)
+        self.assertIn("decide/train/protocol.py", self.text, "the fold imports the training protocol: the RUNBOOK says the whole repository is needed")
+        self.assertIn("tests/fold_reasoning_cases.json", self.text)
+
+    def test_there_is_no_command_line_flag_for_the_fold_and_the_runbook_does_not_invent_one(self) -> None:
+        flags = [(path, match) for path in sorted((ROOT / "decide").rglob("*.py"))
+                 for match in re.findall(r"""["']--[\w-]*fold[\w-]*["']""", path.read_text(encoding="utf-8"))]
+        self.assertEqual(flags, [], "a command-line flag for the fold now exists: the RUNBOOK says there is none")
+        self.assertEqual(re.findall(r"--[\w-]*fold[\w-]*", self.text), [])
+        self.assertIn("Não existe flag de linha de comando para o fold", self.text)
+
+    def test_the_budget_limit_of_the_fold_points_at_its_issue(self) -> None:
+        self.assertRegex(self.text, r"issues?/97|#97")
 
 
 class CheckerNoticesTest(unittest.TestCase):
