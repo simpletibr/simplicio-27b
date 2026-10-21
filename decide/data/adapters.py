@@ -48,8 +48,14 @@ def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ("" if value is None else str(value).strip())
 
 
+def option_key(index: int) -> str:
+    """Key of the ``index``-th option past the 26 letters.  Zero-padded to three digits (255 options at most): the
+    corpus stores sorted keys, and ``option_10`` sorts before ``option_2`` as text, which would reorder the options."""
+    return f"option_{index:03d}"
+
+
 def _keys(count: int) -> List[str]:
-    return list(_LETTERS[:count]) if count <= len(_LETTERS) else [f"option_{i}" for i in range(count)]
+    return list(_LETTERS[:count]) if count <= len(_LETTERS) else [option_key(i) for i in range(count)]
 
 
 def _native(row: Mapping[str, Any], args: Mapping[str, Any]) -> Optional[str]:
@@ -125,7 +131,7 @@ def mcq(row: Mapping[str, Any], args: Mapping[str, Any], ctx: AdapterContext) ->
 
 
 def classification(row: Mapping[str, Any], args: Mapping[str, Any], ctx: AdapterContext) -> Optional[Converted]:
-    """Text classification as one choice question; options are the class names (keys option_0, option_1, ...).
+    """Text classification as one choice question; options are the class names (keys option_000, option_001, ...).
     args: text, label (int | name | one-element list), label_names (list | "auto"), instruction with {text}, id."""
     text = _text(_get(row, args.get("text")))
     label = _get(row, args.get("label"))
@@ -143,7 +149,7 @@ def classification(row: Mapping[str, Any], args: Mapping[str, Any], ctx: Adapter
     if idx is None or not 0 <= idx < len(names):
         return None
     instruction = str(args.get("instruction", "{text}")).replace("{text}", text)
-    keys = [f"option_{i}" for i in range(len(names))]
+    keys = [option_key(i) for i in range(len(names))]
     request = {"state": {}, "questions": {"q1": {"type": "choice", "instructions": instruction, "criteria": dict(zip(keys, names))}}}
     return request, {"q1": keys[idx]}, _native(row, args)
 

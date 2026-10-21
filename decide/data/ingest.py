@@ -60,6 +60,11 @@ def convert_source(source: Source, dataset: Dataset, *, seed: int, cap: Optional
         if problems:
             stats["invalid"] += 1
             continue
+        for qid, question in request["questions"].items():
+            keys = list(question["criteria"]) if question["type"] == "choice" else []
+            if keys != sorted(keys):
+                raise AdapterError(f"{source.key}: the option keys of {qid} do not sort in option order ({keys[:4]}...); the corpus stores "
+                                   "sorted keys, so the options would be reordered (zero-pad numbers: adapters.option_key)")
         if T.request_has_canary(request):
             stats["canary"] += 1
             continue

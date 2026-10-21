@@ -9,6 +9,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from decide_b_support import (
     ROOT, board_index, choice_request, kit_row, lorem, multi_request, needs_pyarrow, needs_yaml, noul_request,
@@ -417,6 +418,18 @@ class IngestContract(unittest.TestCase):
         rows[2]["choices"] = ["fine", "canary GUID\n26b5c67b-0000-4000-8000-000000000000"]
         out, stats = ING.convert_source(self.source(), R.ListDataset(rows), seed=1)
         self.assertEqual(([r["example_id"] for r in out], stats["canary"]), (["t:a"], 2))
+
+    def test_an_adapter_whose_option_keys_do_not_sort_in_option_order_is_refused(self) -> None:
+        # the stored JSON has sorted keys; an adapter that numbers its options "10" < "2" would reorder them without a word
+        def numbered(row, args, ctx):
+            criteria = {str(i): f"option {i}" for i in range(12)}
+            return {"state": {}, "questions": {"q1": {"type": "choice", "instructions": str(row["question"]), "criteria": criteria}}}, {"q1": "3"}, None
+
+        source = SRC.Source(key="t", hf_id="o/d", license="mit", decision="allow", evidence="fixture", adapter="numbered", args={})
+        with mock.patch.dict(ING.ADAPTERS, {"numbered": numbered}):
+            with self.assertRaises(ING.AdapterError) as caught:
+                ING.convert_source(source, R.ListDataset([{"question": "q1"}]), seed=1)
+        self.assertIn("order", str(caught.exception))
 
     def test_the_duplicate_id_check_sees_rows_the_cap_drops(self) -> None:
         with self.assertRaises(ING.AdapterError):
