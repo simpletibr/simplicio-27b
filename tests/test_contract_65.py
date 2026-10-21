@@ -694,6 +694,20 @@ class CalibrateContract(unittest.TestCase):
         self.assertTrue(np.allclose(self.K.item_probs(item, 1.0, views=[0]), a))
         self.assertTrue(np.allclose(self.K.item_probs(item, 1.0, views=[1]), b))
 
+    def test_reprobabilities_is_the_mean_of_the_softmaxes_not_the_softmax_of_the_mean_logit(self):
+        """The engine answers with this function and the label validator re-derives probabilities with it: it has to be the TTA rule."""
+        np = self.np
+        views = [[2.0, 0.0, 0.0], [0.0, 0.0, 2.0]]
+        got = self.K.reprobabilities(views, 1.0)
+        a, b = self.K.softmax(views[0], 1.0), self.K.softmax(views[1], 1.0)
+        self.assertTrue(np.allclose(got, (a + b) / 2))
+        mean_logit = self.K.softmax([1.0, 0.0, 1.0], 1.0)                 # the wrong rule gives a visibly different answer
+        self.assertGreater(float(np.abs(np.asarray(got) - mean_logit).max()), 0.02)
+        self.assertTrue(all(isinstance(x, float) for x in got))
+        self.assertAlmostEqual(sum(got), 1.0, places=12)
+        self.assertTrue(np.allclose(self.K.reprobabilities([views[0]], 2.0), self.K.softmax(views[0], 2.0)))
+        self.assertTrue(np.allclose(got, self.K.item_probs(self.K.Item("r", "q", "choice", views, 0), 1.0)))     # the two entry points agree
+
     def test_metrics_on_hand_computed_cases(self):
         sure_right = self.K.Item("a", "q", "choice", [[50.0, 0.0]], 0)
         sure_wrong = self.K.Item("b", "q", "choice", [[50.0, 0.0]], 1)
@@ -727,6 +741,21 @@ class CalibrateContract(unittest.TestCase):
         other, _ = self.K.split_holdout(items, 0.5, seed=12)
         self.assertNotEqual([i.run_id for i in fit], [i.run_id for i in other])
 
+    def test_the_holdout_has_exactly_the_asked_for_number_of_requests(self):
+        """`split_holdout` promises round(holdout * requests) requests on the holdout side: a fit that is one request short or long is a leak."""
+        items = [self.K.Item(f"r{i}", "q", "choice", [[0.0, 1.0]], 0) for i in range(10)]
+        for fraction, held in ((0.0, 0), (0.1, 1), (0.3, 3), (0.5, 5), (0.7, 7), (0.9, 9)):
+            with self.subTest(holdout=fraction):
+                fit, hold = self.K.split_holdout(items, fraction, seed=5)
+                self.assertEqual((len(hold), len(fit)), (held, 10 - held))
+        more = [self.K.Item(f"s{i}", "q", "choice", [[0.0, 1.0]], 0) for i in range(400)]
+        fit, hold = self.K.split_holdout(more, 0.25, seed=2)
+        self.assertEqual((len(fit), len(hold)), (300, 100))
+        two_questions = more[:40] + [self.K.Item(it.run_id, "second", it.qtype, it.logits, it.gold) for it in more[:40]]
+        fit, hold = self.K.split_holdout(two_questions, 0.5, seed=2)
+        self.assertEqual(len({i.run_id for i in hold}), 20)                   # counted in requests, not in questions
+        self.assertEqual(len(hold), 40)
+
     def test_holdout_metrics_improve_when_the_model_is_miscalibrated(self):
         items = self.synth(8000, 5, 2.2, seed=7)                        # the model is over-confident at T=1
         out = self.K.fit_groups(items, by="question_type", holdout=0.5, seed=1, baseline=1.0)
@@ -745,6 +774,18 @@ class CalibrateContract(unittest.TestCase):
         self.assertEqual(K.group_of(a, "question_type"), "choice")
         with self.assertRaises(ValueError):
             K.group_of(a, "nope")
+
+    def test_the_option_count_buckets_have_the_edges_the_engine_looks_them_up_by(self):
+        """The recipe stores `type:bucket` temperatures and the engine finds them with `k_bucket`: an edge in the wrong bucket silently
+        applies the temperature of another group."""
+        K = self.K
+        edges = {0: "1", 1: "1", 2: "2", 3: "3-4", 4: "3-4", 5: "5-8", 8: "5-8", 9: "9+", 40: "9+"}
+        for k, bucket in edges.items():
+            with self.subTest(k=k):
+                self.assertEqual(K.k_bucket(k), bucket)
+        for k in (2, 4, 8, 9):
+            item = K.Item("r", "q", "choice", [[0.0] * k], 0)
+            self.assertEqual(K.group_of(item, "type_k"), f"choice:{K.k_bucket(k)}")
 
     def test_small_groups_fall_back_to_the_overall_temperature(self):
         items = self.synth(3000, 4, 1.6, "choice", seed=1, prefix="c") + self.synth(5, 2, 0.4, "noul", seed=2, prefix="n")
