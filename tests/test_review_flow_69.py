@@ -266,6 +266,15 @@ class DtypeFlag(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(base + ["--dtype", "int8"])
 
+    def test_auto_is_bf16_on_a_gpu_and_fp32_on_a_cpu_and_an_explicit_precision_is_kept(self) -> None:
+        """The flow tests run on a CPU, so only this call sees the GPU half of ``auto``: a rented B200 trains in bf16, not in fp32 at twice the memory."""
+        resolve = _STATE["TRAIN"].resolve_dtype
+        self.assertEqual(resolve("auto", True), "bf16")
+        self.assertEqual(resolve("auto", False), "fp32")
+        for name in ("bf16", "fp32", "fp16"):
+            for cuda in (True, False):
+                self.assertEqual(resolve(name, cuda), name, (name, cuda))
+
     def test_fp16_training_is_refused_because_nothing_scales_the_loss(self) -> None:
         """A gradient that underflows to zero in fp16 is a finite number: the check for nonfinite values never sees it, and the run learns less than it looks."""
         for extra in ((), ("--dry-run",)):
