@@ -188,6 +188,12 @@ def terse(body, count):
     return {"content": final, "finish": "stop", "usage": (50, 12)}
 
 
+def hidden(body, count):
+    """A provider that thinks and returns only the final reply: 3000 tokens were generated and none of them is visible."""
+    out = terse(body, count)
+    return {**out, "usage": (50, 3000)} if "MODE[" in body["messages"][0]["content"] else out
+
+
 class FakeServer:
     def __init__(self, behavior=scripted, require_key=None):
         self.behavior, self.require_key = behavior, require_key
@@ -469,7 +475,33 @@ class ThinkerFlow(FlowBase):
         self.assertTrue(last.startswith("GT VERDICT: INCONCLUSIVE"), last)         # the line `hosted` and the Modal app show is the one that says it
         self.assertIn("thinking not detected", last)
         self.assertEqual(json.loads((rep / "report.json").read_text())["verdict"]["reasons"], ["thinking_not_detected"])
-        self.assertTrue(all(r["thought"] is False and r["no_close"] is True for r in T.ResultStore.read(out)[1]), "the bare answer line is not read: no closing tag")
+        rows = T.ResultStore.read(out)[1]
+        self.assertTrue(rows)
+        self.assertTrue(all(r["thought"] is False and r["no_close"] is False and r["reasoning_hidden"] is False for r in rows),
+                        "an endpoint is not the kit's own template: the bare reply is read as it is, and 12 tokens is too short to be hidden thinking")
+        self.assertTrue(all(None not in r["answers"].values() for r in rows), "the answer line is read")
+
+    def test_an_endpoint_that_thinks_and_hides_it_is_never_an_official_verdict(self) -> None:
+        # Review of #78, second round: the reviewer's probe read this as a thinker at 0% and printed an official FAIL.
+        out = self.results_path()
+        with FakeServer(behavior=hidden) as srv:
+            code, text = self.thinker(srv, out, "--limit", "4")
+        self.assertEqual(code, 0, text)
+        self.assertIn("show no reasoning: the endpoint probably thinks and hides it", text)
+        rows = T.ResultStore.read(out)[1]
+        self.assertTrue(rows and all(r["reasoning_hidden"] is True and r["no_close"] is False and r["thought"] is True for r in rows))
+        self.assertTrue(all(None not in r["answers"].values() for r in rows), "the final reply is read, not thrown away")
+        rep = self.root / "hidden-report"
+        code, md = self.compare(out, out=rep)
+        self.assertEqual(code, 0, md)
+        last = md.strip().splitlines()[-1]
+        self.assertTrue(last.startswith("GT VERDICT: INCONCLUSIVE"), last)
+        self.assertFalse(last.startswith(("GT VERDICT: PASS", "GT VERDICT: FAIL")), last)
+        self.assertIn("hid their reasoning", last)
+        verdict = json.loads((rep / "report.json").read_text())["verdict"]
+        self.assertEqual(verdict["reasons"], ["reasoning_hidden_or_not_closed"])
+        self.assertIn("reasoning_hidden_or_not_closed", md)
+        self.assertIn("pensa e esconde o raciocinio", md)
 
     def test_a_thinking_endpoint_and_a_thinking_off_control_get_no_such_warning(self) -> None:
         out = self.results_path()
@@ -1309,6 +1341,19 @@ class NotebookFlow(FlowBase):
                 self.assertEqual(os.environ.get("THINK_API_KEY"), SECRET if source == "env" else None)
                 self.assertIn("chave encontrada" if source == "env" else "sem chave", out.getvalue())
 
+    def test_the_key_cell_keeps_the_key_of_an_endpoint_out_of_a_local_vllm(self) -> None:
+        # Review of #78, second round: the vLLM the notebook starts has no key, so no key goes to it, whatever is in the environment.
+        needle = "from google.colab import userdata"
+        base = dict(os=os, KEY_NAME="MY_THINK_KEY", MODE="local-vllm", BASE_URL="https://SEU-ENDPOINT/v1", PACK=str(self.pack), WORK=str(self.workdir()))
+        with mock.patch.dict(os.environ, {"MY_THINK_KEY": SECRET, "THINK_API_KEY": SECRET, "OPENAI_API_KEY": SECRET}, clear=False):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.run_cell("api", needle, dict(base))
+            self.assertNotIn(SECRET, out.getvalue())
+            self.assertIn("ela não é usada", out.getvalue())
+            self.assertNotIn("THINK_API_KEY", os.environ)
+            self.assertNotIn("OPENAI_API_KEY", os.environ)
+
     def test_the_checks_refuse_the_placeholder_endpoint_a_wrong_mode_and_a_missing_pack(self) -> None:
         needle = "from google.colab import userdata"
         base = dict(os=os, KEY_NAME="MY_THINK_KEY", MODE="endpoint", BASE_URL="https://example.org/v1", PACK=str(self.pack), WORK=str(self.workdir()))
@@ -1344,7 +1389,28 @@ class NotebookFlow(FlowBase):
         self.assertEqual(ns["BASE_URL"], serve_module.base_url())
         self.assertEqual(ns["REV"], f"--revision {C.QWEN_FP8_REVISION}")
         self.assertEqual(ready.call_args[0][:2], (ns["BASE_URL"], 1800))
+        self.assertIsNone(ready.call_args[1].get("api_key"), "the local server takes no key")
         self.assertTrue((work / "vllm.log").is_file())
+
+    def test_the_vllm_cell_does_not_send_a_key_to_the_local_server_and_drops_it_from_the_environment(self) -> None:
+        from decide.think import serve as serve_module
+        ns = dict(MODE="local-vllm", MODEL=C.QWEN_FP8_MODEL, REVISION="", WORK=str(self.workdir()), sys=sys, os=os,
+                  subprocess=type("SP", (), {"run": staticmethod(lambda cmd, **kw: None), "Popen": lambda cmd, **kw: None, "STDOUT": -2}),
+                  REV="", q=shlex.quote)
+        with mock.patch.dict(os.environ, {"THINK_API_KEY": SECRET, "OPENAI_API_KEY": SECRET}, clear=False):
+            with mock.patch.object(serve_module, "wait_ready", return_value=True) as ready, contextlib.redirect_stdout(io.StringIO()):
+                self.run_cell("api", 'if MODE == "local-vllm":', ns)
+            ns["log"].close()
+            self.assertIsNone(ready.call_args[1].get("api_key"))
+            self.assertNotIn(SECRET, repr(ready.call_args))
+            self.assertNotIn("THINK_API_KEY", os.environ)
+            self.assertNotIn("OPENAI_API_KEY", os.environ)
+
+    def test_the_vllm_cell_leaves_the_key_of_an_endpoint_alone(self) -> None:
+        ns = dict(MODE="endpoint", MODEL=C.QWEN_FP8_MODEL, REVISION="", WORK=str(self.workdir()), sys=sys, os=os, subprocess=None, REV="", BASE_URL="https://example.org/v1")
+        with mock.patch.dict(os.environ, {"THINK_API_KEY": SECRET}, clear=False):
+            self.run_cell("api", 'if MODE == "local-vllm":', ns)
+            self.assertEqual(os.environ.get("THINK_API_KEY"), SECRET)
 
     def test_the_vllm_cell_does_nothing_for_an_endpoint(self) -> None:
         ns = dict(MODE="endpoint", MODEL=C.QWEN_FP8_MODEL, REVISION="", WORK=str(self.workdir()), sys=sys, os=os, subprocess=None, REV="", BASE_URL="https://example.org/v1")

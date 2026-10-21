@@ -1077,6 +1077,114 @@ class VerdictStatusContract(unittest.TestCase):
         self.assertIn("PARTIAL", line)
         self.assertIn("bootstrap_b", line)
 
+    # -- second review of #78: a provider that thinks and hides it must not make a thinker at 0%
+    def real_rows(self, hidden=0, no_close=0, per=40, benches=(25, 28, 58, 62)):
+        """160 rows made by the real make_record from replies of 3000 tokens whose reasoning is not visible, as the reviewer's probe did."""
+        rows, _ = self.full(per=per, benches=list(benches))
+        recs = []
+        for k, row in enumerate(rows):
+            prompt = P.build_prompt({"state": row["state"], "questions": row["questions"]})
+            if k < no_close:                                                    # the kit's own template opened <think> and it never closed
+                gen, kw = T.GenResult(content="ANSWER q: A", finish_reason="stop", completion_tokens=3000), {"template_opened": True}
+            elif k < no_close + hidden:                                         # an endpoint that returns the final reply only
+                gen, kw = T.GenResult(content="ANSWER q: A", finish_reason="stop", completion_tokens=3000), {}
+            else:
+                gen, kw = T.GenResult(reasoning="a long thinking", content="ANSWER q: A", finish_reason="stop", completion_tokens=3000), {}
+            recs.append(T.make_record(row, prompt, gen, attempt=1, max_tokens=16384, thinking=True, **kw))
+        return rows, recs
+
+    def test_the_probe_of_160_rows_that_think_and_hide_it_is_inconclusive_not_a_fail_at_zero(self) -> None:
+        rows, recs = self.real_rows(hidden=160)
+        self.assertEqual(len(recs), 160)
+        self.assertTrue(all(r["reasoning_hidden"] and not r["no_close"] and r["answers"] == {"q": "A"} for r in recs))
+        rep = official(rows, recs)
+        line = self.assert_not_official(rep, "INCONCLUSIVE")
+        v = rep["verdict"]
+        self.assertEqual((v["reasons"], v["inconclusive"]), (["reasoning_hidden_or_not_closed"], ["reasoning_hidden_or_not_closed"]))
+        self.assertIn("160 of 160", line)
+        self.assertIn("hid", line)
+        self.assertEqual(rep["thinker_stats"]["reasoning_hidden"], 160)
+        self.assertIn(v["outcome"], ("PASS", "FAIL"), "the numbers stay in the report as what the rule would say")
+        md = K.render_markdown(rep)
+        self.assertTrue("mais de 10% das linhas que responderam esconderam o raciocinio ou pararam sem fechar o pensamento (160 de 160)" in md, md[-1500:])
+        self.assertTrue("160 de 160 linhas vieram so com a resposta" in md)
+        self.assertTrue("`reasoning_hidden`" in md and "pensa e esconde o raciocinio" in md)
+
+    def test_two_reasons_to_be_inconclusive_are_both_on_the_last_line(self) -> None:
+        rows, recs = self.real_rows(hidden=160)
+        for r in recs[:100]:
+            r["thought"] = False                                                # and most of them show no thinking either
+        rep = official(rows, recs)
+        v = rep["verdict"]
+        self.assertEqual((v["status"], v["reasons"]), ("INCONCLUSIVE", ["thinking_not_detected", "reasoning_hidden_or_not_closed"]))
+        line = K.verdict_line(rep)
+        self.assertTrue("thinking not detected" in line and "hid their reasoning" in line, line)
+
+
+    def test_up_to_a_tenth_of_hidden_rows_is_exploratory_more_is_inconclusive(self) -> None:
+        for hidden, status, reasons in ((0, None, []), (1, "EXPLORATORY", ["reasoning_hidden"]), (16, "EXPLORATORY", ["reasoning_hidden"]),
+                                        (17, "INCONCLUSIVE", ["reasoning_hidden_or_not_closed"])):
+            with self.subTest(hidden=hidden):
+                rows, recs = self.real_rows(hidden=hidden)
+                v = official(rows, recs)["verdict"]
+                if status is None:
+                    self.assertIn(v["status"], ("PASS", "FAIL"))
+                else:
+                    self.assertEqual((v["status"], v["reasons"]), (status, reasons))
+
+    def test_rows_that_never_closed_the_thinking_make_the_run_inconclusive_past_a_tenth_but_do_not_mark_it_before(self) -> None:
+        for no_close, hidden, status in ((16, 0, None), (17, 0, "INCONCLUSIVE"), (10, 6, "EXPLORATORY"), (10, 7, "INCONCLUSIVE")):
+            with self.subTest(no_close=no_close, hidden=hidden):
+                rows, recs = self.real_rows(no_close=no_close, hidden=hidden)
+                self.assertEqual(sum(r["no_close"] for r in recs), no_close)
+                v = official(rows, recs)["verdict"]
+                if status is None:
+                    self.assertIn(v["status"], ("PASS", "FAIL"), "rows that did not close count as errors of the thinker, and the run is still the gate")
+                else:
+                    self.assertEqual(v["status"], status)
+                    if status == "INCONCLUSIVE":
+                        self.assertEqual(v["reasons"], ["reasoning_hidden_or_not_closed"])
+
+    def test_a_run_whose_rows_came_from_two_endpoints_is_exploratory(self) -> None:
+        rows, recs = self.full(benches=[25, 28])
+        for k, rec in enumerate(recs):
+            rec["endpoint"] = "https://a.example/v1" if k < 40 else "https://b.example/v1"
+        rep = official(rows, recs)
+        self.assert_not_official(rep, "EXPLORATORY")
+        self.assertEqual(rep["verdict"]["reasons"], ["mixed_endpoints"])
+        for rec in recs:
+            rec["endpoint"] = "https://a.example/v1"
+        self.assertIn(official(rows, recs)["verdict"]["status"], ("PASS", "FAIL"))
+
+    def test_rows_given_up_after_their_attempts_are_noted_on_the_last_line_whatever_the_status(self) -> None:
+        rows, recs = self.full(benches=[25, 28])
+        for rec in recs[:3]:
+            rec.update(status="failed", gave_up=3, answers={})
+            rec.pop("thought")
+        line = K.verdict_line(official(rows, recs))
+        self.assertTrue(line.startswith(("GT VERDICT: PASS", "GT VERDICT: FAIL")), line)
+        self.assertTrue(line.endswith(" | also NOTE (gave_up 3)"), line)
+        partial = K.verdict_line(official(rows, recs[:60]))
+        self.assertTrue(partial.startswith("GT VERDICT: PARTIAL"), partial)
+        self.assertIn(" | also NOTE (gave_up 3)", partial)
+        recs[0].pop("gave_up")                                                                  # a failure that was not a give-up is not noted as one
+        self.assertTrue(K.verdict_line(official(rows, recs)).endswith("also NOTE (gave_up 2)"))
+        for rec in recs[:3]:
+            rec.pop("gave_up", None)
+        self.assertNotIn("NOTE", K.verdict_line(official(rows, recs)))
+
+    def test_a_fail_of_a_quantized_thinker_says_on_the_last_line_that_it_is_one_sided(self) -> None:
+        rows, recs = self.full(hit=lambda b, i: False, benches=[25, 28])
+        line = K.verdict_line(official(rows, recs, header=official_header(quantization="nf4-fp16")))
+        self.assertTrue(line.startswith("GT VERDICT: FAIL"), line)
+        self.assertIn(" | one-sided (nf4-fp16) | ", line)
+        for quant in (None, "none"):
+            self.assertNotIn("one-sided", K.verdict_line(official(rows, recs, header=official_header(quantization=quant))))
+        rows, recs = self.full(benches=[25, 28])
+        up = K.verdict_line(official(rows, recs, header=official_header(quantization="nf4-fp16")))
+        self.assertTrue(up.startswith("GT VERDICT: PASS"), up)
+        self.assertNotIn("one-sided", up, "a PASS in 4 bits stands")
+
     def test_no_decision_model_and_no_scored_row_stay_inconclusive_with_their_old_reasons(self) -> None:
         rows, recs = self.full(benches=[25])
         self.assertEqual(official(rows, [])["verdict"]["reasons"], ["no_scored_rows"])
@@ -1153,6 +1261,16 @@ class ReportWarningsContract(unittest.TestCase):
         _, md = self.md(cut)
         self.assertIn("AVISO: 4 linhas pararam sem fechar o pensamento", md)
 
+    def test_rows_that_hid_their_reasoning_are_counted_and_make_the_run_exploratory(self) -> None:
+        def hide(recs):
+            for r in recs[:4]:
+                r["reasoning_hidden"] = True
+        rep, md = self.md(hide)
+        self.assertEqual((rep["verdict"]["status"], rep["verdict"]["reasons"]), ("EXPLORATORY", ["reasoning_hidden"]))
+        self.assertTrue("AVISO: 4 de 80 linhas vieram so com a resposta, com 100 tokens ou mais e nenhum raciocinio visivel" in md)
+        self.assertTrue("`reasoning_hidden`: 4 linhas vieram so com a resposta" in md)
+        self.assertNotIn("vieram so com a resposta", self.md()[1])
+
     def test_rows_read_by_a_fallback_are_counted(self) -> None:
         def fall(recs):
             for k, r in enumerate(recs):
@@ -1210,8 +1328,8 @@ class InterpretContract(unittest.TestCase):
         self.row = prow(25, 0)
         self.options = q_options(self.row)
 
-    def parsed(self, thinking=False, **gen):
-        return T.interpret(T.GenResult(**gen), self.options, thinking=thinking)
+    def parsed(self, thinking=False, template_opened=False, **gen):
+        return T.interpret(T.GenResult(**gen), self.options, thinking=thinking, template_opened=template_opened)
 
     def test_reasoning_split_by_the_server_and_a_reply_with_the_answer(self) -> None:
         p = self.parsed(reasoning="maybe C, no, B", content="ANSWER q: B", finish_reason="stop")
@@ -1237,19 +1355,40 @@ class InterpretContract(unittest.TestCase):
         p = self.parsed(content="ANSWER q: C", finish_reason="stop")
         self.assertEqual((p.answers, p.truncated), ({"q": "C"}, False))
 
-    def test_a_thinking_run_does_not_read_a_stop_without_a_closing_tag_as_an_answer(self) -> None:
-        # The template opens <think> itself: a reply that stopped with no </think> and no reasoning field is thinking that never ended
-        # (or an endpoint that ignored the request for it), and its text must not be scanned for an answer.
+    def test_where_the_kit_renders_the_template_a_stop_without_a_closing_tag_is_not_read_as_an_answer(self) -> None:
+        # The kit's own transformers backend renders the template, which opens <think> itself: a reply that stopped with no </think> and no
+        # reasoning is thinking that never ended, and its text must not be scanned for an answer.
         text = "Maybe the answer is B... or no, C.\nANSWER q: B"
-        p = self.parsed(thinking=True, content=text, finish_reason="stop")
+        p = self.parsed(thinking=True, template_opened=True, content=text, finish_reason="stop")
         self.assertEqual((p.answers, p.final, p.no_close), ({"q": None}, None, True))
         for kw in ({"reasoning": "server side thinking"}, {"reasoning_tokens": 300}):
-            p = self.parsed(thinking=True, content="ANSWER q: B", finish_reason="stop", **kw)
+            p = self.parsed(thinking=True, template_opened=True, content="ANSWER q: B", finish_reason="stop", **kw)
             self.assertEqual((p.answers, p.no_close), ({"q": "B"}, False), kw)
-        p = self.parsed(thinking=True, content="t\n</think>\nANSWER q: B", finish_reason="stop")
+        p = self.parsed(thinking=True, template_opened=True, content="t\n</think>\nANSWER q: B", finish_reason="stop")
         self.assertEqual((p.answers, p.no_close), ({"q": "B"}, False))
-        p = self.parsed(thinking=False, content=text, finish_reason="stop")                  # a control without thinking is read whole
+        p = self.parsed(thinking=False, template_opened=True, content=text, finish_reason="stop")      # a control without thinking is read whole
         self.assertEqual((p.answers, p.no_close), ({"q": "B"}, False))
+
+    def test_an_endpoint_that_thinks_and_hides_it_is_read_not_called_unclosed_and_the_row_says_the_reasoning_is_hidden(self) -> None:
+        # Review of #78, second round: a provider that returns only the final reply (3000 tokens, no </think>, no reasoning field, no reasoning
+        # token count) was read as unreadable and made a thinker at 0%.  The kit does not render that template: it reads the reply.
+        p = self.parsed(thinking=True, content="ANSWER q: A", finish_reason="stop", completion_tokens=3000)
+        self.assertEqual((p.answers, p.no_close, p.reasoning_hidden), ({"q": "A"}, False, True))
+        for why, kw in (("a few tokens: nothing shows it thought", {"completion_tokens": C.MIN_THINKING_TOKENS - 1}),
+                        ("the server counted reasoning tokens", {"completion_tokens": 3000, "reasoning_tokens": 2900}),
+                        ("the server returned the reasoning", {"completion_tokens": 3000, "reasoning": "long thinking"}),
+                        ("the reply was cut", {"completion_tokens": 3000, "finish_reason": "length"}),
+                        ("a closing tag shows the reasoning", {"completion_tokens": 3000, "content": "t\n</think>\nANSWER q: A"})):
+            with self.subTest(why):
+                p = self.parsed(thinking=True, **{"content": "ANSWER q: A", "finish_reason": "stop", **kw})
+                self.assertFalse(p.reasoning_hidden)
+                self.assertFalse(p.no_close)
+        p = self.parsed(thinking=True, content="ANSWER q: A", finish_reason="stop", completion_tokens=C.MIN_THINKING_TOKENS)
+        self.assertTrue(p.reasoning_hidden, "exactly the bar is enough")
+        p = self.parsed(thinking=False, content="ANSWER q: A", finish_reason="stop", completion_tokens=3000)
+        self.assertFalse(p.reasoning_hidden, "a control without thinking is not asked to show any")
+        p = self.parsed(thinking=True, template_opened=True, content="ANSWER q: A", finish_reason="stop", completion_tokens=3000)
+        self.assertEqual((p.reasoning_hidden, p.no_close, p.answers), (False, True, {"q": None}), "where the kit renders the template, it is no_close instead")
 
     def test_a_cut_reply_is_truncated_not_no_close(self) -> None:
         p = self.parsed(thinking=True, content="so the answer is B", finish_reason="length")
@@ -1315,13 +1454,21 @@ class RecordContract(unittest.TestCase):
         for gen, expected in cases:
             self.assertIs(self.record(gen)["thought"], expected, gen)
 
-    def test_a_stop_without_a_closing_tag_is_unreadable_and_recorded_as_such(self) -> None:
-        r = self.record(T.GenResult(content="B probably.\nANSWER q: B", finish_reason="stop", completion_tokens=8))
+    def test_a_stop_without_a_closing_tag_is_unreadable_and_recorded_as_such_where_the_kit_renders_the_template(self) -> None:
+        r = self.record(T.GenResult(content="B probably.\nANSWER q: B", finish_reason="stop", completion_tokens=8), template_opened=True)
         self.assertEqual((r["answers"], r["no_close"], r["thought"]), ({"q": None}, True, False))
-        r = self.record(T.GenResult(content="x\n</think>\nANSWER q: B", finish_reason="stop"))
+        r = self.record(T.GenResult(content="x\n</think>\nANSWER q: B", finish_reason="stop"), template_opened=True)
         self.assertEqual((r["answers"], r["no_close"]), ({"q": "B"}, False))
-        r = self.record(T.GenResult(content="B probably.\nANSWER q: B", finish_reason="stop"), thinking=False)       # a control without thinking is read whole
+        r = self.record(T.GenResult(content="B probably.\nANSWER q: B", finish_reason="stop"), thinking=False, template_opened=True)   # a control is read whole
         self.assertEqual((r["answers"], r["no_close"]), ({"q": "B"}, False))
+
+    def test_the_row_of_an_endpoint_that_hides_its_reasoning_is_read_and_flagged(self) -> None:
+        r = self.record(T.GenResult(content="B probably.\nANSWER q: B", finish_reason="stop", completion_tokens=3000))
+        self.assertEqual((r["answers"], r["no_close"], r["reasoning_hidden"], r["thought"]), ({"q": "B"}, False, True, True))
+        r = self.record(T.GenResult(content="B probably.\nANSWER q: B", finish_reason="stop", completion_tokens=12))
+        self.assertEqual((r["answers"], r["no_close"], r["reasoning_hidden"], r["thought"]), ({"q": "B"}, False, False, False))
+        r = self.record(T.GenResult(reasoning="t", content="ANSWER q: B", finish_reason="stop", completion_tokens=3000))
+        self.assertIs(r["reasoning_hidden"], False)
 
     def test_how_each_answer_was_found_is_recorded(self) -> None:
         r = self.record(T.GenResult(content="t</think>\nANSWER q: B", finish_reason="stop"))
@@ -1457,6 +1604,20 @@ class StoreContract(unittest.TestCase):
         self.assertEqual(s.error_streaks(), {"25:0": 1, "25:1": 1})
         s.append(self.rec(2, status="ok"))
         self.assertNotIn("25:2", s.error_streaks())
+
+    def test_errors_of_a_round_marked_as_an_outage_are_not_counted_towards_giving_a_row_up(self) -> None:
+        s = self.open()
+        s.append({**self.rec(0, status="error"), "round": "r1"})
+        s.append({**self.rec(0, status="error"), "round": "r2"})
+        s.append({"kind": "round_end", "round": "r2", "outage": True})
+        self.assertEqual(s.error_streaks(), {"25:0": 1})
+        s.append({**self.rec(0, status="error"), "round": "r3"})
+        s.append({"kind": "round_end", "round": "r3", "outage": False})
+        self.assertEqual(s.error_streaks(), {"25:0": 2})
+        s.append(self.rec(1, status="error"))                                      # records without a round (older files) count as before
+        self.assertEqual(s.error_streaks()["25:1"], 1)
+        self.assertEqual(len(s.records()), 4, "a round marker is not a row")
+        self.assertEqual(self.open().latest()["25:0"]["status"], "error")
 
     def test_a_row_gets_three_tries_by_default(self) -> None:
         import inspect
@@ -1681,14 +1842,48 @@ class RunnerContract(unittest.TestCase):
         self.run_(FakeBackend(), retry_failed=True, limit=1)
         self.assertEqual(self.store().latest()["25:0"]["status"], "ok")
 
-    def test_a_given_up_row_still_counts_toward_the_consecutive_errors_that_stop_the_run(self) -> None:
-        st = self.run_(self.down(), max_attempts=1, max_consecutive_errors=3)
-        self.assertEqual((st.done, st.failed, st.stopped), (3, 3, "3 consecutive errors"))
+    def test_a_round_that_stops_for_consecutive_errors_does_not_count_towards_giving_rows_up(self) -> None:
+        # Review of #78, second round: three rounds during an outage of the provider must not turn the rows they touched into `failed`.
+        for k in range(3):
+            st = self.run_(self.down(), max_attempts=2, max_consecutive_errors=3)
+            self.assertEqual((st.done, st.failed, st.errors, st.stopped), (3, 0, 3, "3 consecutive errors"), k)
+        self.assertEqual({r["status"] for r in self.store().latest().values()}, {"error"})
+        self.assertEqual(self.store().error_streaks(), {})
+        notes = [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines() if '"round_end"' in line]
+        self.assertEqual([n["outage"] for n in notes], [True, True, True])
+        self.assertEqual([n["stopped"] for n in notes], ["3 consecutive errors"] * 3)
+        self.assertEqual(len({n["round"] for n in notes}), 3)
+        st = self.run_(self.down(), max_attempts=2, max_consecutive_errors=100, limit=3)       # a round that ends in the normal way does count
+        self.assertEqual((st.failed, st.errors), (0, 3))
+        st = self.run_(self.down(), max_attempts=2, max_consecutive_errors=100, limit=3)
+        self.assertEqual((st.failed, st.errors), (3, 0))
+        self.assertEqual({r["status"] for r in self.store().latest().values() if r["id"] in {"25:0", "58:0", "25:1"}}, {"failed"})
 
-    def test_the_progress_line_flags_a_row_that_did_not_think_and_one_that_did_not_close(self) -> None:
+    def test_a_round_whose_last_rows_all_failed_is_an_outage_even_if_nothing_was_left_to_stop(self) -> None:
+        st = self.run_(self.down(), max_attempts=1, limit=3, max_consecutive_errors=3)
+        self.assertEqual((st.stopped, st.done, st.failed, st.errors, st.outage), (None, 3, 0, 3, True))
+        st = self.run_(self.down(), max_attempts=1, limit=3, max_consecutive_errors=4)       # one short of the limit: the rows are the problem
+        self.assertEqual((st.stopped, st.failed, st.errors, st.outage), (None, 3, 0, False))
+
+    def test_the_error_that_ends_in_an_outage_does_not_give_a_row_up_even_if_it_was_its_last_attempt(self) -> None:
+        self.run_(self.down(), max_attempts=2, limit=1, max_consecutive_errors=100)
+        self.assertEqual(self.store().error_streaks(), {"25:0": 1})
+        st = self.run_(self.down(), max_attempts=2, max_consecutive_errors=1)
+        self.assertEqual((st.stopped, st.failed, st.errors), ("1 consecutive errors", 0, 1))
+        self.assertEqual(self.store().latest()["25:0"]["status"], "error")
+        self.assertEqual(self.store().error_streaks(), {"25:0": 1}, "the outage round left the count where it was")
+
+    def test_a_row_is_given_up_after_its_round_not_in_the_middle_of_it(self) -> None:
+        self.run_(self.down(), max_attempts=1, limit=2, max_consecutive_errors=100)
+        kinds = [(r["id"], r["status"]) for r in T.ResultStore.read(self.path)[1]]
+        self.assertEqual(kinds, [("25:0", "error"), ("58:0", "error"), ("25:0", "failed"), ("58:0", "failed")])
+
+    def test_the_progress_line_flags_a_row_that_did_not_think_one_that_did_not_close_and_one_whose_reasoning_is_hidden(self) -> None:
         def reply(item):
             return T.GenResult(content="ANSWER q: A", finish_reason="stop", completion_tokens=5)
-        self.run_(FakeBackend(reply=reply), limit=1)
+        kit = FakeBackend(reply=reply)
+        kit.renders_template = True                                       # like the transformers backend
+        self.run_(kit, limit=1)
         line = self.logs[-1]
         self.assertIn("no_thinking", line)
         self.assertIn("no_close", line)
@@ -1696,13 +1891,27 @@ class RunnerContract(unittest.TestCase):
         self.run_(FakeBackend(), limit=1, benchmarks=[58])
         self.assertNotIn("no_thinking", self.logs[-1])
         self.assertNotIn("no_close", self.logs[-1])
+        self.assertNotIn("reasoning_hidden", self.logs[-1])
+        self.logs.clear()
+        self.run_(FakeBackend(reply=lambda item: T.GenResult(content="ANSWER q: A", finish_reason="stop", completion_tokens=900)), limit=1, benchmarks=[58])
+        self.assertIn("reasoning_hidden", self.logs[-1])
+        self.assertNotIn("no_close", self.logs[-1])
+
+    def test_only_the_backend_that_renders_the_template_knows_that_it_opened_the_thinking(self) -> None:
+        self.assertIs(T.TransformersBackend.renders_template, True)
+        self.assertFalse(getattr(T.OpenAIBackend, "renders_template", False))
 
     def test_rows_are_written_with_the_thinking_the_config_asked_for_and_the_endpoint_of_the_config(self) -> None:
         def bare(item):
             return T.GenResult(content="B...\nANSWER q: B", finish_reason="stop", completion_tokens=9)
-        self.run_(FakeBackend(reply=bare), limit=1)
+        kit = FakeBackend(reply=bare)
+        kit.renders_template = True
+        self.run_(kit, limit=1)
         rec = self.store().latest()["25:0"]
         self.assertEqual((rec["answers"], rec["no_close"], rec["thought"]), ({"q": None}, True, False))
+        self.run_(FakeBackend(reply=bare), limit=1, benchmarks=[58])                 # an endpoint: the reply is read, and it did not think
+        rec = self.store().latest()["58:0"]
+        self.assertEqual((rec["answers"], rec["no_close"], rec["thought"], rec["reasoning_hidden"]), ({"q": "B"}, False, False, False))
         off = fake_config(chat_template_kwargs={"enable_thinking": False}, endpoint="https://a.example/v1")
         path = Path(self.tmp.name) / "control.jsonl"
         T.run(self.rows, FakeBackend(reply=bare), T.ResultStore.open(path, off, "p" * 64, 10), max_tokens=1000, limit=1, log=lambda s: None)
@@ -2152,6 +2361,54 @@ class DigestContract(unittest.TestCase):
 class TraceContract(unittest.TestCase):
     """The `Raciocínio:` block that the hybrid appends to the state (ADR 0004, item 6; format in SCHEMA.md section 10, issue #69)."""
 
+    GOLDEN = ROOT / "tests" / "fold_reasoning_cases.json"
+
+    def golden(self):
+        # a file that is not there is a failure, not a skip: the lock between the two sides must not go quiet
+        self.assertTrue(self.GOLDEN.is_file(), "tests/fold_reasoning_cases.json (SCHEMA.md section 10, from the training squad) is not in this checkout")
+        cases = json.loads(self.GOLDEN.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(cases), 10)
+        self.assertEqual(len({c["name"] for c in cases}), len(cases))
+        return cases
+
+    def test_every_case_of_the_golden_file_folds_the_same_way(self) -> None:
+        # Second review of #78, coordination with the training squad: trace.py reproduced 9 of the 10 cases (a state given as a mapping failed).
+        for case in self.golden():
+            kwargs = {} if case["max_chars"] is None else {"max_chars": case["max_chars"]}
+            with self.subTest(case["name"]):
+                self.assertEqual(TR.fold_reasoning(case["state"], case["reasoning"], **kwargs), case["folded_state"])
+                # and the way a results row becomes a block: render_trace, then attach_trace
+                self.assertEqual(TR.attach_trace(case["state"], TR.render_trace(case["reasoning"], **kwargs)), case["folded_state"])
+                if isinstance(case["state"], str):
+                    self.assertEqual(TR.split_trace(case["folded_state"])[0], case["state"].rstrip())
+
+    def test_the_golden_file_has_the_cases_the_rule_is_made_of(self) -> None:
+        names = {c["name"] for c in self.golden()}
+        for wanted in ("state with trailing whitespace", "reasoning that holds the label line", "reasoning with CRLF and CR",
+                       "reasoning with three or more blank lines", "empty state", "state given as a mapping"):
+            self.assertIn(wanted, names)
+        self.assertTrue(any(c["max_chars"] is not None for c in self.golden()), "a case that clips")
+
+    def test_a_state_that_is_not_text_is_written_as_json_like_the_training_side_does(self) -> None:
+        self.assertEqual(TR.describe_state("text"), "text")
+        self.assertEqual(TR.describe_state({"k": "é", "n": [1, 2]}), '{"k": "é", "n": [1, 2]}')
+        self.assertEqual(TR.fold_reasoning(["a", "é"], "r"), '["a", "é"]\n\nRaciocínio:\nr')
+        self.assertEqual(TR.attach_trace({"k": 1}, "r"), '{"k": 1}\n\nRaciocínio:\nr')
+        self.assertFalse(TR.has_trace({"k": "Raciocínio:"}))
+        self.assertEqual(TR.attach_trace({"k": 1}, ""), {"k": 1}, "an empty trace adds nothing, and the state is not touched")
+
+    def test_fold_reasoning_refuses_what_the_training_side_refuses(self) -> None:
+        for bad in (None, "", "  \n\t", 5, ["x"]):
+            with self.subTest(reasoning=bad), self.assertRaisesRegex(TR.TraceError, "non-empty string"):
+                TR.fold_reasoning("state", bad)
+        with self.assertRaisesRegex(TR.TraceError, "empty after cleaning and clipping"):
+            TR.fold_reasoning("state", "x", max_chars=0)                              # a budget of nothing leaves no block to write
+        with self.assertRaises(TR.TraceError):
+            TR.fold_reasoning("s\nRaciocínio:\nold", "new")                        # never overwritten
+        self.assertEqual(TR.fold_reasoning("s", "Raciocínio:"), "s\n\nRaciocínio:\nRaciocínio :", "a label line in the reasoning is neutralized, not dropped")
+        self.assertEqual(TR.fold_reasoning("s", "x", max_chars=8000), TR.fold_reasoning("s", "x"), "8000 is the default budget of SCHEMA.md")
+        self.assertEqual(TR.DEFAULT_MAX_CHARS, 8000)
+
     def test_exact_layout(self) -> None:
         self.assertEqual(TR.MARKER, "Raciocínio:")
         self.assertEqual(TR.attach_trace("state text", "step 1\nstep 2"), "state text\n\nRaciocínio:\nstep 1\nstep 2")
@@ -2465,6 +2722,49 @@ class ServeContract(unittest.TestCase):
         op = self.opener(["ok"])
         SV.wait_ready("http://h/v1", 5, api_key="sekret", opener=op, sleep=sleep, clock=clock)
         self.assertEqual(op.state["seen"][0][1], "Bearer sekret")
+
+    def test_wait_ready_does_not_follow_a_redirect_with_the_key(self) -> None:
+        # Review of #78, second round: the poll sends the key too, and the default opener of urllib follows a 302 with it.
+        import http.server
+        import threading
+        seen = {"b": []}
+
+        class B(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen["b"].append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        b = http.server.HTTPServer(("127.0.0.1", 0), B)
+
+        class A(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.1:%d/v1/models" % b.server_address[1])
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        a = http.server.HTTPServer(("127.0.0.1", 0), A)
+        threads = [threading.Thread(target=srv.serve_forever, daemon=True) for srv in (a, b)]
+        for t in threads:
+            t.start()
+        try:
+            clock, sleep = self.fake_time()
+            ok = SV.wait_ready("http://127.0.0.1:%d/v1" % a.server_address[1], 5, api_key="sekret", sleep=sleep, clock=clock)
+        finally:
+            for srv in (a, b):
+                srv.shutdown()
+                srv.server_close()
+        self.assertTrue(ok, "a 3xx is an answer: the server is up")
+        self.assertEqual(seen["b"], [], "the second server was never asked, so it never saw the key")
+
+    def test_wait_ready_uses_the_opener_that_never_follows_a_redirect_by_default(self) -> None:
+        self.assertIs(inspect.signature(SV.wait_ready).parameters["opener"].default, T.open_no_redirect)
 
     @unittest.skipUnless(importlib.util.find_spec("vllm"), "vllm is not installed: the flags were checked against its source only")
     def test_the_installed_vllm_accepts_the_command(self) -> None:
@@ -2859,6 +3159,18 @@ class NoThinkingContract(unittest.TestCase):
         nothing_ok = T.RunStats(total=3, done=3, errors=3)
         self.assertNotIn("barely thought", T.summarize(nothing_ok, store), "no ok row, no average (and no division by zero)")
 
+    def test_the_thinker_summary_says_when_the_reasoning_is_hidden_and_when_the_round_was_an_outage(self) -> None:
+        store = self.store()
+        many = C.MIN_THINKING_TOKENS * 5
+        text = T.summarize(T.RunStats(total=5, done=5, ok=5, completion_tokens=5 * many, reasoning_hidden=2), store)
+        self.assertTrue("2 of 5 replies are 100+ tokens long and show no reasoning" in text, text)
+        self.assertTrue("EXPLORATORY" in text and "INCONCLUSIVE" in text)
+        self.assertNotIn("show no reasoning", T.summarize(T.RunStats(total=5, done=5, ok=5, completion_tokens=5 * many), store))
+        self.assertNotIn("show no reasoning", T.summarize(T.RunStats(total=5, done=5, ok=5, completion_tokens=5 * many, reasoning_hidden=2), store, thinking=False))
+        down = T.summarize(T.RunStats(total=5, done=5, errors=5, outage=True), store)
+        self.assertTrue("stopped on consecutive errors" in down and "do not count towards giving rows up" in down, down)
+        self.assertNotIn("consecutive errors (", T.summarize(T.RunStats(total=5, done=5, errors=5), store))
+
     def test_the_thinker_summary_counts_replies_without_thinking_and_unclosed_ones_and_rows_given_up(self) -> None:
         store = self.store()
         many = C.MIN_THINKING_TOKENS * 5
@@ -3204,6 +3516,7 @@ class NotebookCommandContract(unittest.TestCase):
         self.assertNotRegex(api, r"print\([^)]*(\bkey\b|environ|KEY_NAME)")
         self.assertIn('os.environ["THINK_API_KEY"] = key', api)
         self.assertIn("del key", api)
+        self.assertNotIn("api_key=os.environ", api, "the poll of the local server sends no key")
         self.assertEqual(NB.parameters("api")["KEY_NAME"], "THINK_API_KEY", "the thinker reads this variable first")
         for key in self.KEYS:
             self.assertNotRegex("\n".join(NB.code_cells(key)), r"(?m)^\s*!\s*(env|printenv|set|export)\b", key)
@@ -3324,7 +3637,7 @@ class ReadmeContract(unittest.TestCase):
     def test_the_status_table_lists_the_reasons_of_each_status(self) -> None:
         rows = {m.group(1): m.group(2) for m in re.finditer(r"^  \| \*\*(INCONCLUSIVE|PARTIAL|EXPLORATORY)\*\* \| (.+) \|$", readme_text(), re.M)}
         self.assertEqual(sorted(rows), ["EXPLORATORY", "INCONCLUSIVE", "PARTIAL"])
-        inconclusive = {"thinking_not_detected", "no_replies", "no_scored_rows", "no_decision_models"}
+        inconclusive = {"thinking_not_detected", "reasoning_hidden_or_not_closed", "no_replies", "no_scored_rows", "no_decision_models"}
         partial = {"rows_not_run", "rows_with_transient_error"}
         exploratory = set(K.WHY) - inconclusive - partial
         for status, codes in (("INCONCLUSIVE", inconclusive), ("PARTIAL", partial), ("EXPLORATORY", exploratory)):
