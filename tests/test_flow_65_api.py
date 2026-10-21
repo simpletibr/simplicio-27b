@@ -263,6 +263,25 @@ class ApiFlow(HermeticTestCase):
         self.engine("anchor+lora0.1")                                                    # the anchor and the adapter
         self.assertEqual(self.hub.requested, {("org/anchor", A), ("org/donor", D), ("org/lora", L)})
 
+    def test_a_checkpoint_folder_is_served_by_load_engine_without_a_revision_and_without_the_network(self):
+        """The model that was just trained (`proxy_eval run --model novo=dir:...`) is not on the Hub: no commit, no request to it."""
+        import shutil
+
+        folder = Path(tempfile.mkdtemp(prefix="sd-folder-"))
+        self.addCleanup(shutil.rmtree, folder, True)
+        for key, data in self.hub.files.items():
+            if key.startswith("org/anchor/"):
+                (folder / key[len("org/anchor/"):]).write_bytes(data)
+        self.hub.requested.clear()
+        local = api.load_engine({"anchor": f"dir:{folder}"}, cfg=self.cfg(), quant="none", device="cpu", tta_rotations=1,
+                                factories={"processor": self.tm.processor_factory})
+        self.assertEqual(self.hub.requested, set())
+        self.assertIsNone(local.provenance["spec"]["anchor_revision"])
+        hub_logits = self.engine("anchor")(**self.tm.REQUEST)[1]["logits"]
+        self.assert_logits(local(**self.tm.REQUEST)[1]["logits"], {key: views[0] for key, views in hub_logits.items()})
+        with self.assertRaisesRegex(api.ApiError, "40-hex"):
+            api.load_engine({"anchor": "org/anchor"}, cfg=self.cfg(), quant="none", device="cpu", factories=self.factories)
+
     def test_provenance_records_the_recipe_and_never_the_token(self):
         secret = "hf_" + "a1b2c3d4e5f6a7b8c9d0"
         eng = self.engine("ta_l0.5", tta_rotations=2, temperatures={"choice": 1.7})

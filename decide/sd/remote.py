@@ -15,6 +15,7 @@ import struct
 import threading
 import time
 import urllib.parse
+from pathlib import Path
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Sequence, Tuple
@@ -94,7 +95,7 @@ class LocalTransport:
         self.max_bytes = _cap(max_bytes)
 
     def fetch_total(self, url: str, start: int, end: int) -> Tuple[bytearray, Optional[int]]:
-        with open(url, "rb") as f:
+        with _open_local(url) as f:
             f.seek(start)
             data = bytearray(f.read(end - start + 1))
             f.seek(0, 2)
@@ -107,11 +108,18 @@ class LocalTransport:
         return {}
 
     def get(self, url: str) -> bytes:
-        with open(url, "rb") as f:
+        with _open_local(url) as f:
             data = f.read(self.max_bytes + 1)
         if len(data) > self.max_bytes:
             raise RemoteError(f"{url}: more than {self.max_bytes} bytes for a file that is read whole")
         return data
+
+
+def _open_local(path: str) -> Any:
+    try:
+        return open(path, "rb")
+    except OSError as exc:                                       # a missing file answers like the Hub does, so `exists()` and the callers that look for "404" work
+        raise RemoteError(f"404: {path} is not a file here ({type(exc).__name__})") from exc
 
 
 class HttpTransport:
@@ -549,17 +557,42 @@ def _manifest_files(data: Any, where: str) -> Dict[str, Dict[str, Any]]:
     return out
 
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")                       # what a repo is read at; config.py and api.py hold the same rule for the files they validate
+LOCAL_PREFIX = "dir:"                                          # "dir:PATH" names a checkpoint folder on this machine: not on the Hub, so it has no commit to pin
+
+
+def is_local(repo_id: Any) -> bool:
+    """True for a repo id that names a folder on this machine (`dir:PATH`) and not a Hub repo."""
+    return isinstance(repo_id, str) and repo_id.startswith(LOCAL_PREFIX)
+
+
+def local_path(repo_id: str) -> Path:
+    """The folder `dir:PATH` names (`~` expanded; not resolved, not checked)."""
+    return Path(repo_id[len(LOCAL_PREFIX):].strip()).expanduser()
 
 
 class HubRepo:
-    """A model repo read through Range requests.  `endpoint` is overridable for tests."""
+    """A model repo read through Range requests.  `endpoint` is overridable for tests.
+
+    A Hub repo is read at a full commit hash.  A repo id `dir:PATH` is a checkpoint folder on this machine (the model that was just trained):
+    the same shard, header and manifest code reads it from the disk, there is no network, and it has no revision (a revision given for it is
+    refused).  Names are checked the same way and cannot leave the folder, links included.
+    """
 
     def __init__(self, repo_id: str, revision: str, token: Optional[str] = None,
                  endpoint: str = "https://huggingface.co", transport=None, probe: int = 1 << 18, **transport_kw) -> None:
-        if not isinstance(revision, str) or not COMMIT_SHA.fullmatch(revision):
+        self.root: Optional[Path] = None
+        if is_local(repo_id):
+            if revision is not None:
+                raise RemoteError(f"{repo_id}: a folder on this machine has no revision, got {revision!r}")
+            folder = local_path(repo_id)
+            if not folder.is_dir():
+                raise RemoteError(f"{repo_id}: not a folder")
+            self.root = folder.resolve()
+            transport = transport or LocalTransport(**{k: v for k, v in transport_kw.items() if k == "max_bytes"})
+        elif not isinstance(revision, str) or not COMMIT_SHA.fullmatch(revision):
             raise RemoteError(f"{repo_id}: the revision must be a full commit hash (40 lowercase hex characters), got {revision!r}: "
                               "a branch such as 'main' moves while a sweep that takes days is running")
-        if token:
+        if token and self.root is None:
             problem = endpoint_problem(endpoint)
             if problem:
                 raise RemoteError(f"the Hub endpoint {problem}")
@@ -576,6 +609,11 @@ class HubRepo:
     def url(self, filename: str) -> str:
         if not safe_path(filename):
             raise RemoteError(f"{self.repo_id}: refusing the file name {filename!r}: it must be a relative path of letters, digits and ._- without '..', '?' or '#'")
+        if self.root is not None:
+            target = (self.root / filename).resolve()
+            if self.root != target and self.root not in target.parents:
+                raise RemoteError(f"404: {filename} is outside the folder {self.repo_id}")
+            return str(target)
         return f"{self.endpoint}/{self.repo_id}/resolve/{self.revision}/{filename}"
 
     def read_bytes(self, filename: str) -> bytes:

@@ -46,6 +46,37 @@ class NormalizeSpecContract(HermeticTestCase):
                 with self.subTest(f"{where}: {bad!r}"), self.assertRaisesRegex(api.ApiError, "revision"):
                     api.normalize_spec(make(bad))
 
+    def test_a_folder_on_this_machine_needs_no_revision_and_a_hub_repo_still_does(self):
+        """`dir:PATH` is a checkpoint that is not on the Hub (the model that was just trained, which G4 and the public round load through the kit):
+        it has no commit to pin.  Anything named like a Hub repo keeps needing 40 hex."""
+        local = api.normalize_spec({"anchor": "dir:work/novo", "donors": [{"repo": "dir:/m/donor", "weight": 0.5}],
+                                    "lora": {"repo": "dir:/m/lora", "weight": 0.1}})
+        self.assertEqual((local["anchor"], local["anchor_revision"]), ("dir:work/novo", None))
+        self.assertEqual([(d["repo"], d["revision"]) for d in local["donors"]], [("dir:/m/donor", None)])
+        self.assertEqual((local["lora"]["repo"], local["lora"]["revision"]), ("dir:/m/lora", None))
+        mixed = api.normalize_spec({"anchor": "org/a", "anchor_revision": A, "donors": [{"repo": "dir:/m/donor", "weight": 0.5}],
+                                    "lora": {"repo": "org/l", "weight": 0.1, "revision": L}})
+        self.assertEqual((mixed["anchor_revision"], mixed["donors"][0]["revision"], mixed["lora"]["revision"]), (A, None, L))
+        for name, bad in (("anchor", {"anchor": "org/a"}),
+                          ("anchor, text", {"anchor": "org/a", "anchor_revision": "main"}),
+                          ("donor", {"anchor": "dir:/m/a", "donors": [{"repo": "org/d", "weight": 0.5}]}),
+                          ("lora", {"anchor": "dir:/m/a", "lora": {"repo": "org/l", "weight": 0.1}}),
+                          ("base", {"anchor": "dir:/m/a", "reference": "base", "base": {"repo": "org/b"}})):
+            with self.subTest(f"a Hub repo without a commit: {name}"), self.assertRaisesRegex(api.ApiError, "40-hex"):
+                api.normalize_spec(bad)
+
+    def test_a_folder_with_a_revision_is_refused_because_a_folder_has_none(self):
+        for name, bad in (("anchor", {"anchor": "dir:/m/a", "anchor_revision": A}),
+                          ("donor", {"anchor": "dir:/m/a", "donors": [{"repo": "dir:/m/d", "weight": 0.5, "revision": D}]}),
+                          ("lora", {"anchor": "dir:/m/a", "lora": {"repo": "dir:/m/l", "weight": 0.1, "revision": L}})):
+            with self.subTest(name), self.assertRaisesRegex(api.ApiError, "no revision"):
+                api.normalize_spec(bad)
+
+    def test_a_folder_named_without_a_path_is_refused(self):
+        for bad in ("dir:", "dir:   "):
+            with self.subTest(bad), self.assertRaises(api.ApiError):
+                api.normalize_spec({"anchor": bad})
+
     def test_the_module_documents_that_reasoning_is_refused_for_now(self):
         self.assertIn("`reasoning`", api.__doc__)
         self.assertIn("fold_reasoning()", api.__doc__)

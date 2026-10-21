@@ -441,6 +441,48 @@ class RemoteFlow(HermeticTestCase):
             remote.HubRepo("org/model", endpoint=self.hub.base_url)                  # there is no default revision to fall back to
         self.assertEqual(remote.HubRepo("org/model", PIN, endpoint=self.hub.base_url).revision, PIN)
 
+    def folder(self, **extra):
+        """The `org/model` files of the fake Hub, written to a folder: a checkpoint on this machine."""
+        folder = Path(tempfile.mkdtemp(prefix="sd-folder-"))
+        self.addCleanup(__import__("shutil").rmtree, folder, True)
+        for key, data in self.hub.files.items():
+            if key.startswith("org/model/"):
+                (folder / key[len("org/model/"):]).write_bytes(data)
+        return folder
+
+    def test_a_folder_is_read_as_a_repo_with_no_network_and_no_revision(self):
+        folder = self.folder()
+        r = remote.HubRepo(f"dir:{folder}", None, endpoint="https://never.example", sleep=lambda s: None)
+        self.assertEqual(r.read_json("config.json"), {"hidden_size": 16})
+        self.assertEqual(self.raw(r, next(iter(self.tensors))), self.raw(self.repo(), next(iter(self.tensors))))
+        self.assertTrue(r.exists("config.json"))
+        self.assertFalse(r.exists("nothing.json"))
+        self.assertIsNone(r.manifest())
+        self.assertEqual(self.hub.requested, {("org/model", PIN)})                    # only the Hub-side comparison above went to the (fake) Hub
+
+    def test_a_folder_cannot_be_read_outside_itself(self):
+        folder = self.folder()
+        outside = folder.parent / (folder.name + "-secret.txt")
+        outside.write_text("secret")
+        self.addCleanup(outside.unlink)
+        (folder / "link.json").symlink_to(outside)
+        r = remote.HubRepo(f"dir:{folder}", None)
+        for name in ("../" + outside.name, "/etc/passwd", "a/../../x", "link.json"):
+            with self.subTest(name), self.assertRaises(remote.RemoteError):
+                r.read_bytes(name)
+        with self.assertRaisesRegex(remote.RemoteError, "not a folder"):
+            remote.HubRepo(f"dir:{folder}/config.json", None)
+        with self.assertRaisesRegex(remote.RemoteError, "not a folder"):
+            remote.HubRepo(f"dir:{folder}/missing", None)
+
+    def test_a_folder_has_no_revision_and_a_hub_repo_has_one(self):
+        folder = self.folder()
+        with self.assertRaisesRegex(remote.RemoteError, "no revision"):
+            remote.HubRepo(f"dir:{folder}", PIN)
+        with self.assertRaisesRegex(remote.RemoteError, "revision"):
+            remote.HubRepo("org/model", None, transport=remote.LocalTransport())            # a transport of files is not a way round the pin
+        self.assertTrue(remote.is_local("dir:x") and not remote.is_local("org/model") and not remote.is_local(None))
+
     def test_the_pinned_revision_is_what_goes_on_the_wire(self):
         r = self.repo(revision="2" * 40)
         self.assertEqual(r.url("config.json"), f"{self.hub.base_url}/org/model/resolve/{'2' * 40}/config.json")
@@ -996,6 +1038,42 @@ class LoaderFlow(HermeticTestCase):
                 for name, (a, b) in self.spans(key).items():
                     if skipped(name):
                         self.assertFalse(any(x < b and y >= a for x, y in asked), f"{key}: {name} was downloaded")
+
+    def folder_of(self, repo):
+        """The files the fake Hub holds for `repo`, written to a folder: that checkpoint as it sits on this machine."""
+        import shutil
+
+        folder = Path(tempfile.mkdtemp(prefix="sd-folder-"))
+        self.addCleanup(shutil.rmtree, folder, True)
+        for key, data in self.hub.files.items():
+            if key.startswith(repo + "/"):
+                (folder / key[len(repo) + 1:]).write_bytes(data)
+        return folder
+
+    def test_a_model_made_of_folders_loads_like_the_same_model_from_the_hub_and_never_asks_the_network(self):
+        spec = {"anchor": f"dir:{self.folder_of('org/anchor')}", "donors": [{"repo": f"dir:{self.folder_of('org/donor')}", "weight": 0.5}],
+                "lora": {"repo": f"dir:{self.folder_of('org/lora')}", "weight": 0.1}, "method": "task_arithmetic"}
+        self.hub.requested.clear()
+        d = self.L.load_decider(spec, self.L.LoadOptions(quant="none", compute_dtype="float32", workers=2), processor_factory=self.tm.processor_factory)
+        self.assert_state(d, self.expected(lora=0.1))
+        self.assertEqual(self.hub.requested, set())
+
+    def test_a_folder_that_is_a_hub_checkpoint_with_a_pin_beside_it_still_needs_the_pin(self):
+        spec = {**self.spec(), "donors": [{"repo": "org/donor", "weight": 0.5}], "anchor": f"dir:{self.folder_of('org/anchor')}", "anchor_revision": None}
+        with self.assertRaisesRegex(remote.RemoteError, "revision"):
+            self.L.load_decider(spec, self.L.LoadOptions(quant="none", compute_dtype="float32", workers=2), processor_factory=self.tm.processor_factory)
+
+    def test_the_default_processor_and_tokenizer_of_a_folder_are_read_from_the_folder_not_the_hub(self):
+        import transformers
+
+        for factory, cls in ((self.L._auto_processor, "AutoProcessor"), (self.L._auto_tokenizer, "AutoTokenizer")):
+            with self.subTest(cls):
+                with mock.patch.object(getattr(transformers, cls), "from_pretrained", return_value="ok") as called:
+                    factory("tok")("dir:/m/novo", None)
+                called.assert_called_once_with("/m/novo")
+                with mock.patch.object(getattr(transformers, cls), "from_pretrained", return_value="ok") as called:
+                    factory("tok")("org/a", "a" * 40)
+                called.assert_called_once_with("org/a", revision="a" * 40, token="tok")
 
     def test_each_repo_is_read_at_the_commit_the_spec_names_and_at_no_other(self):
         """The fake Hub serves any revision, so this used to go unnoticed when the loader asked for `None` (read as `main`) for a donor."""

@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import yaml
 
-from decide.sd.remote import endpoint_problem
+from decide.sd.remote import endpoint_problem, is_local
 
 DEFAULT_PATH = Path(__file__).resolve().parents[1] / "config.yaml"
 OVERLAY_GLOB = "config.*.yaml"          # decide/config.data.yaml, decide/config.rental.yaml, ... (Squad B)
@@ -219,6 +219,9 @@ def validate(raw: Mapping, foreign: Iterable[str] = ()) -> None:
              f"donor {d.get('name')!r} is not allowed (license or incompatible readout; see fase0b)")
     need("repo" in raw["models"].get("anchor", {}), "models.anchor.repo is required")
     for label, entry in model_entries(raw["models"]):
+        if is_local(entry.get("repo")):                                             # dir:PATH, a checkpoint folder on this machine: not on the Hub, no commit
+            need(entry.get("revision") is None, f"{label} is a folder on this machine and has no revision, got {entry.get('revision')!r}")
+            continue
         need(is_revision(entry.get("revision")),
              f"{label}.revision must be a full 40-hex commit hash, got {entry.get('revision')!r}: a branch moves between sessions, "
              "so no number of a sweep would belong to one set of weights")

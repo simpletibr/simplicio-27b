@@ -14,6 +14,9 @@ Requests are the Decision Index's: a state text and questions (choice, noul).  A
 would otherwise answer a question that is not the one asked.  Reasoning is served once the thinking track passes its gate and the
 training protocol's `fold_reasoning()` is integrated here.
 
+A repo is named `org/name` and read at a full commit hash (`anchor_revision`, `revision`), or `dir:PATH` for a checkpoint folder on this
+machine (the model that was just trained): no Hub, no network, and no revision, since a folder has none (one is refused).
+
 Importing this module does not import torch: the pure helpers (`normalize_spec`, `spec_for`, `parse_device`,
 `quant_settings`) work anywhere, and `load_engine` imports the heavy parts when it is called.
 """
@@ -23,7 +26,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
-from decide.sd import calibrate, env, evaluate
+from decide.sd import calibrate, env, evaluate, remote
 from decide.sd import config as C
 
 __all__ = ["ApiError", "normalize_spec", "spec_for", "spec_names", "parse_device", "quant_settings", "load_options", "load_engine",
@@ -53,11 +56,19 @@ def _number(value: Any, what: str) -> float:
 
 def _repo(value: Any, what: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise ApiError(f"{what} must be a Hugging Face repo id such as 'org/name'")
-    return value.strip()
+        raise ApiError(f"{what} must be a Hugging Face repo id such as 'org/name' (or 'dir:PATH' for a checkpoint folder on this machine)")
+    value = value.strip()
+    if remote.is_local(value) and not value[len(remote.LOCAL_PREFIX):].strip():
+        raise ApiError(f"{what}: 'dir:' needs the path of a folder")
+    return value
 
 
-def _revision(value: Any, what: str) -> str:
+def _revision(value: Any, what: str, repo: Optional[str] = None) -> Optional[str]:
+    """A Hub repo is read at a full commit hash.  A checkpoint folder on this machine (`dir:PATH`) is not on the Hub: it has none, and is given none."""
+    if repo is not None and remote.is_local(repo):
+        if value is not None:
+            raise ApiError(f"{what} is a folder on this machine and has no revision, got {value!r}")
+        return None
     if not C.is_revision(value):
         raise ApiError(f"{what} must be a full 40-hex commit hash, got {value!r}: a branch moves, so the weights could change between two reads")
     return value
@@ -81,7 +92,7 @@ def _checked_part(raw: Any, what: str, forbid: bool) -> Optional[Dict[str, Any]]
         raise ApiError(f"donor {repo} is not allowed (license or incompatible readout; see fase0b)")
     if weight == 0:
         return None
-    return {"repo": repo, "weight": weight, "revision": _revision(raw.get("revision"), f"{what} ({repo}): revision")}
+    return {"repo": repo, "weight": weight, "revision": _revision(raw.get("revision"), f"{what} ({repo}): revision", repo)}
 
 
 def normalize_spec(spec: Any, cfg: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
@@ -142,16 +153,16 @@ def normalize_spec(spec: Any, cfg: Optional[Mapping[str, Any]] = None) -> Dict[s
         given = spec.get("base")
         if given:
             base_repo = _repo(given.get("repo") if isinstance(given, Mapping) else None, "spec.base.repo")
-            base = {"repo": base_repo, "revision": _revision(given.get("revision"), f"spec.base ({base_repo}): revision")}
+            base = {"repo": base_repo, "revision": _revision(given.get("revision"), f"spec.base ({base_repo}): revision", base_repo)}
         elif cfg is not None and (cfg.get("models") or {}).get("base"):
             entry = cfg["models"]["base"]
-            base = {"repo": entry["repo"], "revision": _revision(entry.get("revision"), f"models.base ({entry['repo']}): revision")}
+            base = {"repo": entry["repo"], "revision": _revision(entry.get("revision"), f"models.base ({entry['repo']}): revision", entry["repo"])}
         else:
             raise ApiError("spec.reference is 'base' but there is no base: pass spec.base or a config with models.base")
     name = spec.get("name")
     if name is not None and not isinstance(name, str):
         raise ApiError("spec.name must be text")
-    return {"anchor": anchor, "anchor_revision": _revision(spec.get("anchor_revision"), f"spec.anchor_revision ({anchor})"), "donors": donors, "lora": lora, "method": method,
+    return {"anchor": anchor, "anchor_revision": _revision(spec.get("anchor_revision"), f"spec.anchor_revision ({anchor})", anchor), "donors": donors, "lora": lora, "method": method,
             "density": density, "protocol": protocol, "reference": reference, "base": base, "name": name}
 
 

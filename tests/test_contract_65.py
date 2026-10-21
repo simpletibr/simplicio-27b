@@ -191,6 +191,23 @@ class ConfigContract(HermeticTestCase):
                     r.setdefault(section, {})[key] = value
                     C.validate(r)
 
+    def test_a_model_of_the_config_may_be_a_folder_without_a_revision_and_a_hub_repo_may_not(self):
+        r = self.raw()
+        r["models"]["anchor"] = {"name": "novo", "repo": "dir:work/novo"}
+        C.validate(r)
+        r["models"]["anchor"]["revision"] = "a" * 40
+        with self.assertRaisesRegex(C.ConfigError, "no revision"):
+            C.validate(r)
+        r = self.raw()
+        r["models"]["lora"]["repo"] = "dir:work/lora"
+        r["models"]["lora"].pop("revision")
+        C.validate(r)
+        for entry in ("anchor", "lora"):
+            r = self.raw()
+            r["models"][entry].pop("revision")
+            with self.subTest(f"a Hub repo without a commit: {entry}"), self.assertRaisesRegex(C.ConfigError, "revision"):
+                C.validate(r)
+
     def test_the_groupings_the_config_accepts_are_the_ones_calibration_fits(self):
         from decide.sd import calibrate
 

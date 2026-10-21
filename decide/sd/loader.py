@@ -26,7 +26,7 @@ from decide.sd import merge as M
 from decide.sd import nf4
 from decide.sd.config import PROTOCOLS
 from decide.sd.engine import AssembledDecider
-from decide.sd.remote import HubRepo, RemoteError
+from decide.sd.remote import HubRepo, RemoteError, is_local, local_path
 from decide.sd.vendor.pplx_decider.model import enable_noncausal_full_attention
 from decide.sd.vendor.pplx_decider.protocol import PROTOCOL
 
@@ -457,6 +457,8 @@ def _auto_tokenizer(token: Optional[str]) -> Callable[[str, Optional[str]], Any]
     def make(repo: str, revision: Optional[str]) -> Any:
         from transformers import AutoTokenizer
 
+        if is_local(repo):                                       # a folder on this machine: its own files, no Hub, no token
+            return AutoTokenizer.from_pretrained(str(local_path(repo)))
         return AutoTokenizer.from_pretrained(repo, revision=revision, token=token)
     return make
 
@@ -465,6 +467,8 @@ def _auto_processor(token: Optional[str]) -> Callable[[str, Optional[str]], Any]
     def make(repo: str, revision: Optional[str]) -> Any:
         from transformers import AutoProcessor
 
+        if is_local(repo):                                       # the processor too
+            return AutoProcessor.from_pretrained(str(local_path(repo)))
         return AutoProcessor.from_pretrained(repo, revision=revision, token=token)
     return make
 
