@@ -962,6 +962,25 @@ class ProxyContract(unittest.TestCase):
         self.assertEqual(partial["missing"], 1)
 
 
+    def test_the_same_answer_twice_is_one_answer_and_two_different_ones_are_invalid(self) -> None:
+        reqs = [("e1", choice_request(), {"q1": "A"}, "s1"), ("e2", choice_request(), {"q1": "B"}, "s1")]
+        row = lambda eid, probs: {"example_id": eid, "question_id": "q1", "codes": ["A", "B", "C", "D"], "probs": probs}      # noqa: E731
+        once = P.score_rows(reqs, [row("e1", [0.7, 0.1, 0.1, 0.1]), row("e2", [0.1, 0.7, 0.1, 0.1])])
+        twice = P.score_rows(reqs, [row("e1", [0.7, 0.1, 0.1, 0.1]), row("e2", [0.1, 0.7, 0.1, 0.1]), row("e1", [0.7, 0.1, 0.1, 0.1])])
+        self.assertEqual(twice, once, "the same row written twice (a run appended to itself) changes nothing")
+        for first, last in (([0.7, 0.1, 0.1, 0.1], [0.1, 0.7, 0.1, 0.1]), ([0.1, 0.7, 0.1, 0.1], [0.7, 0.1, 0.1, 0.1])):          # right then wrong, wrong then right
+            conflict = P.score_rows(reqs, [row("e1", first), row("e2", [0.1, 0.7, 0.1, 0.1]), row("e1", last)])
+            self.assertEqual((conflict["n"], conflict["bad"], conflict["missing"], conflict["conflicting"]), (1, 1, 0, 1), "no answer is picked for the user: neither the first nor the last")
+        self.assertEqual(once["conflicting"], 0)
+
+    def test_result_table_says_which_questions_were_answered_twice_differently(self) -> None:
+        row = lambda eid, qid, probs: {"example_id": eid, "question_id": qid, "probs": probs}      # noqa: E731
+        table, conflicting = P.result_table([row("e1", "q1", [1, 0]), row("e1", "q1", [1, 0]), row("e2", "q1", [1, 0]), row("e2", "q1", [0, 1]), row("e3", 7, [1, 0]),
+                                              {"example_id": "e4", "question_id": "q1"}, {"question_id": "q1", "probs": [1, 0]}])
+        self.assertEqual(conflicting, {("e2", "q1")})
+        self.assertEqual(sorted(table), [("e1", "q1"), ("e2", "q1"), ("e3", "7")], "rows without probabilities or an id are not answers")
+
+
 class GeneratorAndLoopContract(unittest.TestCase):
     def test_generator_is_off_by_default(self) -> None:
         spec = G.TaskSpec(domain="support", lang="pt", qtype="choice", description="triagem de chamados")

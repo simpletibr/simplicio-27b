@@ -1055,6 +1055,39 @@ class G4Contract(unittest.TestCase):
         self.assertEqual((got["expected_rows"], got["rows"]), (100, 99))
         self.assertNotIn("proxy_rows_differ_from_manifest", self.verdict(requests, new, base)["reasons"], "no manifest rows given: not checked")
 
+    def test_an_answer_written_twice_with_different_numbers_makes_the_run_invalid(self) -> None:
+        requests, new, base = self.fixture(50, 40, 20)
+        before = self.verdict(requests, new, base)
+        self.assertEqual(before["status"], "PASS", before)
+        again = dict(new[0])
+        self.assertEqual(self.verdict(requests, new + [again], base)["status"], "PASS", "the same row twice is one answer")
+        flipped = dict(new[0], probs=[0.1, 0.7, 0.1, 0.1])                     # the first answer was right (0.7 on gold A); this one says B
+        for rows in (new + [flipped], [flipped] + new):                        # the order does not pick the winner
+            got = self.verdict(requests, rows, base)
+            self.assertEqual(got["status"], "INVALID", got)
+            self.assertEqual(got["reasons"], ["new_bad_rows"])
+            self.assertEqual((got["new"]["bad"], got["new"]["missing"], got["new"]["conflicting"], got["baseline"]["conflicting"]), (1, 0, 1, 0))
+        got = self.verdict(requests, new, base + [dict(base[3], probs=[0.25, 0.25, 0.25, 0.25])])
+        self.assertEqual((got["status"], got["reasons"]), ("INVALID", ["baseline_bad_rows"]))
+
+    def test_the_bootstrap_units_follow_the_scorer_on_conflicting_answers(self) -> None:
+        """``g4_verdict`` returns INVALID before the bootstrap when a side has a conflict, so only a direct look shows that ``_units`` leaves such a question out like ``score_rows``."""
+        from decide.data import proxy_private as PP
+        from decide.rental import gates as G
+
+        requests, new, _ = self.fixture(5, 4, 0)
+        rows = new + [dict(new[0], probs=[0.1, 0.1, 0.1, 0.7]), dict(new[7], probs=[0.7, 0.1, 0.1, 0.1])]       # one question with two different answers, one with two equal ones
+        scored = PP.score_rows(requests, rows)
+        self.assertEqual((scored["n"], scored["bad"], scored["conflicting"]), (9, 1, 1))
+        units = G._units(requests, rows)
+        self.assertEqual(sum(len(per_source) for per_source in units.values()), scored["n"])
+        self.assertNotIn((new[0]["run_id"], "q1"), units[new[0]["run_id"].split(":")[0]])
+
+    def test_a_duplicate_of_a_question_nobody_scores_does_not_matter(self) -> None:
+        requests, new, base = self.fixture(50, 40, 20)
+        stray = [{"run_id": "not-in-the-proxy", "question_id": "q1", "probs": [1, 0, 0, 0]}, {"run_id": "not-in-the-proxy", "question_id": "q1", "probs": [0, 1, 0, 0]}]
+        self.assertEqual(self.verdict(requests, new + stray, base)["status"], "PASS")
+
     def test_a_proxy_with_too_few_rows_is_invalid_however_large_the_gain(self) -> None:
         requests, new, base = self.fixture(1, 1, 0)                          # two questions: both right for the new, both wrong for the baseline
         got = self.verdict(requests, new, base, min_rows=100)
@@ -2939,6 +2972,21 @@ class ProxyEvalContract(unittest.TestCase):
         self.assertIn("novo", out + err)
         self.assertIn("10", out + err)                                                  # the 10 questions that have no row
         self.assertFalse((self.root / "scores.json").exists(), "nothing is written when one of the runs is incomplete")
+
+    def test_a_question_answered_twice_with_different_numbers_is_invalid_and_the_message_says_so(self) -> None:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        self.make_runs(flash=2, novo=3)
+        table = pq.read_table(self.root / "runs" / "novo" / "results.parquet")
+        rows = table.to_pylist()
+        rows.append(dict(rows[0], probs=[0.1, 0.1, 0.1, 0.7]))                          # the same request and question, another answer
+        pq.write_table(pa.Table.from_pylist(rows), str(self.root / "runs" / "novo" / "results.parquet"))
+        code, out, err = self.main("score", "--proxy", self.proxy, "--results", f"flash={self.root / 'runs' / 'flash'}", f"novo={self.root / 'runs' / 'novo'}",
+                                   "--out", self.root / "scores.json")
+        self.assertEqual(code, 3)
+        self.assertIn("1 of them answered twice with different numbers", out + err)
+        self.assertFalse((self.root / "scores.json").exists())
 
     def test_a_folder_without_a_result_table_says_what_is_missing(self) -> None:
         (self.root / "empty").mkdir()

@@ -109,10 +109,11 @@ def cmd_score(args: argparse.Namespace) -> int:
     for name, folder in map(parse_pair, args.results):
         scored = _score(args.proxy, folder)
         points = None if scored["proxy"] is None else 100 * scored["proxy"]
+        invalid = f"{scored['bad']} invalid" + (f" ({scored['conflicting']} of them answered twice with different numbers)" if scored["conflicting"] else "")
         print(f"{name}: {'no scored question' if points is None else format(points, '.3f') + ' proxy points'}, {scored['n']} questions scored, "
-              f"{scored['missing']} without a row, {scored['bad']} invalid, NLL {scored['nll'] if scored['nll'] is None else round(scored['nll'], 4)}")
+              f"{scored['missing']} without a row, {invalid}, NLL {scored['nll'] if scored['nll'] is None else round(scored['nll'], 4)}")
         if scored["missing"] or scored["bad"] or scored["proxy"] is None:
-            incomplete.append(f"{name} ({scored['missing']} without a row, {scored['bad']} invalid)")
+            incomplete.append(f"{name} ({scored['missing']} without a row, {invalid})")
         else:
             scores[name] = scored["proxy"]
     if incomplete:

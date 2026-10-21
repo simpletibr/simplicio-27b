@@ -28,7 +28,8 @@ class MutantsApply(unittest.TestCase):
         self.assertGreaterEqual(len(ids), 60)
         for m in MC.MUTANTS:
             self.assertTrue(m.why.strip(), m.id)
-            self.assertTrue(m.file.startswith("decide/rental/"), f"{m.id}: the mutants of F6 are in decide/rental")
+            self.assertTrue(m.file.startswith("decide/rental/") or m.file == "decide/data/proxy_private.py",
+                            f"{m.id}: the mutants of F6 are in decide/rental, or in the scorer that its gates call (decide/data/proxy_private.py)")
             self.assertEqual(m.tests, ("test_contract_71.py", "test_flow_71.py"), m.id)
 
     def test_the_mutants_cover_every_module_of_the_day_that_decides_something(self) -> None:
