@@ -1055,6 +1055,26 @@ class G4Contract(unittest.TestCase):
         self.assertEqual((got["expected_rows"], got["rows"]), (100, 99))
         self.assertNotIn("proxy_rows_differ_from_manifest", self.verdict(requests, new, base)["reasons"], "no manifest rows given: not checked")
 
+    def test_an_answer_written_twice_with_different_numbers_makes_the_run_invalid(self) -> None:
+        requests, new, base = self.fixture(50, 40, 20)
+        before = self.verdict(requests, new, base)
+        self.assertEqual(before["status"], "PASS", before)
+        again = dict(new[0])
+        self.assertEqual(self.verdict(requests, new + [again], base)["status"], "PASS", "the same row twice is one answer")
+        flipped = dict(new[0], probs=[0.1, 0.7, 0.1, 0.1])                     # the first answer was right (0.7 on gold A); this one says B
+        for rows in (new + [flipped], [flipped] + new):                        # the order does not pick the winner
+            got = self.verdict(requests, rows, base)
+            self.assertEqual(got["status"], "INVALID", got)
+            self.assertEqual(got["reasons"], ["new_bad_rows"])
+            self.assertEqual((got["new"]["bad"], got["new"]["missing"], got["new"]["conflicting"], got["baseline"]["conflicting"]), (1, 0, 1, 0))
+        got = self.verdict(requests, new, base + [dict(base[3], probs=[0.25, 0.25, 0.25, 0.25])])
+        self.assertEqual((got["status"], got["reasons"]), ("INVALID", ["baseline_bad_rows"]))
+
+    def test_a_duplicate_of_a_question_nobody_scores_does_not_matter(self) -> None:
+        requests, new, base = self.fixture(50, 40, 20)
+        stray = [{"run_id": "not-in-the-proxy", "question_id": "q1", "probs": [1, 0, 0, 0]}, {"run_id": "not-in-the-proxy", "question_id": "q1", "probs": [0, 1, 0, 0]}]
+        self.assertEqual(self.verdict(requests, new + stray, base)["status"], "PASS")
+
     def test_a_proxy_with_too_few_rows_is_invalid_however_large_the_gain(self) -> None:
         requests, new, base = self.fixture(1, 1, 0)                          # two questions: both right for the new, both wrong for the baseline
         got = self.verdict(requests, new, base, min_rows=100)
