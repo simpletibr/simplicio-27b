@@ -2490,6 +2490,39 @@ class ExecutorContract(unittest.TestCase):
         self.assertEqual((env["PATH"], env["PYTHONUNBUFFERED"]), ("/bin", "1"))
         self.assertTrue(env["PYTHONPATH"].split(os.pathsep)[0].endswith(str(ROOT)) or str(ROOT) in env["PYTHONPATH"])
 
+    def test_other_credentials_of_the_machine_do_not_reach_the_child(self) -> None:
+        from decide.rental import run as R
+
+        cfg = {"hub": {"token_env": "HF_TOKEN"}, "thinker": {"api_key_env": "THINKER_API_KEY"}}
+        credentials = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "WANDB_API_KEY", "KAGGLE_KEY", "GITHUB_TOKEN", "GH_TOKEN", "NPM_TOKEN",
+                       "JUPYTER_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID",
+                       "GOOGLE_APPLICATION_CREDENTIALS", "SSH_AUTH_SOCK", "DOCKER_AUTH_CONFIG", "MY_SERVICE_PASSWORD", "db_password", "VAULT_PASSPHRASE", "SESSION_COOKIE",
+                       "OPENAI_APIKEY", "SSH_PRIVATE_KEY", "DEPLOY_KEY", "SECRET", "TOKEN", "BEARER")
+        env = R.child_env(cfg, dict({name: "value-of-" + name for name in credentials}, PATH="/bin"))
+        self.assertEqual([name for name in credentials if name in env], [])
+        self.assertEqual(env["PATH"], "/bin")
+        self.assertNotIn("value-of-", json.dumps(env))
+
+    def test_the_child_keeps_the_variables_a_training_step_needs(self) -> None:
+        from decide.rental import run as R
+
+        cfg = {"hub": {"token_env": "HF_TOKEN"}, "thinker": {"api_key_env": "THINKER_API_KEY"}}
+        needed = ("PATH", "HOME", "LANG", "LC_ALL", "LD_LIBRARY_PATH", "TMPDIR", "VIRTUAL_ENV", "CUDA_VISIBLE_DEVICES", "CUDA_HOME", "CUDA_MODULE_LOADING",
+                  "NCCL_DEBUG", "NCCL_SOCKET_IFNAME", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "HF_HOME", "HF_DATASETS_CACHE", "HF_HUB_ENABLE_HF_TRANSFER",
+                  "HF_HUB_DISABLE_IMPLICIT_TOKEN", "TOKENIZERS_PARALLELISM", "PYTORCH_CUDA_ALLOC_CONF", "TORCHINDUCTOR_CACHE_DIR", "TRITON_CACHE_DIR",
+                  "KAGGLE_USERNAME", "WANDB_MODE", "AWSOME_THREADS", "MONKEY_PATCH", "PYTHONHASHSEED", "TERM", "USER", "SHELL")
+        env = R.child_env(cfg, {name: "kept-" + name for name in needed})
+        self.assertEqual({name: env.get(name) for name in needed}, {name: "kept-" + name for name in needed})
+
+    def test_the_names_that_are_left_out_are_listed_without_their_values(self) -> None:
+        from decide.rental import run as R
+
+        cfg = {"hub": {"token_env": "HUB_LOGIN"}, "thinker": {"api_key_env": "THINKER_LOGIN"}}               # names a pattern would not catch
+        parent = {"PATH": "/bin", "HUB_LOGIN": "hf_x", "OPENAI_API_KEY": "sk-1", "AWS_REGION": "eu-1", "HF_TOKEN": "hf_y", "THINKER_LOGIN": "sk-2", "CUDA_HOME": "/usr/local/cuda"}
+        self.assertEqual(R.dropped_names(cfg, parent), ["AWS_REGION", "HF_TOKEN", "HUB_LOGIN", "OPENAI_API_KEY", "THINKER_LOGIN"])
+        self.assertEqual(sorted(set(parent) - set(R.child_env(cfg, parent))), R.dropped_names(cfg, parent), "what is listed is exactly what the child does not get")
+        self.assertEqual(R.dropped_names(cfg, {"PATH": "/bin"}), [])
+
     def test_the_child_cannot_go_online_for_a_model_even_if_the_parent_could(self) -> None:
         from decide.rental import run as R
 
