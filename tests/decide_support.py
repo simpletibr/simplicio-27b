@@ -36,6 +36,7 @@ HAVE_TRANSFORMERS = HAVE_TORCH and have("transformers")
 HAVE_PYARROW = have("pyarrow")
 HAVE_KIT = have("decision_index")
 HAVE_BNB = HAVE_TORCH and have("bitsandbytes")
+HAVE_REQUESTS = have("requests")
 
 needs_numpy = unittest.skipUnless(HAVE_NUMPY, "numpy is not installed")
 needs_torch = unittest.skipUnless(HAVE_TORCH, "torch is not installed")
@@ -43,6 +44,7 @@ needs_transformers = unittest.skipUnless(HAVE_TRANSFORMERS, "torch + transformer
 needs_pyarrow = unittest.skipUnless(HAVE_PYARROW, "pyarrow is not installed")
 needs_kit = unittest.skipUnless(HAVE_KIT, "the decision-index scoring kit is not installed")
 needs_bnb = unittest.skipUnless(HAVE_BNB, "bitsandbytes is not installed")
+needs_requests = unittest.skipUnless(HAVE_REQUESTS, "requests is not installed (the Range reader of decide/sd/remote.py uses it)")
 
 SECRET_ENV = ("HF_TOKEN", "SD_PLATFORM", "SD_WORKDIR", "SD_CONFIG", "KAGGLE_KERNEL_RUN_TYPE", "COLAB_RELEASE_TAG")
 

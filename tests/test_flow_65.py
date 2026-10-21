@@ -14,11 +14,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from decide_support import FakeHub, HermeticTestCase, build_safetensors, needs_kit, needs_torch, needs_transformers, numpy_tensors
+from decide_support import FakeHub, HermeticTestCase, build_safetensors, needs_kit, needs_requests, needs_torch, needs_transformers, numpy_tensors
 
 from decide.sd import remote
 
 
+@needs_requests
 class RemoteFlow(HermeticTestCase):
     def setUp(self):
         super().setUp()
