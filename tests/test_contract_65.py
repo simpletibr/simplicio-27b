@@ -1669,6 +1669,28 @@ class VendorContract(unittest.TestCase):
                     head = (self.VENDOR / package / name).read_text(encoding="utf-8").splitlines()[:6]
                     self.assertTrue(any("Modifications by simplicio-decide:" in line for line in head))
 
+    def test_each_package_names_the_upstream_commit_it_was_copied_from_and_it_is_the_pinned_one(self):
+        cfg = C.load_config()
+        donors = {d["name"]: d for d in cfg.models.donors}
+        for package, entry in (("pplx_decider", cfg.models.anchor), ("d3", donors["d3"])):
+            with self.subTest(package):
+                self.assertEqual(self.manifest(package)["upstream_revision"], entry["revision"])      # what we copied is what we merge and measure
+
+    def test_the_licence_of_each_package_is_its_own_upstream_file_not_a_copy_of_the_other(self):
+        # sha256 of the LICENSE of each upstream at the pinned commit, read from the Hub on 2026-10-21; they differ in the Appendix line
+        # ("Copyright [yyyy] [name of copyright owner]" in d3's, "2026 Alibaba Cloud" in pplx's)
+        expected = {"pplx_decider": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+                    "d3": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"}
+        for package, digest in expected.items():
+            with self.subTest(package):
+                self.assertEqual(hashlib.sha256((self.VENDOR / package / "LICENSE").read_bytes()).hexdigest(), digest)
+                self.assertEqual(self.manifest(package)["files"]["LICENSE"], {"modified": False, "upstream_sha256": digest})
+        self.assertNotIn("license_text_note", self.manifest("d3"))
+
+    def test_exactly_the_files_the_description_says_are_modified_are_modified(self):
+        modified = {pkg: sorted(n for n, info in self.manifest(pkg)["files"].items() if info["modified"]) for pkg in ("pplx_decider", "d3")}
+        self.assertEqual(modified, {"pplx_decider": ["__init__.py", "fast.py"], "d3": []})
+
     def test_protocol_constants_match_the_shipped_json(self):
         joint = json.loads((self.VENDOR / "pplx_decider" / "joint_config.json").read_text(encoding="utf-8"))
         tree = ast.parse((self.VENDOR / "pplx_decider" / "protocol.py").read_text(encoding="utf-8"))
