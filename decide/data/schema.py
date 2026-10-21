@@ -209,7 +209,7 @@ def _arrow():
         import pyarrow as pa
         import pyarrow.parquet as pq
     except ImportError as exc:  # pragma: no cover - message only
-        raise ImportError("pyarrow is required for parquet files: pip install pyarrow") from exc
+        raise ImportError("pyarrow is required for parquet files (install the pinned packages of decide/data/requirements.txt)") from exc
     return pa, pq
 
 

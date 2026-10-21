@@ -11,7 +11,7 @@ def load_data_config(path: Optional[Path] = None) -> Dict[str, Any]:
     try:
         import yaml
     except ImportError as exc:  # pragma: no cover - message only
-        raise ImportError("PyYAML is required to read config.data.yaml: pip install pyyaml") from exc
+        raise ImportError("PyYAML is required to read config.data.yaml (install the pinned packages of decide/data/requirements.txt)") from exc
     data = yaml.safe_load(Path(path or DEFAULT_PATH).read_text(encoding="utf-8")) or {}
     if set(data) != {"data"}:
         raise ValueError(f"config.data.yaml must have exactly one top-level key, 'data' (found {sorted(data)})")

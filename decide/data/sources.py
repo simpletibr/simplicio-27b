@@ -92,7 +92,7 @@ def load_sources(path: Optional[Path] = None) -> Dict[str, Source]:
     try:
         import yaml
     except ImportError as exc:  # pragma: no cover - message only
-        raise ImportError("PyYAML is required to read sources.yaml: pip install pyyaml") from exc
+        raise ImportError("PyYAML is required to read sources.yaml (install the pinned packages of decide/data/requirements.txt)") from exc
     data = yaml.safe_load(Path(path or DEFAULT_SOURCES_PATH).read_text(encoding="utf-8")) or {}
     out: Dict[str, Source] = {}
     for key, raw in (data.get("sources") or {}).items():
