@@ -21,14 +21,16 @@ data:
       - work/suite-0.3/added-rows.jsonl.gz
       - work/suite-0.3/gsm8k-rows.jsonl.gz
   generator:                                 # novos dominios PT-BR/EN; DESLIGADO por padrao
+    # Duas chaves: `enabled: true` aqui E `--generate` em `python -m decide.data.build_corpus`. Os termos do provedor
+    # escolhido valem para o texto gerado (as linhas saem com licenca `provider-terms`).
     enabled: false
-    provider: null                           # echo | command | openai-compatible
+    provider: null                           # command | openai-compatible
     command: []                              # argv do provedor `command` (prompt no stdin, resposta no stdout)
-    base_url: null                           # provedor openai-compatible
+    base_url: null                           # provedor openai-compatible: https:// (http so em localhost)
     model: null
-    api_key_env: GENERATOR_API_KEY
+    api_key_env: GENERATOR_API_KEY           # nome da variavel de ambiente; a chave nunca fica em arquivo
     per_task: 200
-    tasks: []                                # [{domain, lang, qtype, description}]
+    tasks: []                                # [{domain, lang, qtype: choice|noul|score, description}]
   loop:
     files: [data/simplicio_loop_50pts_train.jsonl, data/v2/train.jsonl]
     per_record: 2

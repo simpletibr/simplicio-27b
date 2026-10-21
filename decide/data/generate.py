@@ -18,7 +18,7 @@ import subprocess
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
 
 from . import schema as S
 
@@ -195,3 +195,52 @@ def generate_items(spec: TaskSpec, provider: Provider, *, n: int, seed: int, ena
             rows.append({"example_id": f"{source}:{digest[:16]}", "source": source, "license": "provider-terms",
                          "lang": spec.lang, "request": request, "gold": gold})
     return rows, stats
+
+
+def provider_from_config(cfg: Mapping[str, Any]) -> "Provider":
+    """The provider named by the ``data.generator`` section of config.data.yaml (``command`` or ``openai-compatible``)."""
+    kind = cfg.get("provider")
+    if kind == "command":
+        argv = cfg.get("command")
+        if not isinstance(argv, (list, tuple)) or not argv or not all(isinstance(a, str) and a for a in argv):
+            raise ValueError("data.generator.command must be a non-empty list of strings: the program and its arguments (the prompt goes to stdin)")
+        return CommandProvider(argv, name="command")
+    if kind == "openai-compatible":
+        if not cfg.get("base_url") or not cfg.get("model"):
+            raise ValueError("data.generator needs base_url and model for the openai-compatible provider")
+        return OpenAICompatibleProvider(str(cfg["base_url"]), str(cfg["model"]), api_key_env=str(cfg.get("api_key_env") or "GENERATOR_API_KEY"))
+    raise ValueError(f"data.generator.provider must be 'command' or 'openai-compatible' (got {kind!r})")
+
+
+def generate_rows(cfg: Mapping[str, Any], *, seed: int, provider: Optional["Provider"] = None) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, int]]:
+    """Rows of every task of the ``data.generator`` section, grouped by source name (``gen:<provider>:<domain>``).
+
+    The section must say ``enabled: true`` (``GeneratorDisabled`` otherwise).  The same request produced by two tasks is
+    kept once.  ``stats``: calls, accepted (rows kept), rejected, duplicates."""
+    if not cfg.get("enabled"):
+        raise GeneratorDisabled("the generator is off: set data.generator.enabled: true in the config (and pass --generate)")
+    tasks = cfg.get("tasks") or []
+    if not tasks:
+        raise ValueError("data.generator.tasks is empty: list the domains to generate ({domain, lang, qtype, description})")
+    provider = provider or provider_from_config(cfg)
+    totals = {"calls": 0, "accepted": 0, "rejected": 0, "duplicates": 0}
+    seen: set = set()
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for i, task in enumerate(tasks):
+        missing = [k for k in ("domain", "lang", "qtype", "description") if not isinstance(task, Mapping) or not task.get(k)]
+        if missing or task["qtype"] not in _SHAPES:
+            raise ValueError(f"data.generator.tasks[{i}] needs domain, lang, qtype ({'|'.join(_SHAPES)}) and description (missing: {missing or 'a valid qtype'})")
+        spec = TaskSpec(domain=str(task["domain"]), lang=str(task["lang"]), qtype=str(task["qtype"]), description=str(task["description"]),
+                        n_options=int(task.get("n_options", 4)))
+        rows, stats = generate_items(spec, provider, n=int(cfg.get("per_task", 200)), seed=seed + 1000 * i, enabled=True)
+        totals["calls"] += stats["calls"]
+        totals["rejected"] += stats["rejected"]
+        totals["duplicates"] += stats["duplicates"]
+        for row in rows:
+            if row["example_id"] in seen:
+                totals["duplicates"] += 1
+                continue
+            seen.add(row["example_id"])
+            totals["accepted"] += 1
+            out.setdefault(row["source"], []).append(row)
+    return out, totals

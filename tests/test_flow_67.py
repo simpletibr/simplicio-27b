@@ -257,8 +257,10 @@ class BuildFlow(unittest.TestCase):
         self.assertEqual({r["license"] for r in rows}, {"provider-terms"})
         self.assertEqual({r["lang"] for r in rows}, {"pt"})
         self.assertTrue(all("gen:" not in p.name for p in (self.root / "with-gen").iterdir()), "no colon in file names")
+        (self.root / "fake_provider.py").write_text("raise SystemExit(7)\n", encoding="utf-8")      # a second call would fail
         again = self.run_build("--config", str(cfg), "--generate", out="with-gen")
-        self.assertIn("gen:command:suporte", again["resumed"])
+        self.assertIn("gen:command:suporte", again["resumed"], "the generated rows are kept, the provider is not called again")
+        self.assertTrue((self.root / "with-gen" / "generated.json").is_file())
 
     def test_generate_with_the_generator_off_in_the_config_is_an_error(self) -> None:
         cfg = self.write_generator_config(enabled=False)

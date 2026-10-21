@@ -11,7 +11,11 @@ Use one ``--out`` per corpus.
 
     python -m decide.data.build_corpus --out work/corpus --reader hub
     python -m decide.data.build_corpus --out work/corpus --reader local:work/raw --only clinc_oos,gsm8k
-    python -m decide.data.build_corpus --inspect clinc_oos --reader hub      # first rows and their conversion
+    python -m decide.data.build_corpus --inspect clinc_oos --reader hub-latest   # first rows and their conversion
+    python -m decide.data.build_corpus --out work/corpus --generate --config decide/config.data.yaml   # + new domains
+
+The generator is off twice over: ``data.generator.enabled: false`` in the config and no ``--generate`` flag.  Its rows
+are written under the license ``provider-terms`` (the terms of the provider you chose govern them).
 """
 from __future__ import annotations
 
@@ -46,7 +50,7 @@ def _write_rows(out: Path, name: str, rows: Sequence[Mapping[str, Any]], dev_per
         built = [S.corpus_row(example_id=r["example_id"], source=r["source"], license=r["license"],
                               split=split_of(r["example_id"], dev_percent), lang=r["lang"], request=r["request"], gold=r["gold"])
                  for r in chunk]
-        parts.append(S.write_corpus_part(out / f"{name}-{k:04d}.parquet", built))
+        parts.append(S.write_corpus_part(out / f"{_stem(name)}-{k:04d}.parquet", built))
     return parts
 
 
@@ -55,8 +59,15 @@ def _config_hash(source: Optional[SRC.Source], extra: Mapping[str, Any]) -> str:
     return S.digest(S.canonical_json(material))
 
 
+def _stem(name: str) -> str:
+    """File-name stem of a source: keys are used as they are, anything else (``gen:echo:support``) loses its odd
+    characters and gets a short hash so two names never share a file."""
+    clean = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+    return clean if clean == name else f"{clean}-{S.digest(name)[:6]}"
+
+
 def _done_path(out: Path, name: str) -> Path:
-    return out / f"{name}.done.json"
+    return out / f"{_stem(name)}.done.json"
 
 
 _PART_NAME = re.compile(r"-\d{4}\.parquet$")
@@ -175,6 +186,30 @@ def inspect(source: SRC.Source, reader: Any, rows: int = 2) -> None:
             {"request": out[0], "gold": out[1]}, ensure_ascii=False)[:700])
 
 
+def _generated_rows(args: argparse.Namespace, ap: argparse.ArgumentParser) -> Dict[str, List[Dict[str, Any]]]:
+    """Run the generator of the config, or reuse the rows of an earlier run with the same config and seed.
+
+    The reply of a provider is not reproducible and costs money, so the rows are kept in ``<out>/generated.json``
+    (outside the manifest: only the parts it lists are data) and a rerun does not call the provider again."""
+    from .config import load_data_config
+    from .generate import GeneratorDisabled, generate_rows
+
+    section = (load_data_config(args.config)["data"].get("generator") or {})
+    key = S.digest(S.canonical_json({"generator": section, "seed": args.seed, "version": 1}))
+    cache = Path(args.out) / "generated.json"
+    if cache.is_file():
+        saved = json.loads(cache.read_text(encoding="utf-8"))
+        if saved.get("key") == key:
+            return saved["rows"]
+    try:
+        rows, stats = generate_rows(section, seed=args.seed)
+    except (GeneratorDisabled, ValueError) as exc:
+        ap.error(str(exc))
+    Path(args.out).mkdir(parents=True, exist_ok=True)
+    S.write_manifest(cache, {"key": key, "rows": rows, "stats": stats})
+    return rows
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", help="output directory (parquet parts + manifest.json)")
@@ -187,6 +222,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--dev-percent", type=float, default=DEFAULT_DEV_PERCENT)
     ap.add_argument("--shard-rows", type=int, default=DEFAULT_SHARD_ROWS)
     ap.add_argument("--loop", action="append", default=[], help="Simplicio-Loop JSONL (instruction/context/simplicio_trajectory); repeatable")
+    ap.add_argument("--generate", action="store_true",
+                    help="also run the new-domain generator of the config (second switch: data.generator.enabled must be true too)")
+    ap.add_argument("--config", type=Path, default=None, help="config.data.yaml with the data.generator section (default decide/config.data.yaml)")
     ap.add_argument("--loop-per-record", type=int, default=2)
     ap.add_argument("--inspect", metavar="KEY", help="print the first rows of a source and how they convert, then exit")
     ap.add_argument("--no-resume", action="store_true")
@@ -204,6 +242,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         extra["loop"] = [row for path in args.loop for row in convert_file(Path(path), seed=args.seed, per_record=args.loop_per_record,
                                                                           id_prefix=f"loop-{Path(path).parent.name}-{Path(path).stem}")]
+    if args.generate:
+        extra.update(_generated_rows(args, ap))
     manifest = build_corpus(Path(args.out), sources=sources, reader=reader, seed=args.seed, dev_percent=args.dev_percent,
                             include_review=args.include_review, only=args.only.split(",") if args.only else None,
                             caps_scale=args.scale, shard_rows=args.shard_rows, extra_rows=extra, resume=not args.no_resume)
