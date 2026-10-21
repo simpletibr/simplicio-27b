@@ -10,8 +10,8 @@ What differs from the pplx joint protocol and is handled here:
 * each question is its own sequence (`d3_format.render`), so `Encoded` chunks hold one key and the readout position is the
   last token;
 * the readout is applied in float32 to the float32 hidden state (`CastReadout`), as `readout_dtype` says;
-* the checkpoint's own `decision_config.json` carries the 255 answer codes (a different list from pplx's), T = 1 and no
-  input limit.
+* the checkpoint's own `decision_config.json` carries the 255 answer codes (measured: the same list and token ids as
+  pplx-decider-v1.2's), T = 1 and no input limit.
 
 d3-turbo (`prefix_bidir` attention) is a different attention rule and is not served here.
 """
