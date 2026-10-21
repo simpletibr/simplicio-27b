@@ -1,0 +1,384 @@
+"""Mutation check for the numbers this kit stands on: inject one deliberate one-line bug, expect a test to fail.
+
+A green test suite says the tests pass, not that they would notice a wrong merge.  This module puts a plausible one-line bug into the
+merge math, the option-order inverse mapping, the temperature fit, the engine wiring, the loader and the Hub reader, runs the tests that are
+meant to guard that code, and reports KILLED (some test failed) or SURVIVED (every test passed: a hole in the tests).
+
+    python -m decide.sd.mutation                      # every mutation
+    python -m decide.sd.mutation --only tta           # one group (merge, tta, calibrate, engine, loader, remote, state, vendor)
+    python -m decide.sd.mutation --id k-bucket-boundary --id ta-sign-flip      # chosen mutations (to re-check a survivor)
+    python -m decide.sd.mutation --list
+    python -m decide.sd.mutation --json evidence.json
+
+The bug goes into a COPY of the repository (decide/, tests/ and notebooks/decide/requirements.txt in a temporary folder), never into the
+working tree, so a crash or Ctrl-C cannot leave a broken file behind.  "Revert" is therefore: the copy is thrown away, and the sha256 of
+every file that was mutated is compared before and after to prove the working tree is byte-identical.
+
+Three things make a verdict mean something:
+
+* the unmutated copy must pass the same tests first, with NO skipped test (an interpreter without torch would "kill" nothing);
+* the mutated source must still compile (a syntax error would "kill" everything for the wrong reason);
+* the text that is replaced must occur exactly once in its file and be one line, so the table cannot rot when the code moves.
+
+Exit code 0 only if every mutation was killed and the working tree is untouched; 1 if one survived; 2 if the check itself cannot judge.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+
+ROOT = Path(__file__).resolve().parents[2]
+COPIED = ("decide", "tests", "notebooks/decide/requirements.txt")
+IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache")
+GROUPS = ("merge", "tta", "calibrate", "engine", "loader")
+
+
+@dataclass(frozen=True)
+class Mutation:
+    group: str
+    id: str
+    file: str                       # relative to the repository root
+    old: str                        # one line, occurs exactly once in `file`
+    new: str                        # its replacement: also one line, and different
+    tests: Tuple[str, ...]          # unittest ids, run from the tests/ folder
+    why: str                        # the mistake this stands for
+
+
+MERGE_TESTS = ("test_contract_65.MergeMathContract",)
+TTA_TESTS = ("test_contract_65.TtaContract", "test_flow_65.EngineFlow")
+CAL_TESTS = ("test_contract_65.CalibrateContract",)
+ENGINE_TESTS = ("test_flow_65.EngineFlow", "test_flow_65_api.EngineExtrasFlow")
+
+M = "decide/sd/merge.py"
+T = "decide/sd/tta.py"
+C = "decide/sd/calibrate.py"
+E = "decide/sd/engine.py"
+L = "decide/sd/loader.py"
+
+MUTATIONS: Tuple[Mutation, ...] = (
+    # ---- merge math: task arithmetic, TIES, LoRA delta, how they are combined
+    Mutation("merge", "ta-sign-flip", M, "out.add_(m.float() - b, alpha=float(w))", "out.add_(b - m.float(), alpha=float(w))", MERGE_TESTS,
+             "the donor moves the anchor the wrong way"),
+    Mutation("merge", "ta-ignore-weight", M, "out.add_(m.float() - b, alpha=float(w))", "out.add_(m.float() - b, alpha=1.0)", MERGE_TESTS,
+             "the merge weight lambda is ignored"),
+    Mutation("merge", "ties-sign-always-plus", M, "elected = torch.where((wv * stack).sum(0) >= 0, 1.0, -1.0)",
+             "elected = torch.where((wv * stack).sum(0) >= 0, 1.0, 1.0)", MERGE_TESTS, "the sign election always picks +"),
+    Mutation("merge", "ties-mean-not-disjoint", M, "den = (wv * agree).sum(0)", "den = wv.sum(0) * torch.ones_like(num)", MERGE_TESTS,
+             "the disjoint mean divides by all weights, not by the donors that agree"),
+    Mutation("merge", "ties-scale-dropped", M, "return b + total * merged", "return b + merged", MERGE_TESTS,
+             "the TIES result is not scaled by the sum of the weights"),
+    Mutation("merge", "trim-keeps-too-many", M, "k = min(n, max(1, math.ceil(round(density * n, 9))))",
+             "k = min(n, max(1, math.ceil(round(density * n, 9)) + 1))", MERGE_TESTS, "trim keeps one entry more than density says"),
+    Mutation("merge", "trim-keeps-smallest", M, "keep = a > thr", "keep = a < thr", MERGE_TESTS, "trim keeps the smallest magnitudes"),
+    Mutation("merge", "lora-scale-wrong", M, "return alpha / math.sqrt(r) if rslora else alpha / r",
+             "return alpha / math.sqrt(r) if rslora else alpha", MERGE_TESTS, "alpha is not divided by the rank"),
+    Mutation("merge", "lora-weight-ignored", M, "return (weight * lora_scale(alpha, r, rslora)) * (B.float() @ A.float())",
+             "return (lora_scale(alpha, r, rslora)) * (B.float() @ A.float())", MERGE_TESTS, "the small LoRA weight is not applied"),
+    Mutation("merge", "lora-before-donors", M, "out = apply_lora(out, A, B, alpha, r, w, rs)", "out = apply_lora(anchor.float(), A, B, alpha, r, w, rs)",
+             MERGE_TESTS, "the LoRA is added to the bare anchor and the donors' merge is thrown away"),
+    Mutation("merge", "base-reference-drops-anchor", M, "models, weights = [anchor, *donors], [1.0, *donor_weights]",
+             "models, weights = [anchor, *donors], [0.0, *donor_weights]", MERGE_TESTS, "with a base model the anchor no longer enters with weight 1"),
+    Mutation("merge", "head-averaged", M, "return refit_head if refit_head is not None else anchor_head",
+             "return (refit_head + anchor_head) / 2 if refit_head is not None else anchor_head", MERGE_TESTS,
+             "heads are averaged (fase0b: never)"),
+
+    # ---- option-order TTA: the permutations and, above all, their exact inverse
+    Mutation("tta", "unpermute-uses-forward-map", T, "original[p] = presented[i]", "original[i] = presented[p]", TTA_TESTS,
+             "the answer is mapped back with the permutation, not its inverse (invisible for a reversal, which is its own inverse)"),
+    Mutation("tta", "invert-uses-forward-map", T, "inv[p] = i", "inv[i] = p", TTA_TESTS, "invert() returns the permutation itself"),
+    Mutation("tta", "rotation-direction", T, "return [(i + shift) % n for i in range(n)]", "return [(i - shift) % n for i in range(n)]", TTA_TESTS,
+             "cyclic shifts run the other way, against the documented convention"),
+    Mutation("tta", "average-wrong-count", T, "return [sum(r[i] for r in rows) / len(rows) for i in range(n)]",
+             "return [sum(r[i] for r in rows) / max(1, len(rows) - 1) for i in range(n)]", TTA_TESTS, "the mean divides by one view too few"),
+    Mutation("tta", "permuted-text-stays-put", T, 'questions[qid] = {**q, "criteria": {keys[p]: q["criteria"][keys[p]] for p in perm}}',
+             'questions[qid] = {**q, "criteria": {keys[i]: q["criteria"][keys[p]] for i, p in enumerate(perm)}}', TTA_TESTS,
+             "the option labels keep their order while their descriptions move"),
+    Mutation("tta", "no-dedupe-of-orders", T, "if perm not in out:", "if True:", TTA_TESTS, "a two-option question runs the same order twice"),
+    Mutation("tta", "plan-repeats-first-order", T, "perms[min(v, len(perms) - 1)]", "perms[0]", TTA_TESTS,
+             "a question with fewer distinct orders repeats the identity instead of its last order"),
+    Mutation("tta", "restore-uses-forward-map", T, "return unpermute(values_by_presented, perm) if perm else list(values_by_presented)",
+             "return apply(values_by_presented, perm) if perm else list(values_by_presented)", TTA_TESTS,
+             "the engine's mapping back applies the forward permutation"),
+
+    # ---- temperature: the softmax, the NLL, the search, the split
+    Mutation("calibrate", "temperature-multiplies", C, "x = np.asarray(z, dtype=np.float64) / t", "x = np.asarray(z, dtype=np.float64) * t", CAL_TESTS,
+             "T multiplies the logits instead of dividing them"),
+    Mutation("calibrate", "fit-picks-worst-scan-point", C, "k = int(np.argmin(values))", "k = int(np.argmax(values))", CAL_TESTS,
+             "the coarse scan keeps the worst temperature"),
+    Mutation("calibrate", "golden-section-wrong-branch", C, "if fc < fd:", "if fc > fd:", CAL_TESTS, "the refinement walks uphill"),
+    Mutation("calibrate", "nll-ignores-gold", C, "-np.log(np.maximum(p[rows, gold], EPS))", "-np.log(np.maximum(p.max(axis=1), EPS))", CAL_TESTS,
+             "NLL scores the most likely option instead of the gold one"),
+    Mutation("calibrate", "brier-mean-not-sum", C, "((p - onehot) ** 2).sum(axis=1)", "((p - onehot) ** 2).mean(axis=1)", CAL_TESTS,
+             "Brier averages over options instead of summing"),
+    Mutation("calibrate", "ece-without-abs", C, "abs(float(correct[mask].mean()) - float(conf[mask].mean()))",
+             "(float(correct[mask].mean()) - float(conf[mask].mean()))", CAL_TESTS, "ECE lets over- and under-confidence cancel"),
+    Mutation("calibrate", "mean-of-logits-not-softmaxes", C,
+             "return [float(x) for x in _softmax(np.asarray(logits_by_view, dtype=np.float64), t).mean(axis=0)]",
+             "return [float(x) for x in _softmax(np.asarray(logits_by_view, dtype=np.float64).mean(axis=0, keepdims=True), t).mean(axis=0)]",
+             CAL_TESTS, "views are averaged as logits, not as probabilities"),
+    Mutation("calibrate", "holdout-leaks-into-fit", C, "fit = [it for it in items if it.run_id not in held]", "fit = list(items)", CAL_TESTS,
+             "the temperature is fitted on the rows it is judged on"),
+    Mutation("calibrate", "holdout-size-off-by-one", C, "held = set(ranked[: int(round(holdout * len(ranked)))])",
+             "held = set(ranked[: int(round(holdout * len(ranked))) + 1])", CAL_TESTS, "the holdout has one request more than asked"),
+    Mutation("calibrate", "small-groups-never-fall-back", C, "if counts[g] >= min_items:", "if counts[g] >= 0:", CAL_TESTS,
+             "a group with three rows gets its own temperature"),
+    Mutation("calibrate", "k-bucket-boundary", C, '"3-4" if k <= 4', '"3-4" if k < 4', CAL_TESTS, "four options fall in the wrong bucket"),
+
+    # ---- the engine: where the inverse mapping and the temperature are applied
+    Mutation("engine", "engine-skips-restoration", E, "rows = [tta.restore_question(view_logits[v][key], plans[v][key]) for v in range(len(plans))]",
+             "rows = [list(view_logits[v][key]) for v in range(len(plans))]", ENGINE_TESTS, "the views are not mapped back to the original order"),
+    Mutation("engine", "engine-ignores-calibration", E, "t = self.temperature_for(question)", "t = self.temperature", ENGINE_TESTS,
+             "the calibrated temperatures never reach the answer"),
+    Mutation("engine", "engine-general-key-first", E, 'for key in (f"{kind}:{calibrate.k_bucket(n)}", kind, "default"):',
+             'for key in (kind, f"{kind}:{calibrate.k_bucket(n)}", "default"):', ENGINE_TESTS,
+             "the temperature of the whole type wins over the one of its option count"),
+
+    # ---- the loader: which tensors are merged with which weights
+    Mutation("loader", "donor-weights-misaligned", L, "[weights[i] for i in plan.donors]", "[weights[i] for i in reversed(plan.donors)]",
+             ("test_flow_65.LoaderFlow",), "donor i is merged with the weight of donor j"),
+)
+
+
+# --------------------------------------------------------------------------- the table itself
+
+def groups() -> List[str]:
+    seen: List[str] = []
+    for m in MUTATIONS:
+        if m.group not in seen:
+            seen.append(m.group)
+    return seen
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def apply(source: str, mutation: Mutation) -> str:
+    """`source` with the one replaced line; raises ValueError unless the text to replace occurs exactly once."""
+    count = source.count(mutation.old)
+    if count != 1:
+        raise ValueError(f"{mutation.id}: the text to replace occurs {count} times in {mutation.file}, not once")
+    return source.replace(mutation.old, mutation.new)
+
+
+def table_problems(root: Path, mutations: Sequence[Mutation] = MUTATIONS) -> List[str]:
+    """Everything wrong with the table, so it fails loudly when the code it points at moves: unknown group, duplicate id, missing file,
+    a pattern that is not exactly once, a no-op, a multi-line edit, a mutated source that does not compile."""
+    problems: List[str] = []
+    ids = [m.id for m in mutations]
+    for dup in sorted({i for i in ids if ids.count(i) > 1}):
+        problems.append(f"{dup}: the id is used twice")
+    for m in mutations:
+        if m.group not in GROUPS:
+            problems.append(f"{m.id}: unknown group {m.group!r}")
+        if not m.tests:
+            problems.append(f"{m.id}: no test guards it")
+        if "\n" in m.old or "\n" in m.new:
+            problems.append(f"{m.id}: a mutation is one line")
+        if m.old == m.new:
+            problems.append(f"{m.id}: the replacement is the same text")
+        path = root / m.file
+        if not path.is_file():
+            problems.append(f"{m.id}: {m.file} does not exist")
+            continue
+        try:
+            mutated = apply(path.read_text(encoding="utf-8"), m)
+        except ValueError as exc:
+            problems.append(str(exc))
+            continue
+        try:
+            compile(mutated, m.file, "exec")
+        except SyntaxError as exc:
+            problems.append(f"{m.id}: the mutated {m.file} does not compile ({exc.msg}, line {exc.lineno})")
+    return problems
+
+
+def one_line_changed(before: str, after: str) -> bool:
+    """True when the two sources have the same number of lines and differ in exactly one of them."""
+    a, b = before.splitlines(), after.splitlines()
+    return len(a) == len(b) and sum(1 for x, y in zip(a, b) if x != y) == 1
+
+
+# --------------------------------------------------------------------------- running tests
+
+@dataclass
+class Outcome:
+    returncode: int
+    ran: int
+    skipped: int
+    failed: List[str]               # ids of tests that failed or errored
+    tail: str                       # the last line unittest printed
+    seconds: float
+
+    @property
+    def green(self) -> bool:
+        return self.returncode == 0
+
+
+_RAN = re.compile(r"^Ran (\d+) tests? in ", re.M)
+_SKIPPED = re.compile(r"skipped=(\d+)")
+_FAILED = re.compile(r"^(?:FAIL|ERROR): (\S+)", re.M)
+
+
+def parse_unittest(output: str, returncode: int, seconds: float = 0.0) -> Outcome:
+    """What `python -m unittest` printed (to stderr), reduced to what a verdict needs."""
+    ran = _RAN.search(output)
+    lines = [ln for ln in output.strip().splitlines() if ln.strip()]
+    tail = lines[-1] if lines else ""
+    skipped = _SKIPPED.search(tail)
+    return Outcome(returncode, int(ran.group(1)) if ran else 0, int(skipped.group(1)) if skipped else 0, _FAILED.findall(output), tail, seconds)
+
+
+def run_tests(root: Path, tests: Sequence[str], python: str, timeout: float) -> Outcome:
+    """Run unittest ids from `<root>/tests`; a run that times out counts as red with the reason in `tail`."""
+    started = time.time()
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONHASHSEED="0")
+    for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        env.pop(name, None)
+    try:
+        proc = subprocess.run([python, "-m", "unittest", *tests], cwd=root / "tests", env=env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return Outcome(1, 0, 0, [], f"timed out after {timeout:.0f} s", time.time() - started)
+    return parse_unittest(proc.stderr + "\n" + proc.stdout, proc.returncode, time.time() - started)
+
+
+def copy_repo(root: Path, dest: Path) -> None:
+    """Only what the guarded tests read: the kit, the tests and the requirements file the pipeline checks the libraries against."""
+    for rel in COPIED:
+        source, target = root / rel, dest / rel
+        if not source.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, target, ignore=IGNORE)
+        else:
+            shutil.copy2(source, target)
+
+
+# --------------------------------------------------------------------------- the check
+
+@dataclass
+class Result:
+    mutation: Mutation
+    status: str                     # KILLED | SURVIVED
+    detail: str
+    killed_by: List[str]
+    seconds: float
+
+
+class CannotJudge(RuntimeError):
+    """The check itself is broken (a stale table, a red or skipping baseline, a file that did not restore); no verdict is given."""
+
+
+def run(mutations: Sequence[Mutation], root: Path = ROOT, python: str = sys.executable, timeout: float = 900.0,
+        say: Callable[[str], None] = print, keep: bool = False,
+        runner: Callable[[Path, Sequence[str], str, float], Outcome] = run_tests) -> Dict[str, object]:
+    """Mutate a copy of `root` one mutation at a time and report which ones the tests noticed.  Raises `CannotJudge` instead of guessing."""
+    problems = table_problems(root, mutations)
+    if problems:
+        raise CannotJudge("the mutation table does not fit the code:\n  " + "\n  ".join(problems))
+    targets = sorted({m.file for m in mutations})
+    before = {rel: sha256(root / rel) for rel in targets}
+    work = Path(tempfile.mkdtemp(prefix="sd-mutation-"))
+    results: List[Result] = []
+    baselines: Dict[Tuple[str, ...], Outcome] = {}
+    try:
+        copy_repo(root, work)
+        pristine = {rel: (work / rel).read_text(encoding="utf-8") for rel in targets}
+        for m in mutations:
+            if m.tests not in baselines:
+                base = runner(work, m.tests, python, timeout)
+                if not base.green or base.ran == 0:
+                    raise CannotJudge(f"the tests for {m.id} are not green before the mutation ({base.tail or 'no output'}): {', '.join(m.tests)}")
+                if base.skipped:
+                    raise CannotJudge(f"{base.skipped} of {base.ran} tests for {m.id} are skipped in this interpreter ({python}), so no verdict "
+                                      "would mean anything: run the check where torch, numpy and the other test dependencies are installed")
+                baselines[m.tests] = base
+            target = work / m.file
+            mutated = apply(pristine[m.file], m)
+            if not one_line_changed(pristine[m.file], mutated):
+                raise CannotJudge(f"{m.id}: the edit changed more or less than one line")
+            target.write_text(mutated, encoding="utf-8")
+            try:
+                outcome = runner(work, m.tests, python, timeout)
+            finally:
+                target.write_text(pristine[m.file], encoding="utf-8")
+            if sha256(target) != hashlib.sha256(pristine[m.file].encode("utf-8")).hexdigest():
+                raise CannotJudge(f"{m.file} was not restored in the working copy")
+            killed = not outcome.green
+            detail = outcome.tail if killed else f"every one of {outcome.ran} tests passed with the bug in place"
+            results.append(Result(m, "KILLED" if killed else "SURVIVED", detail, outcome.failed[:3], outcome.seconds))
+            say(f"  {m.group:11s} {m.id:34s} {results[-1].status:8s} {detail}")
+    finally:
+        if keep:
+            say(f"  (kept the working copy: {work})")
+        else:
+            shutil.rmtree(work, ignore_errors=True)
+    after = {rel: sha256(root / rel) for rel in targets}
+    if after != before:
+        changed = sorted(rel for rel in targets if after[rel] != before[rel])
+        raise CannotJudge(f"the working tree changed while the check ran: {', '.join(changed)}")
+    survivors = [r.mutation.id for r in results if r.status == "SURVIVED"]
+    return {"mutations": len(results), "killed": len(results) - len(survivors), "survivors": survivors, "tree_untouched": True,
+            "files": {rel: before[rel] for rel in targets}, "results": results,
+            "baselines": {", ".join(k): {"ran": v.ran, "seconds": round(v.seconds, 1)} for k, v in baselines.items()}}
+
+
+def evidence(report: Dict[str, object], python: str) -> Dict[str, object]:
+    """The report as plain JSON, for a pull request."""
+    results: Iterable[Result] = report["results"]       # type: ignore[assignment]
+    return {
+        "python": python, "mutations": report["mutations"], "killed": report["killed"], "survivors": report["survivors"],
+        "tree_untouched": report["tree_untouched"], "sha256_of_mutated_files": report["files"], "baselines": report["baselines"],
+        "results": [{"group": r.mutation.group, "id": r.mutation.id, "file": r.mutation.file, "status": r.status, "killed_by": r.killed_by,
+                     "why": r.mutation.why, "seconds": round(r.seconds, 1)} for r in results],
+    }
+
+
+def main(argv: Optional[Sequence[str]] = None, *, say: Callable[[str], None] = print) -> int:
+    parser = argparse.ArgumentParser(prog="python -m decide.sd.mutation", description=__doc__.split("\n\n")[0])
+    parser.add_argument("--only", choices=GROUPS, help="one group of mutations")
+    parser.add_argument("--id", action="append", default=[], metavar="ID", help="one mutation by id (repeatable); see --list")
+    parser.add_argument("--list", action="store_true", help="list the mutations and stop")
+    parser.add_argument("--json", metavar="FILE", help="write the evidence as JSON")
+    parser.add_argument("--python", default=sys.executable, help="interpreter that runs the tests (default: this one)")
+    parser.add_argument("--timeout", type=float, default=900.0, help="seconds allowed to one test run")
+    parser.add_argument("--keep", action="store_true", help="keep the temporary working copy")
+    args = parser.parse_args(argv)
+    unknown = sorted(set(args.id) - {m.id for m in MUTATIONS})
+    if unknown:
+        parser.error(f"unknown mutation id(s): {', '.join(unknown)} (see --list)")
+    chosen = [m for m in MUTATIONS if (not args.only or m.group == args.only) and (not args.id or m.id in args.id)]
+    if args.list:
+        for m in chosen:
+            say(f"{m.group:11s} {m.id:34s} {m.file}  [{', '.join(m.tests)}]\n{'':12s}{m.why}")
+        return 0
+    say(f"{len(chosen)} mutation(s), tests run with {args.python}")
+    try:
+        report = run(chosen, ROOT, args.python, args.timeout, say, args.keep)
+    except CannotJudge as exc:
+        say(f"cannot judge: {exc}")
+        return 2
+    say(f"\n{report['killed']}/{report['mutations']} killed; the working tree is byte-identical (sha256 of the {len(report['files'])} mutated files "  # type: ignore[arg-type]
+        "compared before and after)")
+    if report["survivors"]:
+        say("SURVIVED (a hole in the tests): " + ", ".join(report["survivors"]))     # type: ignore[arg-type]
+    if args.json:
+        Path(args.json).write_text(json.dumps(evidence(report, args.python), indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        say(f"evidence written to {args.json}")
+    return 1 if report["survivors"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
