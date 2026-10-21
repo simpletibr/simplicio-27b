@@ -2245,7 +2245,6 @@ class ProxyEvalContract(unittest.TestCase):
             self.assertIn(name, out)
 
     def test_a_run_with_missing_rows_is_not_scored_as_if_it_were_whole(self) -> None:
-        import pyarrow as pa
         import pyarrow.parquet as pq
 
         self.make_runs(flash=2, novo=3)
