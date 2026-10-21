@@ -716,8 +716,8 @@ class TextAndDecontaminationContract(unittest.TestCase):
     # ---- planner decision on PR #74: format-only marker lines are not short items
     MARKER_LINES = ("<<<<<<< SEARCH", "<<<< search", "=======", ">>>>>>> REPLACE", ">>>> REPLACE", "  >>>> REPLACE  ", "```", "```python", "```json",
                     "```c++", "~~~", "~~~bash")
-    NOT_MARKERS = ("replace", "REPLACE", "search", "python", "thanks so much!", "Replace the text", ">>>> REPLACE all", "<< SEARCH", "``` not alone",
-                   "x = ```", "a ======= b", "``` ```", "yes")
+    NOT_MARKERS = ("replace", "REPLACE", "search", "python", "thanks so much!", "Replace the text", ">>>> REPLACE all", "<< SEARCH", ">> REPLACE",
+                   "``` not alone", "``python", "~~bash", "x = ```", "a ======= b", "==", "``` ```", "yes")
 
     def test_marker_lines_are_an_explicit_versioned_allowlist(self) -> None:
         self.assertEqual(T.MARKER_LINES_VERSION, 1)
@@ -754,6 +754,16 @@ class TextAndDecontaminationContract(unittest.TestCase):
         probe = {"state": "```text\n>>>> REPLACE\nthanks so much!", "questions": {"q1": {"type": "noul", "instructions": "Is it polite?"}}}
         self.assertEqual(idx.check(probe).reason, "short_line")
         self.assertEqual(idx.check(self.intent_request("thanks so much!")).reason, "short_line", "a CLINC-style utterance is still rejected")
+
+    def test_a_marker_in_the_request_is_ignored_even_if_the_reference_has_the_plain_word(self) -> None:
+        # found by a mutation check: dropping the exclusion from the check (keeping it in the index) survived
+        idx = D.ReferenceIndex()
+        idx.add({"state": "replace", "questions": {"q1": {"type": "noul", "instructions": "Is it a verb?"}}}, "R:1")
+        idx.freeze()
+        marker = {"state": "Rewrite the loop.\n>>>> REPLACE\nuse enumerate", "questions": {"q1": {"type": "noul", "instructions": "Is it faster?"}}}
+        self.assertIsNone(idx.check(marker))
+        plain = {"state": "Replace", "questions": {"q1": {"type": "noul", "instructions": "Is it faster?"}}}
+        self.assertEqual(idx.check(plain).reason, "short_line", "the plain word is still a short statement")
 
     def test_a_marker_line_is_not_indexed_as_a_short_unit(self) -> None:
         idx = D.ReferenceIndex()
