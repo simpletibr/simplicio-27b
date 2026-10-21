@@ -245,7 +245,7 @@ python -m decide.train.build_targets --corpus work/corpus-limpo --labels work/la
 
 ## 8. Sessão 6: F4, o ensaio 4B (G2)
 
-**Onde:** Kaggle T4 (ou o crédito da Modal). **Importante (UNVERIFIED):** a T4 não tem bf16 nativo; o treino em bf16 pode cair em emulação e ficar muito lento. O padrão `--dtype auto` usa bf16 numa GPU e fp32 na CPU. Na T4 existe `--dtype fp16` (e `fp32`), mas o fp16 **não tem escala de perda**: uma perda ou um gradiente não finito para a execução. Nada disso foi medido numa GPU; o pilot do passo 2 é o teste. Se ele mostrar emulação lenta, faça este ensaio numa GPU com bf16 (a Modal não tem app de treino na `main`; seria preciso escrevê-lo). **TODO (Squad A):** o kit não tem um notebook de treino do 4B; rode os comandos numa célula ou no terminal. **Pacotes:** `pip install -r decide/train/requirements.txt`
+**Onde:** Kaggle T4 (ou o crédito da Modal). **Importante (UNVERIFIED):** a T4 não tem bf16 nativo; o treino em bf16 pode cair em emulação e ficar muito lento. O padrão `--dtype auto` usa bf16 numa GPU e fp32 na CPU. O treino **recusa `--dtype fp16`**: não há escala de perda, e um gradiente que zera por underflow é um número finito que nenhuma checagem vê (o modelo aprenderia menos do que a curva de perda mostra). Na T4 sobram o bf16 emulado (o padrão) e o fp32, que provavelmente não cabe para o 4B (conta: 4 bilhões × 4 bytes ≈ 16 GB contra 15 GB de memória, UNVERIFIED). Nada disso foi medido numa GPU; o pilot do passo 2 é o teste. Se ele mostrar emulação lenta, faça este ensaio numa GPU com bf16 (a Modal não tem app de treino na `main`; seria preciso escrevê-lo). **TODO (Squad A):** o kit não tem um notebook de treino do 4B; rode os comandos numa célula ou no terminal. **Pacotes:** `pip install -r decide/train/requirements.txt`
 
 Ponto de partida: `perplexity-ai/pplx-decider-flash-v1.2` (4B). Baixe-o numa pasta local (`hf download perplexity-ai/pplx-decider-flash-v1.2 --local-dir work/flash`).
 
@@ -369,7 +369,9 @@ python -m decide.rental.run --profile econ_b200 --execute --workdir /workspace/d
 | `TargetError: ... --out` | `build_targets` | `--out` é uma entrada, está dentro de uma, ou foi feito por outra ferramenta: use uma pasta nova |
 | `--resume: the saved run differs in ...` | treino | você mudou um argumento (ou os dados, ou o checkpoint) entre a parada e a retomada; volte ao valor anterior ou comece uma pasta nova |
 | o treino recusa recomeçar | treino | a pasta já tem uma execução terminada; use outra `--out` |
-| perda ou gradiente não finito, e a execução para | treino | em `--dtype fp16` não há escala de perda (a T4 não tem bf16); repita com `--dtype fp32` ou numa GPU com bf16. Não foi medido numa GPU (UNVERIFIED) |
+| perda ou gradiente não finito, e a execução para | treino | repita com `--dtype fp32` (numa T4 provavelmente não cabe para o 4B, conta na sessão 6) ou numa GPU com bf16. Não foi medido numa GPU (UNVERIFIED) |
+| `--dtype fp16 is refused` | treino | de propósito: sem escala de perda um gradiente que zera por underflow passa calado. Use o padrão (bf16 numa GPU, emulado e lento numa T4, UNVERIFIED) ou fp32 |
+| `--resume: ... already exists, so the run is finished` | treino | a execução terminou (existe `final/`); o `resume.pt` é apagado nesse ponto. Use outra `--out` para uma nova |
 | `the temperature ... is a placeholder` | kit ou dia | rode `python -m decide.train.temperature --checkpoint <pasta> --targets <alvos> --write` |
 | falta de memória na GPU | treino | diminua `--token-budget` ou `--batch-rows` (o `--effective-batch` não muda, só quantas linhas cabem por passada) |
 | G4 parou o dia | dia alugado | veja `g4/verdict.json`; o novo não superou o ponto de partida por 1,5 pontos; não suba o modelo nem faça a rodada pública |
