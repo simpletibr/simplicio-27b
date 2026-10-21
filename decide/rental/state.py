@@ -137,9 +137,9 @@ class DayState:
         self._save()
 
     def _end(self, phase: str, status: str, reason: str) -> None:
-        record = self._phases.setdefault(self._check(phase), {"started": self.clock()})
         finished = self.clock()
-        record.update(status=status, reason=reason, finished=finished, seconds=finished - record.get("started", finished))
+        record = self._phases.setdefault(self._check(phase), {"started": finished})
+        record.update(status=status, reason=reason, finished=finished, seconds=finished - record["started"])
         self._save()
 
     def fail(self, phase: str, reason: str) -> None:
