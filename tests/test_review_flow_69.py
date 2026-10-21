@@ -159,8 +159,75 @@ class FinalIsAtomic(unittest.TestCase):
         before = len(events(out))
         with self.assertRaises(ValueError) as caught:
             resume("has_final", *ARGS, *FULL)
-        self.assertIn("final", str(caught.exception))
+        self.assertIn("the run is finished", str(caught.exception), "a finished run has no resume.pt any more: the message must not say that is the problem")
         self.assertEqual(len(events(out)), before, "a refused resume trains nothing")
+
+
+#: Twelve steps and the default --resume-every (100): the run never reaches a step that is a multiple of it.
+NO_EVERY = ("--epochs", "6", "--effective-batch", "4", "--batch-rows", "4", "--token-budget", "4096", "--max-length", "1024",
+            "--cpu-threads", "2", "--device", "cpu")
+
+
+def training_steps(out: Path) -> list:
+    return [e["step"] for e in events(out) if e["kind"] == "training_step"]
+
+
+def model_tensors(final: Path) -> Dict[str, Any]:
+    with _STATE["safe_open"](str(final / "model.safetensors"), "pt") as handle:
+        return {name: handle.get_tensor(name).float() for name in handle.keys()}
+
+
+class ResumeStateAtTheEnd(unittest.TestCase):
+    """The last step also saves ``resume.pt``, so a death in the final save costs the save and not the run; a finished run leaves none behind."""
+
+    def dies_in_the_final_save(self, name: str, *extra: str) -> Path:
+        MODEL = _STATE["MODEL"]
+        real = MODEL.JointModel.save
+
+        def dies(self, directory, **kwargs):
+            real(self, directory, **kwargs)
+            raise OSError("the machine was preempted while the checkpoint was written")
+
+        with mock.patch.object(MODEL.JointModel, "save", dies):
+            with self.assertRaises(OSError):
+                train(name, *extra, cache=False)
+        return _STATE["root"] / "runs" / name
+
+    def test_a_run_shorter_than_resume_every_can_resume_after_a_death_in_the_final_save(self) -> None:
+        import torch
+
+        out = self.dies_in_the_final_save("short_cut", *NO_EVERY, *FULL)
+        self.assertEqual(training_steps(out), list(range(1, 13)))
+        self.assertFalse((out / "final").exists())
+        self.assertTrue((out / "resume.pt").is_file(), "twelve steps and --resume-every 100: without a save at the last step there is nothing to resume from")
+        self.assertEqual(int(torch.load(out / "resume.pt", map_location="cpu", weights_only=True)["step"]), 12)
+        self.assertEqual(resume("short_cut", *NO_EVERY, *FULL), 0)
+        self.assertEqual(training_steps(out), list(range(1, 13)), "not one step was trained again")
+        self.assertTrue(summary(out)["complete"])
+        whole = model_tensors(train("short_whole", *NO_EVERY, *FULL, cache=False) / "final")
+        resumed = model_tensors(out / "final")
+        self.assertEqual(set(whole), set(resumed))
+        self.assertLess(max(float((whole[name] - resumed[name]).abs().max()) for name in whole), 1e-6, "the resumed checkpoint is the one the whole run makes")
+
+    def test_a_finished_run_leaves_no_resume_state_whatever_resume_every_is(self) -> None:
+        for name, args in (("end_every2", ARGS), ("end_default", NO_EVERY)):
+            out = train(name, *args, *FULL, cache=False)
+            self.assertTrue(summary(out)["complete"])
+            self.assertFalse((out / "resume.pt").exists(), name)
+            self.assertFalse((out / "resume.pt.pending").exists(), name)
+
+    def test_a_run_that_resumed_to_the_end_leaves_none_either(self) -> None:
+        out = self.dies_in_the_final_save("cut_then_done", *ARGS, *FULL)
+        self.assertTrue((out / "resume.pt").is_file())
+        (out / "resume.pt.pending").write_bytes(b"a resume state that was being written when the machine died")
+        self.assertEqual(resume("cut_then_done", *ARGS, *FULL), 0)
+        self.assertFalse((out / "resume.pt").exists())
+        self.assertFalse((out / "resume.pt.pending").exists(), "what a killed save of the resume state left is not kept either")
+
+    def test_a_run_stopped_by_max_steps_keeps_its_resume_state(self) -> None:
+        out = train("stopped_early", *NO_EVERY, *FULL, "--max-steps", "5", cache=False)
+        self.assertTrue((out / "resume.pt").is_file())
+        self.assertFalse((out / "final").exists())
 
 
 class DtypeFlag(unittest.TestCase):
@@ -190,13 +257,28 @@ class DtypeFlag(unittest.TestCase):
         self.assertEqual(self.stored_dtype(fp32 / "final"), torch.float32)
         self.assertEqual(self.stored_dtype(bf16 / "final"), torch.bfloat16)
 
-    def test_fp16_is_a_choice_and_anything_else_is_not(self) -> None:
+    def test_the_parser_knows_the_precisions_and_nothing_else(self) -> None:
         parser = _STATE["TRAIN"].build_parser()
         base = ["--targets", "t", "--checkpoint", "c", "--out", "o"]
-        self.assertEqual(parser.parse_args(base + ["--dtype", "fp16"]).dtype, "fp16")
+        for name in ("auto", "bf16", "fp32", "fp16"):
+            self.assertEqual(parser.parse_args(base + ["--dtype", name]).dtype, name)
         self.assertEqual(parser.parse_args(base).dtype, "auto")
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(base + ["--dtype", "int8"])
+
+    def test_fp16_training_is_refused_because_nothing_scales_the_loss(self) -> None:
+        """A gradient that underflows to zero in fp16 is a finite number: the check for nonfinite values never sees it, and the run learns less than it looks."""
+        for extra in ((), ("--dry-run",)):
+            with self.assertRaises(ValueError, msg=extra) as caught:
+                train("dtype_fp16", *SHORT, *FULL, "--dtype", "fp16", *extra, cache=False)
+            text = str(caught.exception)
+            for word in ("--dtype fp16", "loss scal", "underflow", "bf16", "fp32"):
+                self.assertIn(word, text)
+        self.assertFalse((_STATE["root"] / "runs" / "dtype_fp16").exists(), "refused before a run folder, a model or a log exists")
+
+    def test_bf16_and_fp32_are_not_affected_by_the_refusal(self) -> None:
+        for name in ("bf16", "fp32"):
+            train(f"dtype_ok_{name}", *SHORT, *FULL, "--dtype", name, "--dry-run", cache=False)       # the plan prints, nothing raises
 
     def test_a_resume_cannot_change_the_dtype(self) -> None:
         train("dtype_resume", *ARGS, *FULL, "--max-steps", "3", "--dtype", "fp32", cache=False)

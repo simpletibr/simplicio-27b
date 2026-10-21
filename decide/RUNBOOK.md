@@ -1,8 +1,31 @@
 # RUNBOOK do Simplicio-Decide-27B: sessão por sessão
 
-Para o dono (Wesley). Versão 1 · 2026-10-21. O plano está em [`PLAN.md`](PLAN.md), os formatos em [`data/SCHEMA.md`](data/SCHEMA.md), as decisões em [ADR 0003](../docs/adr/0003-simplicio-decide-27b.md) e [ADR 0004](../docs/adr/0004-pensar-sob-demanda.md). Épico [#64](https://github.com/simpletibr/simplicio-27b/issues/64).
+Para o dono (Wesley). Versão 2 · 2026-10-21 (revalidada contra a `main` com #73, #74, #77, #78, #79, #80, #81 e #82; veja os avisos logo abaixo). O plano está em [`PLAN.md`](PLAN.md), os formatos em [`data/SCHEMA.md`](data/SCHEMA.md), as decisões em [ADR 0003](../docs/adr/0003-simplicio-decide-27b.md) e [ADR 0004](../docs/adr/0004-pensar-sob-demanda.md). Épico [#64](https://github.com/simpletibr/simplicio-27b/issues/64).
 
 Regra de evidência: só número medido é fato. Tudo que está marcado **UNVERIFIED** é estimativa, conta ou leitura de documentação. **Nada deste projeto rodou numa GPU.** O código foi testado em CPU, com modelos minúsculos e dublês (`make check`). A primeira vez que cada sessão rodar de verdade é um teste: comece pelo ensaio pequeno que cada uma descreve.
+
+## Avisos de hoje (leia antes de qualquer sessão)
+
+Três avisos, do mais grave ao menos grave. O terceiro é o resultado de conferir cada comando abaixo contra o código que está na `main` agora.
+
+1. **Não rode sessões de GPU do kit** (as sessões 2, 4 e 7, e todo `proxy_eval run`, que aparece nas sessões 1 (passo 7), 6 (passo 4) e 8) **até as PRs de correção do núcleo do kit entrarem na `main`.** A revisão independente do núcleo (PR [#80](https://github.com/simpletibr/simplicio-27b/pull/80)) deixou 3 bloqueantes abertos: falta de memória por lote (OOM), revisões do Hub sem fixar e doador sem cobertura. A Squad A corrige numa PR nova. Horas de GPU gastas antes disso podem ser jogadas fora. O treino da sessão 6 (passos 1 a 3) não usa o kit e não está nesse bloqueio.
+2. **O gate GT oficial só vale se sair do notebook do Kaggle** (`notebooks/decide/think_gt_kaggle.ipynb`, backend `transformers`) **até a correção.** A `main` ainda pode dar `FAIL` falso no GT quando o provedor da API esconde o raciocínio do modelo: é um bloqueante da revisão independente do #78, que a Squad C corrige numa PR nova (a Squad B não reproduziu a falha, só repassa o achado). Endpoint de API, `decide.think.hosted` e a Modal servem para a sonda de 3 linhas, **não para o veredito** (sessão 3).
+3. **O que a `main` roda hoje.** Conferi as opções de cada comando com `--help` e a existência de cada caminho; nada disso rodou numa GPU.
+
+   | Sessão | Roda a partir da `main`? | O que falta |
+   |---|---|---|
+   | 0 preparação | sim | |
+   | 1 F2 dados | passos 1 a 3, 5 e 6 (`decide.data`). Não os passos 4 e 7 | `decide.modal.suite_requests` (Squad A) e `decide.rental.proxy_eval` (F6) não existem na `main`; o G1 também cai no aviso 1 |
+   | 2 F1 fidelidade | não | os notebooks `kaggle_0N_*.ipynb` e `notebooks/decide/docs/` (parte 2 do kit, Squad A) não estão na `main`; aviso 1 |
+   | 3 F2b GT | sim, mas o veredito só pelo Kaggle | aviso 2 |
+   | 4 F3 rotulagem | não | `decide/modal` (Squad A) não existe na `main`; aviso 1 |
+   | 5 alvos | sim | os traços do pensador só nascem no dia alugado (F6); veja a sessão 5 |
+   | 6 F4 ensaio 4B | passos 1 a 3 (treino); o passo 4 (G2) não | `decide.rental.proxy_eval` (F6) |
+   | 7 F5 merge | não | notebooks do kit; aviso 1 |
+   | 8 F6 dia alugado | não | `decide/rental` e `decide/config.rental.yaml` não estão na `main` (a PR da F6 ainda não foi aberta) |
+   | 9 F7 submissão | à mão | depende da sessão 8 |
+
+   Onde um comando abaixo depende de um caminho que ainda não existe, o texto diz.
 
 ## 0. Como ler
 
@@ -11,7 +34,7 @@ Regra de evidência: só número medido é fato. Tudo que está marcado **UNVERI
 - **Segredos.** O token do Hugging Face (`HF_TOKEN`) e qualquer chave de API entram só como variável de ambiente ou em *Secrets* da plataforma. Nunca numa célula, num arquivo do repositório, numa mensagem de commit. Nenhum comando abaixo imprime o valor.
 - **Tudo retoma.** Todo passo longo grava em partes e pula o que já terminou. Se a sessão cair, abra a mesma e rode o mesmo comando. A seção 12 lista o que fazer em cada falha.
 - **Tudo nasce privado.** Os repositórios do Hugging Face que o projeto escreve são privados. Tornar algo público é decisão sua, depois de ler o cartão (sessão 9).
-- Os arquivos `decide/sd`, `decide/modal`, `decide/think` e `notebooks/decide/` são de outras squads (kit, Modal, pensar). Os caminhos deles abaixo valem a partir do momento em que as PRs delas entrarem na `main`; até lá, estão só nos ramos delas. O mesmo vale para o que esta squad escreveu depois da F2: `decide/train` (F4, PR [#79](https://github.com/simpletibr/simplicio-27b/pull/79)) e `decide/rental` (F6, incluindo o `proxy_eval` das sessões 1 e 6 e o `run` da sessão 8) só existem na `main` depois dos merges dessas PRs. `decide/data` (F2) já está na `main`.
+- Quem escreveu o quê: `decide/data` (F2), `decide/train` (F4) e `decide/rental` (F6) são desta squad; `decide/sd`, `decide/modal` e `notebooks/decide/` (kit e Modal) são da Squad A; `decide/think` e os notebooks `think_gt_*` (pensar) são da Squad C. **Já estão na `main`:** `decide/data` (#74), `decide/think` (#78), `decide/train` (#79) e o núcleo do kit `decide/sd` (#80). **Ainda não estão:** `decide/modal`, os notebooks `kaggle_0N_*.ipynb` e `notebooks/decide/docs/` (parte 2 do kit, Squad A) e `decide/rental` com `decide/config.rental.yaml` (F6, incluindo o `proxy_eval` das sessões 1 e 6 e o `run` da sessão 8). Um caminho dessas listas só vale depois do merge da PR que o traz.
 
 ## 1. Mapa
 
@@ -63,7 +86,7 @@ Ordem sugerida: 0, depois 1 e 2 e 3 em paralelo (são independentes), depois 4, 
    | `wesleysimplicio/simplicio-decide-day` | modelo | o orquestrador | cópia de cada seed e da média, para retomar o dia |
    | `wesleysimplicio/Simplicio-Decide-27B` | modelo | o orquestrador ou o notebook 6 do kit | o modelo final |
 
-   Os nomes vêm de `decide/config.rental.yaml` e `decide/config.yaml`; mude lá, não aqui.
+   Os nomes vêm de `decide/config.yaml` (hoje na `main`) e de `decide/config.rental.yaml` (da F6, ainda não está na `main`); mude lá, não aqui.
 4. Guarde o token onde cada plataforma o guarda: *Add-ons → Secrets* no Kaggle (nome `HF_TOKEN`, marcado como anexado ao notebook), *Secrets* no Colab, `modal secret create huggingface HF_TOKEN=...` na Modal, `export HF_TOKEN=...` no terminal da máquina alugada.
 
 **Certo quando:** `make check` termina com `OK`.
@@ -94,7 +117,7 @@ Formatos e regras: [`data/SCHEMA.md`](data/SCHEMA.md). A ordem importa, porque o
    python -m decide.data.proxy_private build --out work/proxy --reader hub --corpus-manifest work/corpus/manifest.json
    ```
 
-4. **A suíte pública 0.3**, que a descontaminação usa como referência. Quem a baixa é o kit: o notebook 1 (`kaggle_01_preparar.ipynb`) ou, na sua máquina, `python -m decide.modal.suite_requests --out requests/`, que deixa a suíte em `requests/suite-0.3/` (precisa de `HF_TOKEN`; cerca de 75 MB). Os arquivos de linhas (`selected-rows.jsonl.gz`, `added-rows.jsonl.gz`, `gsm8k-rows.jsonl.gz`) são a referência.
+4. **A suíte pública 0.3**, que a descontaminação usa como referência. Quem a baixa é o kit: o notebook 1 (`kaggle_01_preparar.ipynb`) ou, na sua máquina, `python -m decide.modal.suite_requests --out requests/`, que deixa a suíte em `requests/suite-0.3/` (precisa de `HF_TOKEN`; cerca de 75 MB). **Nenhum dos dois está na `main` hoje** (parte 2 do kit, Squad A): este passo, e os passos 5 e 6 que dependem dele, esperam o merge dessa PR. Os arquivos de linhas (`selected-rows.jsonl.gz`, `added-rows.jsonl.gz`, `gsm8k-rows.jsonl.gz`) são a referência.
 5. **Descontaminação** contra a suíte e o privado:
 
    ```
@@ -118,7 +141,7 @@ Formatos e regras: [`data/SCHEMA.md`](data/SCHEMA.md). A ordem importa, porque o
    python -m decide.data.proxy_private validate --scores work/g1/scores.json --board work/space/data/index.json
    ```
 
-   O `run` usa o kit; o 27B em 4 bits precisa de `--quant nf4` e de duas T4. Os modelos que o kit carrega são os de layout pplx (`pplx-decider-v1.2`, `pplx-decider-flash-v1.2`, `d3`, `d3-turbo`, `d3-mini`); o Amos tem cabeça incompatível e o Lychee é CC BY-NC (fora do projeto). **Se faltar modelo carregável para chegar a 6, o G1 não fecha**: diga isso na issue, não invente a ordem. (`work/space/data/index.json` é o `index.json` do board; baixe-o do Space do Jev. Revisão exata de cada modelo: copie o commit da página do modelo no Hub.)
+   **O `proxy_eval` é da F6 e ainda não está na `main`.** O `run` carrega os modelos pelo kit (aviso 1: sem GPU até as correções); o 27B em 4 bits precisa de `--quant nf4` e de duas T4. Os modelos que o kit carrega são os de layout pplx (`pplx-decider-v1.2`, `pplx-decider-flash-v1.2`, `d3`, `d3-turbo`, `d3-mini`); o Amos tem cabeça incompatível e o Lychee é CC BY-NC (fora do projeto). **Se faltar modelo carregável para chegar a 6, o G1 não fecha**: diga isso na issue, não invente a ordem. (`work/space/data/index.json` é o `index.json` do board; baixe-o do Space do Jev. Revisão exata de cada modelo: copie o commit da página do modelo no Hub.)
 
 **Escreve:** `work/corpus-limpo/` (partes `*.parquet`, `manifest.json`, `decontamination.json`), `work/proxy/` (`manifest.json`). **Certo quando:** o relatório da descontaminação lista as contagens por motivo, a segunda passada do privado termina sem `LeakError` e o G1 diz `passed: true`.
 
@@ -135,6 +158,8 @@ hf upload wesleysimplicio/simplicio-decide-data work/proxy proxy --repo-type dat
 
 ## 4. Sessão 2: F1, fidelidade do carregador (Kaggle)
 
+**Não rode agora** (avisos 1 e 3): os notebooks e os guias abaixo são da parte 2 do kit e não estão na `main`, e o núcleo do kit tem bloqueantes abertos.
+
 **Onde:** Kaggle, 1 a 2 T4. **Passo a passo completo:** `notebooks/decide/docs/01_comecar_no_kaggle.md` (kit). Em resumo:
 
 1. Importe os sete notebooks `kaggle_0N_*.ipynb`, anexe o segredo `HF_TOKEN` e ligue a Internet.
@@ -145,7 +170,9 @@ hf upload wesleysimplicio/simplicio-decide-data work/proxy proxy --repo-type dat
 
 ## 5. Sessão 3: F2b, o gate GT (pensar vale a pena?)
 
-**Onde:** um de quatro (escolha pelo que você tem): Kaggle T4, uma API com o Qwen3.8-27B pensando, uma GPU de 80 GB ou mais, ou a Modal. **Guia completo:** `decide/think/README.md` (Squad C, PR [#78](https://github.com/simpletibr/simplicio-27b/pull/78)).
+**Veredito oficial só pelo Kaggle (aviso 2).** Os quatro lugares abaixo rodam o mesmo código, mas **até a correção da Squad C só o notebook do Kaggle (`notebooks/decide/think_gt_kaggle.ipynb`, backend `transformers`) produz um `PASS` ou `FAIL` que vale como gate.** Num endpoint de API (o comando do passo 2 usa `--backend openai`), no `decide.think.hosted` ou na Modal, faça a sonda de 3 linhas e pare: o `FAIL` de um provedor que esconde o raciocínio pode ser falso. Se o seu resultado de API deu `FAIL`, repita no Kaggle antes de registrar na issue.
+
+**Onde:** um de quatro (escolha pelo que você tem): Kaggle T4, uma API com o Qwen3.8-27B pensando, uma GPU de 80 GB ou mais, ou a Modal. **Guia completo:** `decide/think/README.md` (Squad C, PR [#78](https://github.com/simpletibr/simplicio-27b/pull/78), já na `main`). Os notebooks fixam o código num commit (`SIMPLICIO_SHA`); use os da `main` mais nova.
 
 1. Confira o pacote privado `pack.jsonl.gz` (400 linhas de 10 provas; guarde fora do clone):
 
@@ -166,6 +193,8 @@ hf upload wesleysimplicio/simplicio-decide-data work/proxy proxy --repo-type dat
 **Decisão:** `PASS` liga o passo dos traços do pensador na sessão 8 (e o treino que lê raciocínio). `FAIL` ou `PARTIAL` deixa o dia no modo só-decisor, que é a entrega mínima do plano. O resultado de `FAIL` vale: registre-o na issue [#75](https://github.com/simpletibr/simplicio-27b/issues/75).
 
 ## 6. Sessão 4: F3, rotulagem pelos professores (Modal)
+
+**Não rode agora** (avisos 1 e 3): `decide/modal` e o guia abaixo são da parte 2 do kit e não estão na `main`, e o núcleo do kit tem bloqueantes abertos (a rodada gasta o crédito da Modal).
 
 **Onde:** Modal, no crédito gratuito. **Guia:** `notebooks/decide/docs/04_rodada_paga.md` (kit; a seção 3 ensina a sonda). **Pacotes:** `pip install modal==1.6.2 && modal setup`.
 
@@ -208,13 +237,15 @@ python -m decide.train.build_targets --corpus work/corpus-limpo --labels work/la
 
 - Com mais de um professor, passe um combinador (`--combiner combiner.json`; formato na seção 5 do `SCHEMA.md`). Sem ele, exige exatamente um professor.
 - `--missing drop` (padrão) descarta o que o professor não rotulou e não tem rótulo ouro; `renormalize` e `error` estão no `--help`.
-- Com traços do pensador (sessão 3 passou e você os gerou): `--traces work/traces/Qwen3.8-27B` acrescenta o raciocínio ao alvo.
+- **`--corpus` tem de ser a pasta que a descontaminação deixou** (`manifest.json` com `tool: "decontaminate"` e o `decontamination.json` ao lado). Corpus bruto, pasta selada à mão e parquet solto são recusados com um `TargetError` que diz o que fazer. A saída explícita é `--allow-undecontaminated`, uma decisão sua: ela fica gravada nos alvos e no checkpoint (`corpus.allow_undecontaminated`). Não a use no dia que vale.
+- **`--labels` (pasta) e `--traces` (pasta) precisam de `manifest.json`**; o `build_targets` lê só as partes que ele lista e confere o sha256. Rótulos copiados da Modal podem vir sem ele: `python -c "from decide.data import schema as S; S.seal_directory('work/labels/pplx-decider-v1.2', kind='labels')"` (e `kind='traces'` para os traços). Sele de novo se a pasta mudou.
+- **Traços do pensador (`--traces work/traces/Qwen3.8-27B`, acrescenta o raciocínio ao alvo): não faça isto à mão e não treine com raciocínio ainda.** Hoje nenhum comando da `main` gera essa pasta; quem a gera é o passo `traces` do dia alugado (F6, ainda não está na `main`). Cada linha de traço leva o `request_sha256` do pedido para o qual foi escrita, e o `build_targets` recusa o traço de outro pedido. Antes de qualquer treino com `--reasoning` faltam duas coisas: o motor do kit chamar `fold_reasoning` (`data/SCHEMA.md`, seção 10) e a descontaminação por n-grama cobrir a coluna `reasoning` (issue [#83](https://github.com/simpletibr/simplicio-27b/issues/83)).
 
-**Escreve:** `work/targets/` (`*.parquet`, `manifest.json`, `report.json`). **Certo quando:** `report.json` mostra `rows_out` perto de `rows_in`. Atenção: `rows_out` também conta linhas que só têm rótulo ouro; a cobertura de **professor** (≥ 95%) é medida de verdade na fase `targets` do dia alugado, antes de qualquer hora de GPU. **Se cair:** rode de novo; as partes terminadas são puladas e as corrompidas são refeitas.
+**Escreve:** `work/targets/` (`*.parquet`, `manifest.json`, `report.json`). **Certo quando:** `report.json` mostra `rows_out` perto de `rows_in` e a cobertura de **professor**, `1 - unlabeled_questions / questions` (seção 11 do `SCHEMA.md`), é ≥ 0,95; abaixo disso volte à sessão 4. Atenção: `rows_out` também conta linhas que só têm rótulo ouro, por isso a conta certa é a das perguntas. O dia alugado repete essa medida na fase `targets`, antes de qualquer hora de GPU. **Se cair:** rode de novo; as partes terminadas são puladas e as corrompidas são refeitas.
 
 ## 8. Sessão 6: F4, o ensaio 4B (G2)
 
-**Onde:** Kaggle T4 (ou o crédito da Modal). **Importante (UNVERIFIED):** a T4 não tem bf16 nativo; o treino em bf16 pode cair em emulação e ficar muito lento. Se a sonda abaixo mostrar isso, faça este ensaio no crédito da Modal. **TODO (Squad A):** o kit não tem um notebook de treino do 4B; rode os comandos numa célula ou no terminal. **Pacotes:** `pip install -r decide/train/requirements.txt`
+**Onde:** Kaggle T4 (ou o crédito da Modal). **Importante (UNVERIFIED):** a T4 não tem bf16 nativo; o treino em bf16 pode cair em emulação e ficar muito lento. O padrão `--dtype auto` usa bf16 numa GPU e fp32 na CPU. O treino **recusa `--dtype fp16`**: não há escala de perda, e um gradiente que zera por underflow é um número finito que nenhuma checagem vê (o modelo aprenderia menos do que a curva de perda mostra). Na T4 sobram o bf16 emulado (o padrão) e o fp32, que provavelmente não cabe para o 4B (conta: 4 bilhões × 4 bytes ≈ 16 GB contra 15 GB de memória, UNVERIFIED). Nada disso foi medido numa GPU; o pilot do passo 2 é o teste. Se ele mostrar emulação lenta, faça este ensaio numa GPU com bf16 (a Modal não tem app de treino na `main`; seria preciso escrevê-lo). **TODO (Squad A):** o kit não tem um notebook de treino do 4B; rode os comandos numa célula ou no terminal. **Pacotes:** `pip install -r decide/train/requirements.txt`
 
 Ponto de partida: `perplexity-ai/pplx-decider-flash-v1.2` (4B). Baixe-o numa pasta local (`hf download perplexity-ai/pplx-decider-flash-v1.2 --local-dir work/flash`).
 
@@ -231,6 +262,8 @@ Ponto de partida: `perplexity-ai/pplx-decider-flash-v1.2` (4B). Baixe-o numa pas
        --max-train 2000 --max-steps 20 --eval-every 10 --max-dev 200
    ```
 
+   Olhe também `runs/4b-pilot/summary.json`: `dropped_too_long` conta os pedidos que passaram de `--max-length` e ficaram fora do treino. Se for muita coisa, o modelo não aprende os pedidos longos; aumente `--max-length` (se couber na memória) ou revise o corpus.
+
 3. **Treino**, 1 época, uma semente primeiro. O treino já calibra a temperatura no fim (`final/decision_config.json`), não precisa rodar mais nada para um checkpoint só:
 
    ```
@@ -244,9 +277,10 @@ Ponto de partida: `perplexity-ai/pplx-decider-flash-v1.2` (4B). Baixe-o numa pas
    python -m decide.train.temperature --checkpoint runs/4b-soup --targets work/targets --write
    ```
 
-4. **G2: medir no privado caseiro**, o novo contra o ponto de partida, nas mesmas linhas (cada `run` retoma de onde parou; precisa do kit: `pip install -r notebooks/decide/requirements.txt`):
+4. **G2: medir no privado caseiro**, o novo contra o ponto de partida, nas mesmas linhas. **Não roda a partir da `main` hoje:** `decide.rental.proxy_eval` é da F6 e ainda não foi mesclado, e o `run` carrega os modelos pelo kit (aviso 1). O G2 espera esses dois. Os comandos abaixo são o plano, não uma receita testada na `main`. Cada `run` retoma de onde parou e precisa do kit (a primeira linha do bloco o instala):
 
    ```
+   pip install -r notebooks/decide/requirements.txt
    python -m decide.rental.proxy_eval requests --proxy work/proxy --out work/proxy-requests.jsonl
    python -m decide.rental.proxy_eval run --requests work/proxy-requests.jsonl --model flash=dir:work/flash --out work/g2/flash
    python -m decide.rental.proxy_eval run --requests work/proxy-requests.jsonl --model novo=dir:runs/4b-seed1/final --out work/g2/novo
@@ -261,9 +295,13 @@ Ponto de partida: `perplexity-ai/pplx-decider-flash-v1.2` (4B). Baixe-o numa pas
 
 ## 9. Sessão 7: F5, merge de backbones (opcional)
 
+**Não rode agora** (avisos 1 e 3): os notebooks do kit não estão na `main` e o núcleo do kit tem bloqueantes abertos, entre eles o do doador sem cobertura (o merge usa doadores).
+
 **Onde:** Kaggle, 2 T4, notebooks `kaggle_04_varredura` e `kaggle_05_calibrar` do kit. É um experimento barato e de baixa expectativa: a Fase 0A mostrou que média de pesos de modelos de topo não supera o melhor membro. "Nenhum merge ganhou" é um resultado válido; o ponto de partida do dia alugado fica o `pplx-decider-v1.2`. Se um merge ganhar (G3), troque `rental.start` em `decide/config.rental.yaml` pelo repositório do vencedor, com a revisão exata.
 
 ## 10. Sessão 8: F6, o dia alugado
+
+**Não existe na `main` ainda** (aviso 3): `decide/rental` e `decide/config.rental.yaml` entram com a PR da F6 (issue [#71](https://github.com/simpletibr/simplicio-27b/issues/71)). Esta seção descreve o desenho da PR; os comandos valem depois do merge dela e do conserto dos bloqueantes do kit (aviso 1), porque as fases `g4` e `public_round` carregam o modelo pelo kit.
 
 **Onde:** uma máquina Linux alugada com a GPU do perfil. **Perfis** (`decide/rental/profiles/`): `econ_b200` (1× B200, LoRA r128, 1 semente: ~14 h, ~US$ 90, **UNVERIFIED**) e `full_8xh100` (8× H100, ajuste completo, 2 sementes: ~12 a 16 h, ~US$ 380 a 510, **UNVERIFIED**). O econômico é o padrão. O completo só entra se o G2 mostrou ganho ≥ +1,0.
 
@@ -294,6 +332,7 @@ python -m decide.rental.run --profile econ_b200 --execute --workdir /workspace/d
 ```
 
 - Sem `--gt-report` (ou com um GT que não passou) o dia é **só-decisor**. Sem `--public-requests` a rodada pública é pulada.
+- **Hoje, não passe `--gt-report`.** Os traços do pensador entram no treino como o campo `reasoning`, e esse campo ainda não passa pela descontaminação por n-gramas (issue [#83](https://github.com/simpletibr/simplicio-27b/issues/83)); além disso o motor do kit ainda não chama `fold_reasoning`, então o modelo treinado com `--reasoning mixed` seria avaliado e servido sem o bloco `Raciocínio:` com que treinou. Rode o dia só-decisor até essas duas correções entrarem na `main` (seção 13).
 - O dia tem 11 fases: `preflight, fetch, targets, traces, targets_traces, train, soup, calibrate, g4, public_round, publish`. Cada uma é pulada se já terminou e suas saídas não mudaram. `--only` e `--until` rodam parte delas.
 - **Gates param o dia, não só avisam.** Cobertura de rótulos (F3) antes de qualquer hora de GPU; G4 (novo ≥ ponto de partida + 1,5 pontos do privado) antes da rodada pública e do envio. O G4 compara o novo com o ponto de partida **nas mesmas linhas** e imprime o intervalo de confiança do bootstrap pareado (`ci_includes_zero` é aviso, não condição).
 - Códigos de saída: `0` o dia terminou (ou o plano foi impresso); `1` erro (o estado diz onde; rode de novo); `2` uso ou configuração; `3` um gate parou o dia.
@@ -324,10 +363,15 @@ python -m decide.rental.run --profile econ_b200 --execute --workdir /workspace/d
 | a sessão do Kaggle ou Colab caiu | qualquer notebook | abra o mesmo notebook e rode tudo de novo; o passo continua do último bloco |
 | `PAUSADO` no notebook | kit | nada se perdeu; rode na próxima sessão |
 | preempção ou queda na Modal | rotulagem | repita o mesmo comando; partes prontas são puladas |
-| `ManifestError` ao ler corpus, rótulos ou alvos | dados | a pasta é um build interrompido ou mexido à mão; refaça o passo que a gerou (não apague só uma parte) |
+| `ManifestError` ao ler corpus, rótulos, traços ou alvos | dados | a pasta é um build interrompido ou mexido à mão; refaça o passo que a gerou (não apague só uma parte). Rótulos ou traços copiados de fora, sem `manifest.json` (`... has no manifest.json listing its parts`): sele a pasta, como na sessão 5 |
+| `TargetError: ... not by decontaminate` ou `... is a parquet file, not the folder decontaminate leaves` | `build_targets` | o `--corpus` não é a saída da descontaminação; aponte para a pasta de `decide.data.decontaminate --out` (sessão 1, passo 5). `--allow-undecontaminated` é a saída explícita e fica gravada nos alvos |
+| `TargetError: ... the trace was made for another request` | `build_targets` | os traços foram escritos para outro corpus (o `request_sha256` não confere); gere os traços de novo a partir do corpus limpo atual |
 | `TargetError: ... --out` | `build_targets` | `--out` é uma entrada, está dentro de uma, ou foi feito por outra ferramenta: use uma pasta nova |
 | `--resume: the saved run differs in ...` | treino | você mudou um argumento (ou os dados, ou o checkpoint) entre a parada e a retomada; volte ao valor anterior ou comece uma pasta nova |
 | o treino recusa recomeçar | treino | a pasta já tem uma execução terminada; use outra `--out` |
+| perda ou gradiente não finito, e a execução para | treino | repita com `--dtype fp32` (numa T4 provavelmente não cabe para o 4B, conta na sessão 6) ou numa GPU com bf16. Não foi medido numa GPU (UNVERIFIED) |
+| `--dtype fp16 is refused` | treino | de propósito: sem escala de perda um gradiente que zera por underflow passa calado. Use o padrão (bf16 numa GPU, emulado e lento numa T4, UNVERIFIED) ou fp32 |
+| `--resume: ... already exists, so the run is finished` | treino | a execução terminou (existe `final/`); o `resume.pt` é apagado nesse ponto. Use outra `--out` para uma nova |
 | `the temperature ... is a placeholder` | kit ou dia | rode `python -m decide.train.temperature --checkpoint <pasta> --targets <alvos> --write` |
 | falta de memória na GPU | treino | diminua `--token-budget` ou `--batch-rows` (o `--effective-batch` não muda, só quantas linhas cabem por passada) |
 | G4 parou o dia | dia alugado | veja `g4/verdict.json`; o novo não superou o ponto de partida por 1,5 pontos; não suba o modelo nem faça a rodada pública |
@@ -335,8 +379,10 @@ python -m decide.rental.run --profile econ_b200 --execute --workdir /workspace/d
 
 ## 13. Em aberto
 
+- **Bloqueios que esperam PR de correção (avisos 1 e 2):** o núcleo do kit (#80: OOM por lote, revisões do Hub sem fixar, doador sem cobertura, Squad A) e o gate GT sobre provedor que esconde o raciocínio (#78, Squad C). Quando essas PRs entrarem, este RUNBOOK precisa de uma revisão que tire os avisos e confira os comandos de novo.
+- **Antes de qualquer treino com `--reasoning`:** o motor do kit chamar `fold_reasoning`, e a descontaminação cobrir a coluna `reasoning` dos traços (issue [#83](https://github.com/simpletibr/simplicio-27b/issues/83)).
 - **UNVERIFIED, tudo:** o treino em GPU (a T4 sem bf16, a B200, o DDP em 8 cartas, o LoRA r128 em 27B, a memória e a vazão), o carregamento do 27B real pelo kit, o `hf` e a API do Hub com a sua conta, os preços e os tempos dos perfis, a Modal, as regras do Space.
 - **TODO (Squad A):** notebook de treino do 4B; confirmar o caminho `requests/suite-0.3/`; confirmar o formato dos rótulos exportados pela Modal (`labels/<run>/`) contra o leitor `read_teacher`.
 - **TODO (Squad C):** confirmar o nome dos campos do `report.json` do GT contra o que o orquestrador lê (`think-gt-report/1`); o `pack.jsonl.gz` e o script de reconstrução da suíte ainda não estão versionados.
 - **Não implementado:** inferência híbrida (pensador + decisor) no G4 e na rodada pública; FSDP; o dia na Modal.
-- **Plano B (bases alternativas):** só vale se o gate GT falhar **e** a receita do Qwen3.8 estagnar abaixo de 66 no privado caseiro depois do dia econômico. Está na ADR 0005 e na seção 10 do `PLAN.md` (PR [#81](https://github.com/simpletibr/simplicio-27b/pull/81)); nada neste RUNBOOK depende dele.
+- **Plano B (bases alternativas):** só vale se o gate GT falhar **e** a receita do Qwen3.8 estagnar abaixo de 66 no privado caseiro depois do dia econômico. Está na ADR 0005 e na seção 10 do `PLAN.md` (PR [#81](https://github.com/simpletibr/simplicio-27b/pull/81), na `main`); nada neste RUNBOOK depende dele.

@@ -13,7 +13,7 @@ never modified.  Exit status 0 when every mutant that is not marked equivalent w
 
 ``tests/test_mutation_anchors_69.py`` runs in ``make check`` and fails when a mutant no longer applies (its ``old`` text moved or
 changed), so the list cannot silently rot while the code under it changes.  Running the mutants takes a long time (each one runs
-the slow flow tests when a fast test does not kill it): about an hour on two shared CPU cores.
+the slow flow tests when a fast test does not kill it): hours, not minutes, on two shared CPU cores.  Measured on the 145 mutants of the merged PR #79 at a load of 5 to 16: the first 67 took 8 896 s in all (median 30 s, mean 133 s, longest 2 197 s for a mutant that no test can kill, which therefore runs every file); the total for all of them is in the follow-up pull request.
 
 The mutants were chosen where a wrong line would train a model that is not the model that is served (the position of the readout,
 the attention mask, the left padding, the permutation and its inverse, the target mix, the temperature fit and its hold-out),
@@ -84,14 +84,28 @@ class Result:
     equivalent: str = ""
 
 
+def first_failure(output: str) -> str:
+    """``Class.test_name`` of the first failing test in the output of ``unittest`` ("" when none is named).
+
+    ``unittest`` prints ``FAIL: test_name (tests.test_module.Class.test_name)`` (Python 3.11 and later) or
+    ``FAIL: test_name (tests.test_module.Class)`` (earlier)."""
+    found = re.findall(r"^(?:FAIL|ERROR): (\S+) \(([^)]*)\)", output, flags=re.M)
+    if not found:
+        return ""
+    name, where = found[0]
+    parts = where.split(".")
+    if parts[-1] == name:
+        parts = parts[:-1]
+    return f"{parts[-1]}.{name}" if parts else name
+
+
 def run_tests(copy: Path, patterns: Sequence[str]) -> Tuple[bool, str]:
     """Run the test files in ``copy``; (True, first failing test) as soon as one fails, (False, "") when all pass."""
     for pattern in patterns:
         done = subprocess.run([sys.executable, "-m", "unittest", "discover", "-f", "-s", "tests", "-p", pattern], cwd=copy, capture_output=True, text=True,
                               timeout=3600, env=_environment())
         if done.returncode != 0:
-            found = re.findall(r"^(?:FAIL|ERROR): (\S+) \(([^)]*)\)", done.stdout + done.stderr, flags=re.M)
-            return True, (f"{found[0][1].split('.')[-1]}.{found[0][0]}" if found else f"{pattern} (exit {done.returncode})")
+            return True, first_failure(done.stdout + done.stderr) or f"{pattern} (exit {done.returncode})"
     return False, ""
 
 
@@ -173,7 +187,9 @@ MUTANTS: Tuple[Mutant, ...] = (
     Mutant('A16', BT, '("labels", labels_digest),', '', 'labels not in the fingerprint'),
     Mutant('A17', BT, ' and target.is_file() and S.sha256_file(target) == old.get("sha256"):', ':', 'part not verified before reuse'),
     Mutant('A18', BT, 'has_target = has_target or distribution is not None or gold.get(question_id) is not None', 'has_target = has_target or distribution is not None', 'gold-only questions dropped'),
-    Mutant('A19', BT, 'corpus_parts = S.corpus_files(corpus_root, require_manifest=True)', 'corpus_parts = S.corpus_files(corpus_root, require_manifest=False)', 'corpus read without a manifest'),
+    Mutant('A19', BT, 'corpus_parts = S.corpus_files(corpus_root, require_manifest=True)', 'corpus_parts = S.corpus_files(corpus_root, require_manifest=False)', 'corpus read without a manifest',
+           equivalent='corpus_provenance runs first and refuses a corpus folder without a readable manifest.json whether or not --allow-undecontaminated is given, '
+                      'and a parquet file is not read through a manifest either way: no input reaches this line with the flag changed'),
     Mutant('A20', BT, 'if previous["probs"] != row["probs"] or previous["temperature"] != row["temperature"]:', 'if False:', 'conflicting labels accepted'),
     Mutant('A21', BT, '("traces", traces_digest or "")', '("traces", "")', 'traces not in the fingerprint'),
     Mutant('A22', BT, '        if row["example_id"] in traces:\n            raise TargetError(', '        if False:\n            raise TargetError(', 'two thinkers silently merged'),
@@ -221,7 +237,13 @@ MUTANTS: Tuple[Mutant, ...] = (
     Mutant('H04', TRAIN, '"checkpoint": checkpoint_digest(checkpoint), ', '', 'checkpoint not in the run fingerprint'),
     Mutant('H05', TRAIN, '            model.merge()\n', '', 'LoRA not folded in at the end'),
     Mutant('H06', TRAIN, '                temperature = fields.pop("temperature")\n', '                temperature = None; fields.pop("temperature")\n', 'end-of-run temperature not stored'),
-    Mutant('H07', TRAIN, '(step % args.resume_every == 0 or step == stop) and step < plan.total_steps:', '(step % args.resume_every == 0) and step < plan.total_steps:', 'no resume state at the stop'),
+    Mutant('H07', TRAIN, '(step % args.resume_every == 0 or step == stop):', '(step % args.resume_every == 0):', 'no resume state at the stop'),
+    Mutant('Y01', TRAIN, '(step % args.resume_every == 0 or step == stop):', '(step % args.resume_every == 0 or step == stop) and step < plan.total_steps:', 'no resume state at the last step, so a death in the final save loses the run',
+           tests=('test_review_flow_69.py',)),
+    Mutant('Y02', TRAIN, '                (out / leftover).unlink(missing_ok=True)', '                pass', 'a finished run keeps its optimizer state', tests=('test_review_flow_69.py',)),
+    Mutant('Y03', TRAIN, 'for leftover in ("resume.pt", "resume.pt.pending"):', 'for leftover in ("resume.pt",):', 'a killed save of the resume state is kept after the run', tests=('test_review_flow_69.py',)),
+    Mutant('Y04', TRAIN, '    if args.dtype == "fp16":', '    if False:', 'fp16 trains without loss scaling', tests=('test_review_flow_69.py',)),
+    Mutant('Y05', TRAIN, '    if args.resume and (out / "final").exists():', '    if False:', 'a resume of a finished run complains about resume.pt instead of saying it is finished', tests=('test_review_flow_69.py',)),
     Mutant('H08', TRAIN, '    if run_file.exists() and not args.resume:', '    if False:', 'a run folder may be reused'),
     Mutant('H09', TRAIN, '            optimizer.load_state_dict(state["optimizer"])      # also copies', '            pass      # also copies', 'optimizer state not restored'),
     Mutant('H10', TRAIN, 'order_cache[epoch] = epoch_order(plan.rows, seed=args.seed, epoch=epoch)', 'order_cache[epoch] = epoch_order(plan.rows, seed=args.seed, epoch=0)', 'same data order every epoch'),

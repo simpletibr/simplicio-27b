@@ -29,8 +29,12 @@ class MutantsApply(unittest.TestCase):
             self.assertTrue(m.why.strip(), m.id)
             self.assertTrue(m.tests, m.id)
 
-    def test_only_the_boundary_of_the_warmup_is_marked_equivalent(self) -> None:
-        self.assertEqual([m.id for m in MC.MUTANTS if m.equivalent], ["G05"])
+    def test_only_the_two_unreachable_mutants_are_marked_equivalent(self) -> None:
+        """A19 (the manifest is demanded twice, and the first time comes first) and G05 (the boundary of the warmup gives 1.0 on both sides)."""
+        self.assertEqual([m.id for m in MC.MUTANTS if m.equivalent], ["A19", "G05"])
+        for m in MC.MUTANTS:
+            if m.equivalent:
+                self.assertGreater(len(m.equivalent), 60, f"{m.id}: say why no test can tell it from the original")
 
     def test_the_check_notices_an_anchor_that_moved_or_is_ambiguous(self) -> None:
         missing = MC.Mutant("Z1", "decide/train/loss.py", "text that is not in the file", "x", "why")
@@ -67,10 +71,24 @@ class RunnerTellsKilledFromSurvived(unittest.TestCase):
                        MC.Mutant("N", "pkg/mod.py", "return 99", "return 100", "not there", tests=tests)]
             results = {r.id: r for r in MC.run_mutants(mutants, repo)}
             self.assertEqual({k: v.verdict for k, v in results.items()}, {"K": "KILLED", "S": "SURVIVED", "E": "SURVIVED", "N": "NOT APPLIED"})
-            self.assertIn("test_value", results["K"].by)
+            self.assertEqual(results["K"].by, "T.test_value", "the class and the test, each once")
             self.assertEqual((repo / "pkg" / "mod.py").read_text(encoding="utf-8"), source, "the repository itself is never mutated")
             totals = MC.summarize(list(results.values()))
             self.assertEqual(totals, {"mutants": 4, "killed": 1, "survived_equivalent": 1, "survived": 1, "not_applied": 1})
+
+
+class FirstFailureNamesTheTest(unittest.TestCase):
+    def test_python_3_11_and_later_print_the_test_name_inside_the_parentheses_too(self) -> None:
+        output = "FAIL: test_a (tests.test_mod.Klass.test_a)\n----\nERROR: test_b (tests.test_mod.Klass.test_b)\n"
+        self.assertEqual(MC.first_failure(output), "Klass.test_a")
+
+    def test_the_older_format_prints_the_class_only(self) -> None:
+        self.assertEqual(MC.first_failure("ERROR: test_a (tests.test_mod.Klass)\n"), "Klass.test_a")
+
+    def test_a_module_level_failure_and_no_failure(self) -> None:
+        self.assertEqual(MC.first_failure("ERROR: setUpClass (tests.test_mod.Klass)\n"), "Klass.setUpClass")
+        self.assertEqual(MC.first_failure("ERROR: test_mod (unittest.loader._FailedTest.test_mod)\n"), "_FailedTest.test_mod")
+        self.assertEqual(MC.first_failure("Ran 3 tests\n\nOK\n"), "")
 
 
 if __name__ == "__main__":
