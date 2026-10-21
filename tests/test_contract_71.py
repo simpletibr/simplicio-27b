@@ -851,5 +851,410 @@ class G4Contract(unittest.TestCase):
             self.assertEqual(sorted(path.name for path in out.parent.iterdir()), ["requests.jsonl"], "no .tmp is left behind")
 
 
+# --------------------------------------------------------------------------- the thinker-trace step
+
+class ThinkerFixture:
+    """A fake OpenAI-compatible chat endpoint on the loopback: what it answers is a script, what it received is a list."""
+
+    def __init__(self, script=None):
+        import http.server
+        import threading
+
+        self.requests = []
+        self.script = list(script or [])
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):          # silence
+                pass
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                outer.requests.append({"path": self.path, "headers": dict(self.headers), "body": body})
+                status, payload = outer.script.pop(0) if outer.script else (200, outer.default(body))
+                data = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1"
+
+    @staticmethod
+    def default(body):
+        return {"choices": [{"message": {"role": "assistant", "content": "ANSWER q1: A", "reasoning_content": "Think about it."}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 50, "completion_tokens": 21}}
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class FakeThinker:
+    """Stands in for the chat client: ``complete`` answers from a function of the messages."""
+
+    def __init__(self, reply=None):
+        self.calls = []
+        self.reply = reply or (lambda messages, max_tokens: {"reasoning": "Because of the state.", "content": "ANSWER q1: x", "tokens": 17, "finish_reason": "stop"})
+
+    def complete(self, messages, *, max_tokens, thinking=True):
+        self.calls.append({"messages": messages, "max_tokens": max_tokens, "thinking": thinking})
+        out = self.reply(messages, max_tokens)
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+
+class ThinkerPromptContract(unittest.TestCase):
+    def request(self):
+        return {"state": "The harbor was closed on Monday.", "questions": {
+            "q1": {"type": "choice", "instructions": "Which day?", "criteria": {"x": "Monday", "y": "Tuesday"}},
+            "q2": {"type": "noul", "instructions": "Was it closed?", "criteria": {"true": "yes", "false": "no"}}}}
+
+    def test_the_prompt_has_the_state_every_question_and_its_options_in_order(self) -> None:
+        from decide.rental import traces as T
+
+        messages = T.thinker_messages(self.request())
+        self.assertEqual([m["role"] for m in messages], ["system", "user"])
+        text = messages[1]["content"]
+        self.assertIn("The harbor was closed on Monday.", text)
+        for needle in ("q1", "Which day?", "x: Monday", "y: Tuesday", "q2", "Was it closed?", "false", "true"):
+            self.assertIn(needle, text)
+        self.assertLess(text.index("q1"), text.index("q2"))
+        self.assertLess(text.index("x: Monday"), text.index("y: Tuesday"))
+        self.assertIn("ANSWER", text)
+
+    def test_the_state_is_data_not_instructions(self) -> None:
+        from decide.rental import traces as T
+
+        self.assertIn("data", T.thinker_messages(self.request())[0]["content"].lower())
+
+    def test_a_reasoning_already_in_the_request_is_not_shown_to_the_thinker(self) -> None:
+        from decide.rental import traces as T
+
+        request = dict(self.request(), reasoning="a previous thinker said B")
+        self.assertNotIn("a previous thinker said B", json.dumps(T.thinker_messages(request)))
+
+
+class ThinkerReplyContract(unittest.TestCase):
+    def parse(self, message, finish="stop", tokens=9):
+        from decide.rental import traces as T
+
+        return T.parse_reply({"choices": [{"message": message, "finish_reason": finish}], "usage": {"completion_tokens": tokens}})
+
+    def test_the_server_that_splits_the_reasoning_gives_it_in_a_field(self) -> None:
+        for field in ("reasoning_content", "reasoning"):
+            got = self.parse({"content": "ANSWER q1: x", field: "First this.\nThen that."})
+            self.assertEqual((got["reasoning"], got["content"], got["tokens"], got["finish_reason"]), ("First this.\nThen that.", "ANSWER q1: x", 9, "stop"))
+
+    def test_the_server_that_does_not_split_it_leaves_think_tags_in_the_text(self) -> None:
+        got = self.parse({"content": "<think>\nFirst this.\n</think>\n\nANSWER q1: x"})
+        self.assertEqual((got["reasoning"], got["content"]), ("First this.", "ANSWER q1: x"))
+
+    def test_the_template_may_open_the_think_block_itself(self) -> None:
+        got = self.parse({"content": "First this.\n</think>\nANSWER q1: x"})
+        self.assertEqual((got["reasoning"], got["content"]), ("First this.", "ANSWER q1: x"))
+
+    def test_a_budget_cut_in_the_middle_of_the_thinking_is_kept_as_length(self) -> None:
+        got = self.parse({"content": "<think>I am still thinking about"}, finish="length", tokens=2048)
+        self.assertEqual((got["reasoning"], got["finish_reason"], got["tokens"]), ("I am still thinking about", "length", 2048))
+        got = self.parse({"content": None, "reasoning_content": "cut here"}, finish="length")
+        self.assertEqual((got["reasoning"], got["finish_reason"]), ("cut here", "length"))
+
+    def test_no_thinking_at_all_is_an_empty_reasoning_not_an_invented_one(self) -> None:
+        got = self.parse({"content": "ANSWER q1: x"})
+        self.assertEqual(got["reasoning"], "")
+
+    def test_the_reasoning_is_cleaned_for_the_corpus(self) -> None:
+        from decide.rental import traces as T
+
+        text = T.clean_reasoning("<think>Line one\r\nRaciocínio:\r\n\r\n\r\n\r\nLine two  \n</think>")
+        self.assertEqual(text, "Line one\nRaciocínio :\n\nLine two")
+        self.assertNotIn("<think>", text)
+
+    def test_other_finish_reasons_are_errors(self) -> None:
+        from decide.rental import traces as T
+
+        with self.assertRaises(T.ThinkerError):
+            self.parse({"content": "x", "reasoning_content": "y"}, finish="content_filter")
+
+    def test_a_reply_without_choices_is_an_error(self) -> None:
+        from decide.rental import traces as T
+
+        for bad in ({}, {"choices": []}, {"error": {"message": "overloaded"}}):
+            with self.assertRaises(T.ThinkerError):
+                T.parse_reply(bad)
+
+
+class ThinkerClientContract(unittest.TestCase):
+    def client(self, fixture, **kw):
+        from decide.rental import traces as T
+
+        kw.setdefault("sleep", lambda seconds: None)
+        return T.ThinkerClient(fixture.url, "Qwen/Qwen3.8-27B", **kw)
+
+    def test_it_asks_for_thinking_with_the_budget_and_returns_the_parts(self) -> None:
+        fixture = ThinkerFixture()
+        self.addCleanup(fixture.close)
+        got = self.client(fixture).complete([{"role": "user", "content": "hi"}], max_tokens=4096)
+        sent = fixture.requests[0]
+        self.assertEqual(sent["path"], "/v1/chat/completions")
+        self.assertEqual(sent["body"]["model"], "Qwen/Qwen3.8-27B")
+        self.assertEqual(sent["body"]["max_tokens"], 4096)
+        self.assertEqual(sent["body"]["chat_template_kwargs"], {"enable_thinking": True})
+        self.assertEqual(sent["body"]["messages"], [{"role": "user", "content": "hi"}])
+        self.assertEqual((got["reasoning"], got["tokens"], got["finish_reason"]), ("Think about it.", 21, "stop"))
+
+    def test_thinking_can_be_switched_off_for_a_probe(self) -> None:
+        fixture = ThinkerFixture()
+        self.addCleanup(fixture.close)
+        self.client(fixture).complete([{"role": "user", "content": "hi"}], max_tokens=64, thinking=False)
+        self.assertEqual(fixture.requests[0]["body"]["chat_template_kwargs"], {"enable_thinking": False})
+
+    def test_the_key_is_sent_as_a_bearer_token_only_when_there_is_one(self) -> None:
+        fixture = ThinkerFixture()
+        self.addCleanup(fixture.close)
+        self.client(fixture).complete([{"role": "user", "content": "hi"}], max_tokens=8)
+        self.assertNotIn("Authorization", fixture.requests[0]["headers"])
+        self.client(fixture, api_key="sk-test-123").complete([{"role": "user", "content": "hi"}], max_tokens=8)
+        self.assertEqual(fixture.requests[1]["headers"]["Authorization"], "Bearer sk-test-123")
+
+    def test_a_key_is_never_sent_over_plain_http_to_another_machine(self) -> None:
+        from decide.rental import traces as T
+
+        for url in ("http://example.org/v1", "http://10.0.0.5:8000/v1"):
+            with self.assertRaises(ValueError):
+                T.ThinkerClient(url, "m", api_key="sk-test-123")
+            with self.assertRaises(ValueError):          # the prompts are the training data: no plain http off the machine at all
+                T.ThinkerClient(url, "m")
+        T.ThinkerClient("https://example.org/v1", "m", api_key="sk-test-123")
+        for url in ("http://127.0.0.1:8000/v1", "http://localhost:8000/v1", "http://[::1]:8000/v1"):
+            T.ThinkerClient(url, "m")
+        with self.assertRaises(ValueError):
+            T.ThinkerClient("ftp://example.org/v1", "m")
+
+    def test_a_loopback_server_is_reached_even_when_the_environment_names_a_proxy(self) -> None:
+        fixture = ThinkerFixture()
+        self.addCleanup(fixture.close)
+        saved = {name: os.environ.get(name) for name in ("HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy")}
+        self.addCleanup(lambda: [os.environ.__setitem__(k, v) if v is not None else os.environ.pop(k, None) for k, v in saved.items()])
+        os.environ.update(HTTP_PROXY="http://127.0.0.1:9", http_proxy="http://127.0.0.1:9")
+        os.environ.pop("NO_PROXY", None)
+        os.environ.pop("no_proxy", None)
+        self.client(fixture).complete([{"role": "user", "content": "hi"}], max_tokens=8)
+        self.assertEqual(len(fixture.requests), 1)
+
+    def test_a_busy_or_failing_server_is_retried_and_then_gives_up(self) -> None:
+        from decide.rental import traces as T
+
+        fixture = ThinkerFixture([(503, {"error": "busy"}), (429, {"error": "slow down"})])
+        self.addCleanup(fixture.close)
+        slept = []
+        got = self.client(fixture, sleep=slept.append).complete([{"role": "user", "content": "hi"}], max_tokens=8)
+        self.assertEqual(got["finish_reason"], "stop")
+        self.assertEqual(len(fixture.requests), 3)
+        self.assertEqual(len(slept), 2)
+        self.assertLess(slept[0], slept[1], "back off")
+        stubborn = ThinkerFixture([(500, {"error": "x"})] * 10)
+        self.addCleanup(stubborn.close)
+        with self.assertRaises(T.ThinkerError):
+            self.client(stubborn, retries=2).complete([{"role": "user", "content": "hi"}], max_tokens=8)
+        self.assertEqual(len(stubborn.requests), 3)
+
+    def test_a_request_the_server_refuses_is_not_retried_and_the_key_is_not_in_the_message(self) -> None:
+        from decide.rental import traces as T
+
+        fixture = ThinkerFixture([(400, {"error": {"message": "max_tokens too large"}})])
+        self.addCleanup(fixture.close)
+        with self.assertRaises(T.ThinkerError) as caught:
+            self.client(fixture, api_key="sk-test-123").complete([{"role": "user", "content": "hi"}], max_tokens=8)
+        self.assertEqual(len(fixture.requests), 1)
+        self.assertIn("400", str(caught.exception))
+        self.assertNotIn("sk-test-123", str(caught.exception))
+
+    def test_the_budget_of_a_request_is_per_question_up_to_the_cap(self) -> None:
+        from decide.rental import traces as T
+
+        self.assertEqual(T.max_tokens_for(1, budget_per_question=2048, cap=16384), 2048)
+        self.assertEqual(T.max_tokens_for(3, budget_per_question=2048, cap=16384), 6144)
+        self.assertEqual(T.max_tokens_for(20, budget_per_question=2048, cap=16384), 16384)
+        for bad in ((0, 2048, 16384), (1, 0, 16384), (1, 2048, 0)):
+            with self.assertRaises(ValueError):
+                T.max_tokens_for(bad[0], budget_per_question=bad[1], cap=bad[2])
+
+
+@needs_pyarrow
+class GenerateTracesContract(unittest.TestCase):
+    thinker = "Qwen3.8-27B"
+
+    def corpus(self, tmp, train=6, dev=3):
+        from decide_b_support import make_targets_dataset
+
+        root = Path(tmp) / "data"
+        make_targets_dataset(root, train=train, dev=dev)
+        return root / "corpus"
+
+    def run_step(self, corpus, out, client, **kw):
+        from decide.rental import traces as T
+
+        kw.setdefault("thinker", self.thinker)
+        kw.setdefault("budget_per_question", 2048)
+        kw.setdefault("max_tokens_cap", 16384)
+        return T.generate_traces(corpus, out, client=client, **kw)
+
+    def rows(self, out):
+        from decide.data import traces as TR
+
+        return sorted(TR.read_traces(Path(out) / self.thinker), key=lambda r: r["example_id"])
+
+    def test_one_trace_per_example_in_the_data_schema_and_sealed(self) -> None:
+        from decide.data import schema as S
+
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus, out = self.corpus(tmp), Path(tmp) / "traces"
+            report = self.run_step(corpus, out, FakeThinker())
+            self.assertEqual((report["written"], report["errors"], report["empty"], report["complete"]), (9, 0, 0, True))
+            rows = self.rows(out)
+            self.assertEqual([r["example_id"] for r in rows], sorted(f"toy:{i}" for i in range(9)))
+            self.assertEqual({(r["thinker"], r["reasoning"], r["tokens"], r["finish_reason"]) for r in rows}, {(self.thinker, "Because of the state.", 17, "stop")})
+            self.assertEqual(len(S.corpus_files(out / self.thinker, require_manifest=True)), 1)
+            self.assertEqual(report["tokens"], 9 * 17)
+
+    def test_the_budget_of_each_request_is_per_question_up_to_the_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = FakeThinker()
+            self.run_step(self.corpus(tmp), Path(tmp) / "traces", fake, budget_per_question=100, max_tokens_cap=150)
+            self.assertEqual({call["max_tokens"] for call in fake.calls}, {100})        # one question each
+            fake = FakeThinker()
+            self.run_step(self.corpus(tmp), Path(tmp) / "traces2", fake, budget_per_question=100, max_tokens_cap=50)
+            self.assertEqual({call["max_tokens"] for call in fake.calls}, {50})
+            self.assertTrue(all(call["thinking"] for call in fake.calls))
+
+    def test_the_gold_label_never_reaches_the_thinker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = FakeThinker()
+            self.run_step(self.corpus(tmp), Path(tmp) / "traces", fake)
+            sent = json.dumps(fake.calls)
+            self.assertNotIn("gold", sent)
+            self.assertNotIn("teacher", sent)
+
+    def test_only_the_training_splits_get_traces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus, out = self.corpus(tmp), Path(tmp) / "traces"
+            self.run_step(corpus, out, FakeThinker(), splits=("train",))
+            self.assertEqual(len(self.rows(out)), 6)
+
+    def test_a_rerun_asks_for_nothing_that_is_done(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus, out = self.corpus(tmp), Path(tmp) / "traces"
+            self.run_step(corpus, out, FakeThinker())
+            fake = FakeThinker()
+            report = self.run_step(corpus, out, fake)
+            self.assertEqual(fake.calls, [])
+            self.assertEqual((report["written"], report["already_done"], report["complete"]), (0, 9, True))
+
+    def test_parts_are_resumable_after_a_limit_and_the_rest_is_added(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus, out = self.corpus(tmp), Path(tmp) / "traces"
+            first = self.run_step(corpus, out, FakeThinker(), limit=4, part_rows=3)
+            self.assertEqual((first["written"], first["complete"]), (4, False))
+            fake = FakeThinker()
+            second = self.run_step(corpus, out, fake, part_rows=3)
+            self.assertEqual((second["written"], second["already_done"], second["complete"]), (5, 4, True))
+            self.assertEqual(len(fake.calls), 5)
+            self.assertEqual(len(self.rows(out)), 9)
+
+    def test_a_failed_call_is_not_written_and_is_asked_again_next_time(self) -> None:
+        from decide.rental import traces as T
+
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus, out = self.corpus(tmp), Path(tmp) / "traces"
+
+            def flaky(messages, max_tokens):
+                return T.ThinkerError("503 busy") if "case 4" in messages[1]["content"] else {"reasoning": "ok", "content": "", "tokens": 5, "finish_reason": "stop"}
+
+            report = self.run_step(corpus, out, FakeThinker(flaky))
+            self.assertEqual((report["written"], report["errors"], report["complete"]), (8, 1, False))
+            self.assertNotIn("toy:4", {r["example_id"] for r in self.rows(out)})
+            fake = FakeThinker()
+            again = self.run_step(corpus, out, fake)
+            self.assertEqual((len(fake.calls), again["written"], again["complete"]), (1, 1, True))
+
+    def test_an_example_the_thinker_did_not_think_about_is_counted_and_not_asked_again(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus, out = self.corpus(tmp), Path(tmp) / "traces"
+            quiet = FakeThinker(lambda m, n: {"reasoning": "", "content": "ANSWER q1: x", "tokens": 3, "finish_reason": "stop"}
+                                if "case 2" in m[1]["content"] else {"reasoning": "ok", "content": "", "tokens": 5, "finish_reason": "stop"})
+            report = self.run_step(corpus, out, quiet)
+            self.assertEqual((report["written"], report["empty"], report["complete"]), (8, 1, True))
+            fake = FakeThinker()
+            self.run_step(corpus, out, fake)
+            self.assertEqual(fake.calls, [])
+
+    def test_a_trace_cut_by_the_budget_is_kept_as_length(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "traces"
+            self.run_step(self.corpus(tmp), out, FakeThinker(lambda m, n: {"reasoning": "cut", "content": "", "tokens": n, "finish_reason": "length"}))
+            self.assertEqual({r["finish_reason"] for r in self.rows(out)}, {"length"})
+
+    def test_calls_can_run_in_parallel_and_the_output_does_not_depend_on_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus = self.corpus(tmp)
+            self.run_step(corpus, Path(tmp) / "a", FakeThinker(), concurrency=1, part_rows=4)
+            self.run_step(corpus, Path(tmp) / "b", FakeThinker(), concurrency=4, part_rows=4)
+            self.assertEqual(self.rows(Path(tmp) / "a"), self.rows(Path(tmp) / "b"))
+
+    def test_the_manifest_of_another_tool_is_not_replaced(self) -> None:
+        from decide.data import schema as S
+
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus, out = self.corpus(tmp), Path(tmp) / "traces"
+            (out / self.thinker).mkdir(parents=True)
+            (out / self.thinker / "manifest.json").write_text(json.dumps({"tool": "somebody-else", "parts": []}), encoding="utf-8")
+            fake = FakeThinker()
+            with self.assertRaises(S.ManifestError):
+                self.run_step(corpus, out, fake)
+            self.assertEqual(fake.calls, [])
+            self.assertEqual(json.loads((out / self.thinker / "manifest.json").read_text(encoding="utf-8"))["tool"], "somebody-else")
+
+    def test_the_traces_feed_build_targets(self) -> None:
+        import contextlib
+        import io
+
+        from decide.data import schema as S
+        from decide.train import build_targets as BT
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            from decide_b_support import make_targets_dataset
+
+            make_targets_dataset(root)
+            out = Path(tmp) / "traces"
+            self.run_step(root / "corpus", out, FakeThinker())
+            with contextlib.redirect_stdout(io.StringIO()):
+                BT.main(["--corpus", str(root / "corpus"), "--labels", str(root / "labels"), "--traces", str(out), "--out", str(Path(tmp) / "targets-traces")])
+            report = json.loads((Path(tmp) / "targets-traces" / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual((report["reasoning_rows"], report["traces_unmatched"], report["thinker"]), (14, 0, self.thinker))
+            self.assertEqual(S.corpus_files(Path(tmp) / "targets-traces", require_manifest=True)[0].suffix, ".parquet")
+
+    def test_reasoning_with_the_block_marker_is_neutralized_before_it_is_written(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "traces"
+            self.run_step(self.corpus(tmp), out, FakeThinker(lambda m, n: {"reasoning": "a\nRaciocínio:\nb", "content": "", "tokens": 3, "finish_reason": "stop"}))
+            self.assertEqual({r["reasoning"] for r in self.rows(out)}, {"a\nRaciocínio :\nb"})
+
+    def test_a_non_positive_limit_or_part_size_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus = self.corpus(tmp)
+            for kw in ({"part_rows": 0}, {"concurrency": 0}, {"limit": -1}):
+                with self.assertRaises(ValueError):
+                    self.run_step(corpus, Path(tmp) / "traces", FakeThinker(), **kw)
+
+
 if __name__ == "__main__":
     unittest.main()
