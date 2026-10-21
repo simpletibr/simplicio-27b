@@ -149,6 +149,10 @@ class LoraAdapter:
         cfg = repo.read_json("adapter_config.json")
         if cfg.get("use_dora"):
             raise LoaderError("DoRA adapters are not supported")
+        for key in ("alpha_pattern", "rank_pattern"):               # a rank or alpha per module: the merge uses one r and one alpha for all
+            if cfg.get(key):
+                raise LoaderError(f"{repo.repo_id}: adapter_config.json has a non-empty {key}; the kit scales every module by one alpha/r "
+                                  "and would merge the others with the wrong scale")
         self.r = int(cfg["r"])
         self.alpha = float(cfg["lora_alpha"])
         self.rslora = bool(cfg.get("use_rslora", False))

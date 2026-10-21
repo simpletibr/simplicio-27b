@@ -818,6 +818,21 @@ class LoaderFlow(HermeticTestCase):
         d = self.load(self.spec(donors=()))
         self.assert_state(d, self.expected(donors=()))
 
+    def test_an_adapter_with_a_rank_or_alpha_per_module_is_refused_not_merged_with_the_wrong_scale(self):
+        weights = self.hub.files["org/lora/adapter_model.safetensors"]
+
+        def publish(name, **extra):
+            self.hub.add(name, "adapter_model.safetensors", weights)
+            self.hub.add(name, "adapter_config.json", json.dumps({"peft_type": "LORA", "r": 4, "lora_alpha": 8.0, **extra}).encode())
+            return self.repo(name)
+
+        for key in ("alpha_pattern", "rank_pattern"):
+            with self.subTest(key), self.assertRaisesRegex(self.L.LoaderError, key):
+                self.L.LoraAdapter(publish(f"org/with-{key}", **{key: {"layers.0.self_attn.q_proj": 16}}), 0.1)
+        adapter = self.L.LoraAdapter(publish("org/empty-patterns", alpha_pattern={}, rank_pattern={}), 0.1)       # what peft writes by default
+        self.assertEqual((adapter.r, adapter.alpha), (4, 8.0))
+        self.assertEqual(self.L.LoraAdapter(publish("org/null-patterns", alpha_pattern=None, rank_pattern=None), 0.1).r, 4)
+
     def test_lora_delta_uses_alpha_over_r_and_the_weight(self):
         d = self.load(self.spec(donors=(), lora=0.1))
         self.assert_state(d, self.expected(donors=(), lora=0.1))
