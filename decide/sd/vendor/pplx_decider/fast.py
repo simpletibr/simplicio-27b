@@ -1,8 +1,8 @@
 # Vendored from https://huggingface.co/perplexity-ai/pplx-decider-v1.2 (source/src/pplx_decider/fast.py),
 # upstream sha256 afef05e1935be967b6ab6015bea3c86933dd5a45b7f349b0ed2ab5788a66cdbc.
 # Apache-2.0, (c) Perplexity AI; see LICENSE and NOTICE in this directory.
-# Modifications by simplicio-decide: none; only this notice was added above the upstream text.
-# --- upstream file follows, byte for byte ---
+# Modifications by simplicio-decide: the error text of _require_kernels names the pinned version (flash-linear-attention==0.5.2,
+# the one upstream pins) instead of an unpinned install command, as the repository's pin check requires; nothing else changed.
 """Packed fast path: whole requests concatenated into one padding-free sequence per forward pass.
 
 Each packed unit is a whole request (or, for over-length requests, a chunk of its questions) with one readout
@@ -50,7 +50,7 @@ def _require_kernels() -> tuple[Any, Any]:
         from fla.ops.gated_delta_rule import chunk_gated_delta_rule
     except ImportError as error:  # pragma: no cover - environment dependent
         raise ImportError(
-            "The fast path needs flash-linear-attention (pip install flash-linear-attention); "
+            "The fast path needs flash-linear-attention==0.5.2; "
             "use fast=False for the reference path"
         ) from error
     try:

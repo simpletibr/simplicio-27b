@@ -1,0 +1,24 @@
+# Instalado pela primeira celula de todo notebook em notebooks/decide/ (Kaggle e Colab).
+# Versoes EXATAS: tests/test_contract_31.py recusa qualquer requisito sem pin.
+#
+# NAO estao aqui de proposito: torch, torchvision, numpy, pandas, pillow, psutil e requests. A imagem do
+# Kaggle/Colab ja traz todos; reinstalar o torch baixa mais de 2 GB e pode desencontrar a versao do CUDA, e
+# trocar o numpy no meio da sessao quebra o ABI dos outros pacotes. O kit imprime as versoes que encontrou
+# (decide.sd.env) e a Modal (decide/modal/app.py) fixa todas as dela.
+#
+# Versoes de transformers/tokenizers/safetensors/accelerate/huggingface-hub/pyarrow/PyYAML: as mesmas com que
+# a suite de testes do kit rodou (CPU). NAO verificado: a instalacao na imagem do Kaggle com GPU.
+
+# kit de pontuacao do Decision Index (commit fixo; edicao 0.3)
+decision-index @ git+https://github.com/apolinario/decision-index@25c6ec7b6b5f44a216c63c3a700de3a9c6d6699d
+
+# modelo Qwen3.8 (arquitetura qwen3_5) e leitura dos pesos
+transformers==5.17.0
+tokenizers==0.23.3
+huggingface-hub==1.33.0
+safetensors==0.8.0
+accelerate==1.15.0
+
+# tabelas de resultado e configuracao
+pyarrow==26.0.0
+PyYAML==6.0.3

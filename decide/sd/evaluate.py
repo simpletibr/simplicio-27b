@@ -150,7 +150,7 @@ def iter_items(path: Union[str, os.PathLike]) -> Iterator[Item]:
         try:
             import pyarrow.parquet as pq
         except ImportError as exc:
-            raise EvaluateError("reading .parquet requests needs pyarrow (pip install pyarrow)") from exc
+            raise EvaluateError("reading .parquet requests needs pyarrow (pyarrow is in notebooks/decide/requirements.txt)") from exc
         number = 0
         for batch in pq.ParquetFile(str(p)).iter_batches(batch_size=512):
             for row in batch.to_pylist():
@@ -481,7 +481,7 @@ def write_table(run_dir: Union[str, os.PathLike], golds: Optional[Mapping[str, M
         import pyarrow as pa
         import pyarrow.parquet as pq
     except ImportError as exc:
-        raise EvaluateError("writing the probability table needs pyarrow (pip install pyarrow)") from exc
+        raise EvaluateError("writing the probability table needs pyarrow (pyarrow is in notebooks/decide/requirements.txt)") from exc
     out = Path(path) if path else Path(run_dir) / TABLE_NAME
     schema = pa.schema([
         ("run_id", pa.string()), ("catalog_id", pa.int64()), ("group_id", pa.string()), ("track", pa.string()),
@@ -510,7 +510,7 @@ def _table_batches(path: Union[str, os.PathLike], columns: Sequence[str]) -> Ite
     try:
         import pyarrow.parquet as pq
     except ImportError as exc:
-        raise EvaluateError("reading the probability table needs pyarrow (pip install pyarrow)") from exc
+        raise EvaluateError("reading the probability table needs pyarrow (pyarrow is in notebooks/decide/requirements.txt)") from exc
     for batch in pq.ParquetFile(str(_table_file(path))).iter_batches(batch_size=1024, columns=list(columns)):
         yield from batch.to_pylist()
 
@@ -610,8 +610,8 @@ def _kit() -> Dict[str, Any]:
         from decision_index.scoring.index import score_panel
         from decision_index.scoring.report import benchmark_summary, load_results
     except ImportError as exc:
-        raise EvaluateError("scoring needs the Decision Index kit: pip install "
-                            "git+https://github.com/apolinario/decision-index (commit in decide/config.yaml, kit.commit)") from exc
+        raise EvaluateError("scoring needs the Decision Index kit, at the commit pinned in decide/config.yaml (kit.commit); "
+                            "notebooks/decide/requirements.txt installs it") from exc
     return {"editions": editions, "added": added, "index02": index02, "score_panel": score_panel,
             "benchmark_summary": benchmark_summary, "load_results": load_results}
 

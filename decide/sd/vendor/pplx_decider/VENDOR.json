@@ -17,7 +17,7 @@
       "upstream_sha256": "ade1801ff9ee38fdeb561f91b808f57aaab547924e72bae0d1c5a795717f497b"
     },
     "fast.py": {
-      "modified": false,
+      "modified": true,
       "upstream_sha256": "afef05e1935be967b6ab6015bea3c86933dd5a45b7f349b0ed2ab5788a66cdbc"
     },
     "joint_config.json": {
