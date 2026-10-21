@@ -224,6 +224,11 @@ class ExtractContract(unittest.TestCase):
         self.assertEqual(self.one("ANSWER q1:\n\n  (C)\n"), "C")
         self.assertIsNone(self.one("ANSWER q1:\n"))
 
+    def test_without_a_marker_the_last_answer_is_and_the_last_boxed_value_win(self) -> None:
+        self.assertEqual(self.one("The answer is A.\nWait, no. The answer is D."), "D")
+        self.assertEqual(self.one("So \\boxed{A}. Checking again: \\boxed{C}"), "C")
+        self.assertEqual(self.one("Final answer: B\nOn reflection, final answer: C"), "C")
+
     def test_a_question_line_with_the_value_on_the_next_line(self) -> None:
         o = {f"option_{i}": P.option_list({"no": "No", "yes": "Yes"}) for i in range(2)}
         self.assertEqual(A.extract("ANSWER option_0: yes\n- option_1:\nno", o), {"option_0": "yes", "option_1": "no"})
