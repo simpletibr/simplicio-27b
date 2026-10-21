@@ -10,6 +10,11 @@ One output part per corpus part (same name).  A part whose inputs did not change
 policy, traces) is not rewritten, so a stopped run resumes.  All labels (and traces) are held in memory, about half a
 kilobyte per label and the size of the text per trace.  Missing-teacher policy (``--missing``): ``drop`` (default: the
 question keeps only its gold label), ``renormalize`` (combine the teachers that exist) or ``error``.
+
+Like ``build_corpus``, ``--out`` holds exactly the result of the last finished run: ``manifest.json`` (the parts, with rows and
+sha256) is removed when a run starts and written when it ends, the trainer reads only the parts it lists, and parts and
+markers a run does not list are deleted (``removed_stale``).  ``--corpus`` must be the finished output of ``build_corpus`` or
+``decontaminate`` (a folder with a manifest), so a part an earlier build left behind never reaches the targets.
 """
 from __future__ import annotations
 
@@ -144,6 +149,15 @@ def _build_part(part: Path, index, combiner: Combiner, missing: str, traces: Dic
     return rows, stats
 
 
+def _read_marker(path: Path) -> Optional[Dict[str, Any]]:
+    """The entry a finished part left (``name``, ``rows``, ``sha256``, ``fingerprint``, ``stats``), or None if there is none or it is unreadable."""
+    try:
+        entry = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return entry if isinstance(entry, dict) and {"name", "rows", "sha256", "fingerprint", "stats"} <= set(entry) else None
+
+
 def _out_name(part: Path, root: Path) -> str:
     if root.is_file():
         return part.name
@@ -156,15 +170,38 @@ def _digest(parts: Iterable[Tuple[str, str]]) -> str:
 
 # --------------------------------------------------------------------------- the build
 
+def _marker(out_root: Path, name: str) -> Path:
+    return out_root / (name + ".done.json")
+
+
+def _prune(out_root: Path, keep: Set[str]) -> List[str]:
+    """Delete what earlier runs left in ``out_root`` that this run does not list: parts, their markers, half-written files."""
+    removed: List[str] = []
+    for file in sorted(out_root.iterdir()):
+        if not file.is_file():
+            continue
+        name = file.name
+        base = name[: -len(".done.json")] if name.endswith(".parquet.done.json") else None
+        stale = ((name.endswith(".parquet") and name not in keep) or (base is not None and base not in keep)
+                 or name.endswith((".parquet.tmp", ".json.tmp")))
+        if stale:
+            file.unlink()
+            removed.append(name)
+    return removed
+
+
 def build(corpus: "str | Path", labels: Iterable["str | Path"], out: "str | Path", *, combiner_path: "str | Path | None" = None,
           missing: str = "drop", traces_path: "str | Path | None" = None, thinker: Optional[str] = None) -> Dict[str, Any]:
     if missing not in MISSING_POLICIES:
         raise TargetError(f"--missing must be one of {MISSING_POLICIES}")
     corpus_root, out_root = Path(corpus), Path(out)
-    corpus_parts = S.corpus_files(corpus_root)
+    try:
+        corpus_parts = S.corpus_files(corpus_root, require_manifest=True)
+        label_files = sorted({f for path in labels for f in S.corpus_files(path)})
+    except S.ManifestError as exc:
+        raise TargetError(str(exc)) from exc
     if not corpus_parts or not all(p.is_file() for p in corpus_parts):
         raise TargetError(f"no corpus parquet parts found in {corpus_root}")
-    label_files = sorted({f for path in labels for f in S.corpus_files(path)})
     if not label_files:
         raise TargetError("no teacher label parquet parts found")
     available = teacher_names(label_files)
@@ -172,44 +209,50 @@ def build(corpus: "str | Path", labels: Iterable["str | Path"], out: "str | Path
     traces: Dict[str, Tuple[str, int, str]] = {}
     traces_digest = None
     if traces_path is not None:
-        traces, thinker = load_traces(traces_path, thinker)
-        traces_digest = _digest([(str(f.name), S.sha256_file(f)) for f in S.corpus_files(traces_path)] + [("thinker", thinker or "")])
+        try:
+            traces, thinker = load_traces(traces_path, thinker)
+            traces_digest = _digest([(str(f.name), S.sha256_file(f)) for f in S.corpus_files(traces_path)] + [("thinker", thinker or "")])
+        except S.ManifestError as exc:
+            raise TargetError(str(exc)) from exc
     labels_digest = _digest([(f.name, S.sha256_file(f)) for f in label_files])
 
     names = {part: _out_name(part, corpus_root) for part in corpus_parts}
     if len(set(names.values())) != len(names):
         raise TargetError("two corpus parts would produce the same output name")
     out_root.mkdir(parents=True, exist_ok=True)
-    stale = sorted(p.name for p in out_root.glob("*.parquet") if p.name not in set(names.values()))
-    if stale:
-        raise TargetError(f"{out_root} holds parts that do not belong to this corpus ({', '.join(stale[:5])}); use an empty --out")
-    manifest_path = out_root / "manifest.json"
-    previous = json.loads(manifest_path.read_text(encoding="utf-8")).get("parts", {}) if manifest_path.is_file() else {}
-    manifest: Dict[str, Any] = {"format_version": FORMAT_VERSION, "columns": list(TARGET_COLUMNS), "parts": {}}
+    # a folder without a manifest is an unfinished build and the trainer refuses it: drop the old manifest and report before
+    # touching anything, and write the new ones only at the end
+    (out_root / S.MANIFEST_NAME).unlink(missing_ok=True)
+    (out_root / "report.json").unlink(missing_ok=True)
+    removed = _prune(out_root, set(names.values()))
+    entries: List[Dict[str, Any]] = []
     index = None
     resumed = 0
     for part in corpus_parts:
         name = names[part]
         fingerprint = _digest([("v", str(FORMAT_VERSION)), ("corpus", S.sha256_file(part)), ("labels", labels_digest), ("combiner", combiner.sha256),
                                ("missing", missing), ("traces", traces_digest or "")])
-        target = out_root / name
-        old = previous.get(name)
+        target, marker = out_root / name, _marker(out_root, name)
+        old = _read_marker(marker)
         if old and old.get("fingerprint") == fingerprint and target.is_file() and S.sha256_file(target) == old.get("sha256"):
-            manifest["parts"][name] = old
+            entries.append(old)
             resumed += 1
             continue
+        marker.unlink(missing_ok=True)
         if index is None:
             index = index_labels(label_files)
         rows, stats = _build_part(part, index, combiner, missing, traces)
         info = S._write_part(target, rows, target_arrow_schema(), TARGET_COLUMNS)
-        manifest["parts"][name] = {"rows": info["rows"], "sha256": info["sha256"], "fingerprint": fingerprint, "stats": stats}
-        S.write_manifest(manifest_path, {**manifest, "complete": False})
-    manifest["complete"] = True
-    S.write_manifest(manifest_path, manifest)
+        entry = {"name": name, "rows": info["rows"], "sha256": info["sha256"], "fingerprint": fingerprint, "stats": stats}
+        S.write_manifest(marker, entry)
+        entries.append(entry)
+    manifest: Dict[str, Any] = {"schema_version": S.SCHEMA_VERSION, "kind": "targets", "format_version": FORMAT_VERSION, "columns": list(TARGET_COLUMNS),
+                                "rows": sum(entry["rows"] for entry in entries), "parts": entries}
+    S.write_manifest(out_root / S.MANIFEST_NAME, manifest)
 
     totals: Counter = Counter()
     missing_total: Counter = Counter()
-    for info in manifest["parts"].values():
+    for info in manifest["parts"]:
         for key, value in info["stats"].items():
             if key == "missing_teacher":
                 missing_total.update(value)
@@ -219,7 +262,7 @@ def build(corpus: "str | Path", labels: Iterable["str | Path"], out: "str | Path
         "format_version": FORMAT_VERSION,
         "rows_in": totals["rows_in"], "rows_out": totals["rows_out"], "dropped_unlabeled": totals["dropped_unlabeled"],
         "teachers_seen": sorted(available), "missing_teacher": dict(sorted(missing_total.items())), "missing_policy": missing,
-        "combiner_sha256": combiner.sha256, "parts": len(manifest["parts"]), "parts_resumed": resumed,
+        "combiner_sha256": combiner.sha256, "parts": len(manifest["parts"]), "parts_resumed": resumed, "removed_stale": removed,
         "thinker": thinker if traces_path is not None else None,
         "reasoning_rows": totals["reasoning_rows"], "reasoning_truncated": totals["reasoning_truncated"],
         "traces_unmatched": (len(traces) - totals["traces_matched"]) if traces_path is not None else 0,

@@ -31,6 +31,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import torch
 
+from decide.data import schema as S
+
 from . import events
 from .batching import Item, ReasoningPolicy, TooLong, make_item
 from .codes import ANSWER_CODES
@@ -108,13 +110,9 @@ def validate(args: argparse.Namespace) -> None:
 
 
 def digest_of(path: Path) -> str:
-    """Fingerprint of a targets dataset: its manifest if there is one, else the names and sizes of its parts."""
-    manifest = path / "manifest.json"
-    if manifest.is_file():
-        parts = json.loads(manifest.read_text(encoding="utf-8")).get("parts", {})
-        entries = sorted((name, info.get("sha256")) for name, info in parts.items())
-    else:
-        entries = sorted((p.name, p.stat().st_size) for p in path.rglob("*.parquet"))
+    """Fingerprint of a targets dataset: the name and sha256 of each part its manifest lists (``ManifestError`` if a part does not
+    match, so a resumed run never continues on data that changed under it).  A single parquet file counts as one part."""
+    entries = sorted((file.name, S.sha256_file(file)) for file in S.corpus_files(path, require_manifest=True))
     return hashlib.sha256(json.dumps(entries).encode("utf-8")).hexdigest()
 
 

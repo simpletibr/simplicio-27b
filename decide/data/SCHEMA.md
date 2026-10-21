@@ -24,10 +24,12 @@ e o privado) devolvem exatamente as partes de `parts` (ou o `file` do privado), 
 pelo sha256; parte listada que falta, mudou ou sai da pasta é `ManifestError`. Um `*.parquet` ao lado que o manifest não
 lista (uma rodada antiga com `--include-review`, shards que um cap menor deixou) **não é dado** e é ignorado.
 **`read_corpus` nunca faz glob:** pasta sem manifest é build interrompido (ou pasta montada à mão) e dá `ManifestError`;
-o que se pode passar sem manifest é um arquivo `*.parquet` que o chamador nomeia. Só os rótulos de professor feitos à mão
-(`read_teacher`, uma pasta onde o aluguel ou o Modal despejou as partes) ainda são lidos por glob. `build_corpus` e
-`decontaminate` apagam o manifest ao começar, escrevem outro ao terminar e apagam partes, marcadores e rejeitados que a
-rodada não lista (`removed_stale`): **uma pasta `--out` por corpus**, e `--only` gera um corpus parcial.
+o que se pode passar sem manifest é um arquivo `*.parquet` que o chamador nomeia. Só os rótulos de professor e os traços
+feitos à mão (`read_teacher`, uma pasta onde o aluguel ou o Modal despejou as partes) ainda são lidos por glob;
+`schema.seal_directory(pasta)` grava o manifest de uma pasta assim (`parts` com `name`, `rows`, `sha256`). A construção dos
+alvos e o treino exigem o manifest (`require_manifest`). `build_corpus` e `decontaminate` apagam o manifest ao começar,
+escrevem outro ao terminar e apagam partes, marcadores e rejeitados que a rodada não lista (`removed_stale`):
+**uma pasta `--out` por corpus**, e `--only` gera um corpus parcial.
 
 **Quem escreve só apaga e só sobrescreve o que escreveu.** Os manifests de `build_corpus`, `decontaminate` e do privado
 levam o carimbo `"tool"` (`build_corpus`, `decontaminate`, `proxy_private`; o relatório `decontamination.json` também):
@@ -267,7 +269,12 @@ Um raciocínio cortado (`length`) é mantido: na hora de decidir ele é cortado 
 ## 11. Dataset de alvos (saída de `decide.train.build_targets`)
 
 É a única entrada de dados do treino. Pasta de partes `*.parquet` (uma por parte do corpus, mesmo nome), mais
-`manifest.json` (por parte: linhas, sha256 e impressão digital das entradas, para retomar) e `report.json` (contagens).
+`manifest.json` e `report.json` (contagens). O manifest é como o do corpus (seção 1): `kind: "targets"`, `columns`, `rows` e
+`parts`, uma lista de `{name, rows, sha256, fingerprint, stats}` (a impressão digital das entradas da parte, para retomar).
+Cada parte pronta deixa um marcador `<parte>.done.json` com a mesma entrada. O trainer lê **só** as partes do manifest,
+com o sha256 conferido (`ManifestError` se uma mudou ou sumiu). `build_targets` apaga o manifest e o relatório ao
+começar e escreve os novos ao terminar, apaga partes e marcadores que a rodada não lista (`removed_stale`) e exige que
+`--corpus` seja um build terminado (pasta com manifest): **uma pasta `--out` por conjunto de alvos**.
 
 | coluna | tipo | conteúdo |
 |---|---|---|

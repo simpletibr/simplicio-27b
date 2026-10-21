@@ -60,5 +60,8 @@ def example_from_row(row: Mapping[str, Any]) -> Example:
 
 
 def load_examples(path: "str | Path", *, split: Optional[str] = None) -> List[Example]:
-    """Every example of a targets dataset (a folder of parts or one parquet file), optionally of one split."""
-    return [example_from_row(row) for row in S._read_rows(path, TARGET_COLUMNS) if split is None or row["split"] == split]
+    """Every example of a targets dataset (the folder ``build_targets`` finished, or one parquet file), optionally of one split.
+
+    A folder is read through its ``manifest.json`` only (``ManifestError`` without one: an interrupted build; and for a part
+    that changed or went missing), so a part left behind by an earlier build is never trained on."""
+    return [example_from_row(row) for row in S._read_rows(path, TARGET_COLUMNS, require_manifest=True) if split is None or row["split"] == split]
