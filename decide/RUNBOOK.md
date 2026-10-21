@@ -1,28 +1,28 @@
 # RUNBOOK do Simplicio-Decide-27B: sessão por sessão
 
-Para o dono (Wesley). Versão 2 · 2026-10-21 (revalidada contra a `main` com #73, #74, #77, #78, #79, #80, #81 e #82; veja os avisos logo abaixo). O plano está em [`PLAN.md`](PLAN.md), os formatos em [`data/SCHEMA.md`](data/SCHEMA.md), as decisões em [ADR 0003](../docs/adr/0003-simplicio-decide-27b.md) e [ADR 0004](../docs/adr/0004-pensar-sob-demanda.md). Épico [#64](https://github.com/simpletibr/simplicio-27b/issues/64).
+Para o dono (Wesley). Versão 2 · 2026-10-21 (revalidada contra a `main` com #73, #74, #77, #78, #79, #80, #81 e #82; os avisos e a tabela deles foram revistos contra a `main` em `6d5d879`, com #86, #87, #88, #91 e #94, e a sessão 8 e a seção 13 ainda não; veja os avisos logo abaixo). O plano está em [`PLAN.md`](PLAN.md), os formatos em [`data/SCHEMA.md`](data/SCHEMA.md), as decisões em [ADR 0003](../docs/adr/0003-simplicio-decide-27b.md) e [ADR 0004](../docs/adr/0004-pensar-sob-demanda.md). Épico [#64](https://github.com/simpletibr/simplicio-27b/issues/64).
 
 Regra de evidência: só número medido é fato. Tudo que está marcado **UNVERIFIED** é estimativa, conta ou leitura de documentação. **Nada deste projeto rodou numa GPU.** O código foi testado em CPU, com modelos minúsculos e dublês (`make check`). A primeira vez que cada sessão rodar de verdade é um teste: comece pelo ensaio pequeno que cada uma descreve.
 
 ## Avisos de hoje (leia antes de qualquer sessão)
 
-Três avisos, do mais grave ao menos grave. O terceiro é o resultado de conferir cada comando abaixo contra o código que está na `main` agora.
+Dois avisos. O segundo é o resultado de conferir cada comando abaixo contra o código que está na `main` agora (`6d5d879`). O aviso sobre o núcleo do kit **saiu**: os 3 bloqueantes que ele citava (falta de memória por lote, revisão do Hub sem fixar e doador sem cobertura, da revisão independente do PR [#80](https://github.com/simpletibr/simplicio-27b/pull/80)) foram corrigidos no PR [#86](https://github.com/simpletibr/simplicio-27b/pull/86), que está na `main`. Isso não quer dizer que o kit rodou numa GPU: **nunca rodou, e nenhum modelo de tamanho real passou por ele (UNVERIFIED).**
 
-1. **Não rode sessões de GPU do kit** (as sessões 2, 4 e 7, todo `proxy_eval run`, que aparece nas sessões 1 (passo 7) e 6 (passo 4), e as fases `g4` e `public_round` da sessão 8) **até as PRs de correção do núcleo do kit entrarem na `main`.** A revisão independente do núcleo (PR [#80](https://github.com/simpletibr/simplicio-27b/pull/80)) deixou 3 bloqueantes abertos: falta de memória por lote (OOM), revisões do Hub sem fixar e doador sem cobertura. A Squad A corrige numa PR nova. Horas de GPU gastas antes disso podem ser jogadas fora. O treino da sessão 6 (passos 1 a 3) não usa o kit e não está nesse bloqueio.
-2. **O gate GT oficial só vale se sair do notebook do Kaggle** (`notebooks/decide/think_gt_kaggle.ipynb`, backend `transformers`) **até a correção.** A `main` ainda pode dar `FAIL` falso no GT quando o provedor da API esconde o raciocínio do modelo: é um bloqueante da revisão independente do #78, que a Squad C corrige numa PR nova (a Squad B não reproduziu a falha, só repassa o achado). Endpoint de API, `decide.think.hosted` e a Modal servem para a sonda de 3 linhas, **não para o veredito** (sessão 3).
-3. **O que a `main` roda hoje.** Conferi as opções de cada comando com `--help` e a existência de cada caminho; nada disso rodou numa GPU.
+1. **O gate GT oficial só vale se sair do notebook do Kaggle** (`notebooks/decide/think_gt_kaggle.ipynb`, backend `transformers`). Os PRs [#87](https://github.com/simpletibr/simplicio-27b/pull/87) e [#90](https://github.com/simpletibr/simplicio-27b/pull/90) estão na `main`: uma linha que vem só com a resposta (pelo menos 100 tokens e nenhum raciocínio visível, `reasoning_hidden`) não vira mais `FAIL` oficial; o veredito sai `EXPLORATORY`, e `INCONCLUSIVE` se essas linhas passarem de 10% das que responderam (`decide/think/compare.py`). **Mas o gate hospedado (endpoint de API, `decide.think.hosted`, Modal) não tem evidência operacional:** os limites de 100 tokens e de 10% foram escolhidos, não medidos num provedor real (o próprio #87 diz isso), e nenhuma execução contra um provedor real foi registrada. Até existir uma, esses caminhos servem para a sonda de 3 linhas, **não para o veredito** (sessão 3).
+2. **O que a `main` roda hoje.** Conferi as opções de cada comando com `--help` e a existência de cada caminho; nada disso rodou numa GPU.
 
    | Sessão | Roda a partir da `main`? | O que falta |
    |---|---|---|
    | 0 preparação | sim | |
-   | 1 F2 dados | passos 1 a 3, 5 e 6 (`decide.data`) e, do passo 7, `proxy_eval requests` e `score`. Não o passo 4 nem o `proxy_eval run` | `decide.modal.suite_requests` (Squad A) não existe na `main`; o `run` do G1 carrega modelos pelo kit (aviso 1) |
-   | 2 F1 fidelidade | não | os notebooks `kaggle_0N_*.ipynb` e `notebooks/decide/docs/` (parte 2 do kit, Squad A) não estão na `main`; aviso 1 |
-   | 3 F2b GT | sim, mas o veredito só pelo Kaggle | aviso 2 |
-   | 4 F3 rotulagem | não | `decide/modal` (Squad A) não existe na `main`; aviso 1 |
+   | F0 kit (`decide/sd`, [#86](https://github.com/simpletibr/simplicio-27b/pull/86)) | o código está na `main`, com os 3 bloqueantes do #80 corrigidos (OOM por pedido, revisão do Hub de 40 hex, doador com cobertura) e `dir:CAMINHO` para uma pasta desta máquina; os testes o exercitam numa CPU com modelos minúsculos | nenhum modelo de tamanho real passou por ele e nada rodou numa GPU (UNVERIFIED); os notebooks `kaggle_0N_*.ipynb`, `decide/modal` e `notebooks/decide/docs/` (parte 2, Squad A) não estão na `main` |
+   | 1 F2 dados | passos 1 a 3, 5 e 6 (`decide.data`) e, do passo 7, `proxy_eval requests` e `score`; o `proxy_eval run` (F6, [#91](https://github.com/simpletibr/simplicio-27b/pull/91)) está na `main`, mas nunca carregou um modelo de tamanho real. Não o passo 4 | `decide.modal.suite_requests` (Squad A) não existe na `main`; o `run` do G1 carrega modelos pelo kit, que nunca carregou um modelo de tamanho real (UNVERIFIED) |
+   | 2 F1 fidelidade | não | os notebooks `kaggle_0N_*.ipynb` e `notebooks/decide/docs/` (parte 2 do kit, Squad A) não estão na `main` |
+   | 3 F2b GT | sim, mas o veredito só pelo Kaggle | aviso 1 |
+   | 4 F3 rotulagem | não | `decide/modal` (Squad A) não existe na `main` |
    | 5 alvos | sim | os traços do pensador só nascem no passo `traces` do dia alugado (F6, na `main`), e hoje o dia fica só-decisor (sessão 8); veja a sessão 5 |
-   | 6 F4 ensaio 4B | passos 1 a 3 (treino); o passo 4 (G2) não | o `proxy_eval run` do G2 carrega o modelo pelo kit (aviso 1) |
-   | 7 F5 merge | não | notebooks do kit; aviso 1 |
-   | 8 F6 dia alugado | o plano (sem `--execute`) e o ensaio em CPU; o dia de verdade não | as fases `g4` e `public_round` carregam o modelo pelo kit (aviso 1); nenhuma fase rodou numa GPU nem contra o Hugging Face de verdade |
+   | 6 F4 ensaio 4B ([#79](https://github.com/simpletibr/simplicio-27b/pull/79), [#88](https://github.com/simpletibr/simplicio-27b/pull/88); o #94 só acrescenta um teste) | passos 1 a 3 (treino, `decide.train`), só ensaiados em CPU com um modelo minúsculo; o passo 4 (G2): o `proxy_eval run` está na `main`, mas nunca carregou um modelo de tamanho real | o treino nunca rodou numa GPU e o G2 nunca foi medido (UNVERIFIED) |
+   | 7 F5 merge | não | os notebooks do kit (parte 2, Squad A) não estão na `main` |
+   | 8 F6 dia alugado ([#91](https://github.com/simpletibr/simplicio-27b/pull/91)) | o plano (sem `--execute`) e o ensaio em CPU, com um modelo minúsculo, uma pasta no lugar do Hub e o `decide.sd` de verdade até o G4; o dia de verdade não | nenhuma fase rodou numa GPU nem contra o Hugging Face de verdade; as fases `g4` e `public_round` carregam o modelo pelo kit, que nunca carregou um modelo de tamanho real (UNVERIFIED) |
    | 9 F7 submissão | à mão | depende da sessão 8 |
 
    Onde um comando abaixo depende de um caminho que ainda não existe, o texto diz.
@@ -141,7 +141,7 @@ Formatos e regras: [`data/SCHEMA.md`](data/SCHEMA.md). A ordem importa, porque o
    python -m decide.data.proxy_private validate --scores work/g1/scores.json --board work/space/data/index.json
    ```
 
-   **O `proxy_eval` (F6) está na `main`, mas o `run` nunca carregou um modelo do tamanho real: os testes usam um substituto do kit (UNVERIFIED).** O `run` carrega os modelos pelo kit (aviso 1: sem GPU até as correções); o 27B em 4 bits precisa de `--quant nf4` e de duas T4. Os modelos que o kit carrega são os de layout pplx (`pplx-decider-v1.2`, `pplx-decider-flash-v1.2`, `d3`, `d3-turbo`, `d3-mini`); o Amos tem cabeça incompatível e o Lychee é CC BY-NC (fora do projeto). **Se faltar modelo carregável para chegar a 6, o G1 não fecha**: diga isso na issue, não invente a ordem. (`work/space/data/index.json` é o `index.json` do board; baixe-o do Space do Jev. Revisão exata de cada modelo: copie o commit da página do modelo no Hub.)
+   **O `proxy_eval` (F6) está na `main`, mas o `run` nunca carregou um modelo do tamanho real: os testes usam um substituto do kit (UNVERIFIED).** O `run` carrega os modelos pelo kit (o #86, com os bloqueantes do #80 corrigidos, está na `main`; nenhum modelo de tamanho real passou por ele, UNVERIFIED); o 27B em 4 bits precisa de `--quant nf4` e de duas T4. Os modelos que o kit carrega são os de layout pplx (`pplx-decider-v1.2`, `pplx-decider-flash-v1.2`, `d3`, `d3-turbo`, `d3-mini`); o Amos tem cabeça incompatível e o Lychee é CC BY-NC (fora do projeto). **Se faltar modelo carregável para chegar a 6, o G1 não fecha**: diga isso na issue, não invente a ordem. (`work/space/data/index.json` é o `index.json` do board; baixe-o do Space do Jev. Revisão exata de cada modelo: copie o commit da página do modelo no Hub.)
 
 **Escreve:** `work/corpus-limpo/` (partes `*.parquet`, `manifest.json`, `decontamination.json`), `work/proxy/` (`manifest.json`). **Certo quando:** o relatório da descontaminação lista as contagens por motivo, a segunda passada do privado termina sem `LeakError` e o G1 diz `passed: true`.
 
@@ -158,7 +158,7 @@ hf upload wesleysimplicio/simplicio-decide-data work/proxy proxy --repo-type dat
 
 ## 4. Sessão 2: F1, fidelidade do carregador (Kaggle)
 
-**Não rode agora** (avisos 1 e 3): os notebooks e os guias abaixo são da parte 2 do kit e não estão na `main`, e o núcleo do kit tem bloqueantes abertos.
+**Não rode agora** (aviso 2): os notebooks e os guias abaixo são da parte 2 do kit e não estão na `main`.
 
 **Onde:** Kaggle, 1 a 2 T4. **Passo a passo completo:** `notebooks/decide/docs/01_comecar_no_kaggle.md` (kit). Em resumo:
 
@@ -170,7 +170,7 @@ hf upload wesleysimplicio/simplicio-decide-data work/proxy proxy --repo-type dat
 
 ## 5. Sessão 3: F2b, o gate GT (pensar vale a pena?)
 
-**Veredito oficial só pelo Kaggle (aviso 2).** Os quatro lugares abaixo rodam o mesmo código, mas **até a correção da Squad C só o notebook do Kaggle (`notebooks/decide/think_gt_kaggle.ipynb`, backend `transformers`) produz um `PASS` ou `FAIL` que vale como gate.** Num endpoint de API (o comando do passo 2 usa `--backend openai`), no `decide.think.hosted` ou na Modal, faça a sonda de 3 linhas e pare: o `FAIL` de um provedor que esconde o raciocínio pode ser falso. Se o seu resultado de API deu `FAIL`, repita no Kaggle antes de registrar na issue.
+**Veredito oficial só pelo Kaggle (aviso 1).** Os quatro lugares abaixo rodam o mesmo código, mas **só o notebook do Kaggle (`notebooks/decide/think_gt_kaggle.ipynb`, backend `transformers`) produz um `PASS` ou `FAIL` que vale como gate, porque o gate hospedado não tem evidência operacional** (os limites de 100 tokens e de 10% do #87 não foram medidos num provedor real). Num endpoint de API (o comando do passo 2 usa `--backend openai`), no `decide.think.hosted` ou na Modal, faça a sonda de 3 linhas e pare: uma linha que vem só com a resposta sai `reasoning_hidden` e o veredito vira `EXPLORATORY` ou `INCONCLUSIVE`, não `FAIL`, mas isso ainda não foi visto num provedor real. Se o seu resultado de API não for `PASS`, repita no Kaggle antes de registrar na issue.
 
 **Onde:** um de quatro (escolha pelo que você tem): Kaggle T4, uma API com o Qwen3.8-27B pensando, uma GPU de 80 GB ou mais, ou a Modal. **Guia completo:** `decide/think/README.md` (Squad C, PR [#78](https://github.com/simpletibr/simplicio-27b/pull/78), já na `main`). Os notebooks fixam o código num commit (`SIMPLICIO_SHA`); use os da `main` mais nova.
 
@@ -194,7 +194,7 @@ hf upload wesleysimplicio/simplicio-decide-data work/proxy proxy --repo-type dat
 
 ## 6. Sessão 4: F3, rotulagem pelos professores (Modal)
 
-**Não rode agora** (avisos 1 e 3): `decide/modal` e o guia abaixo são da parte 2 do kit e não estão na `main`, e o núcleo do kit tem bloqueantes abertos (a rodada gasta o crédito da Modal).
+**Não rode agora** (aviso 2): `decide/modal` e o guia abaixo são da parte 2 do kit e não estão na `main` (a rodada gasta o crédito da Modal).
 
 **Onde:** Modal, no crédito gratuito. **Guia:** `notebooks/decide/docs/04_rodada_paga.md` (kit; a seção 3 ensina a sonda). **Pacotes:** `pip install modal==1.6.2 && modal setup`.
 
@@ -277,7 +277,7 @@ Ponto de partida: `perplexity-ai/pplx-decider-flash-v1.2` (4B). Baixe-o numa pas
    python -m decide.train.temperature --checkpoint runs/4b-soup --targets work/targets --write
    ```
 
-4. **G2: medir no privado caseiro**, o novo contra o ponto de partida, nas mesmas linhas. **Não rode o `run` hoje (aviso 1):** `decide.rental.proxy_eval` (F6) está na `main`, mas o `run` carrega os modelos pelo kit e as correções dele ainda não entraram. O G2 espera isso. Os comandos abaixo conferem com o `--help` e com os testes, que usam um substituto do kit; não são uma receita rodada numa GPU. Cada `run` retoma de onde parou e precisa do kit (a primeira linha do bloco o instala):
+4. **G2: medir no privado caseiro**, o novo contra o ponto de partida, nas mesmas linhas. **O `run` nunca carregou um modelo de tamanho real (UNVERIFIED):** `decide.rental.proxy_eval` (F6) e o kit corrigido (#86) estão na `main`, mas os testes usam modelos minúsculos numa CPU; a primeira execução de verdade é o teste. Os comandos abaixo conferem com o `--help` e com esses testes; não são uma receita rodada numa GPU. Cada `run` retoma de onde parou e precisa do kit (a primeira linha do bloco o instala):
 
    ```
    pip install -r notebooks/decide/requirements.txt
@@ -295,13 +295,13 @@ Ponto de partida: `perplexity-ai/pplx-decider-flash-v1.2` (4B). Baixe-o numa pas
 
 ## 9. Sessão 7: F5, merge de backbones (opcional)
 
-**Não rode agora** (avisos 1 e 3): os notebooks do kit não estão na `main` e o núcleo do kit tem bloqueantes abertos, entre eles o do doador sem cobertura (o merge usa doadores).
+**Não rode agora** (aviso 2): os notebooks do kit não estão na `main`.
 
 **Onde:** Kaggle, 2 T4, notebooks `kaggle_04_varredura` e `kaggle_05_calibrar` do kit. É um experimento barato e de baixa expectativa: a Fase 0A mostrou que média de pesos de modelos de topo não supera o melhor membro. "Nenhum merge ganhou" é um resultado válido; o ponto de partida do dia alugado fica o `pplx-decider-v1.2`. Se um merge ganhar (G3), troque `rental.start` em `decide/config.rental.yaml` pelo repositório do vencedor, com a revisão exata.
 
 ## 10. Sessão 8: F6, o dia alugado
 
-**Está na `main`** (F6, issue [#71](https://github.com/simpletibr/simplicio-27b/issues/71)): `decide/rental` e `decide/config.rental.yaml`. Os testes (`tests/test_flow_71.py`, `tests/test_contract_71.py`) ensaiam o dia inteiro em CPU, com um modelo minúsculo e uma pasta no lugar do Hugging Face; **nenhuma fase rodou numa GPU nem contra o Hugging Face de verdade** (UNVERIFIED). Os comandos valem para valer depois do conserto dos bloqueantes do kit (aviso 1), porque as fases `g4` e `public_round` carregam o modelo pelo kit.
+**Está na `main`** (F6, issue [#71](https://github.com/simpletibr/simplicio-27b/issues/71)): `decide/rental` e `decide/config.rental.yaml`. Os testes (`tests/test_flow_71.py`, `tests/test_contract_71.py`) ensaiam o dia inteiro em CPU, com um modelo minúsculo e uma pasta no lugar do Hugging Face; **nenhuma fase rodou numa GPU nem contra o Hugging Face de verdade** (UNVERIFIED). As fases `g4` e `public_round` carregam o modelo pelo kit (#86, na `main`), que nunca carregou um modelo de tamanho real: a primeira execução de verdade é o teste (UNVERIFIED).
 
 **Onde:** uma máquina Linux alugada com a GPU do perfil. **Perfis** (`decide/rental/profiles/`): `econ_b200` (1× B200, LoRA r128, 1 semente: o PLAN diz ~14 h e ~US$ 90; o estimador do comando abaixo imprime 12,75 h e US$ 79,70 até o veredito do G4, e 17,51 h e US$ 109,42 com a rodada pública e o envio, **UNVERIFIED**) e `full_8xh100` (8× H100, ajuste completo, 2 sementes: o PLAN diz ~12 a 16 h e ~US$ 380 a 510; o estimador imprime 17,49 h e US$ 552,52 até o G4, **UNVERIFIED**). O econômico é o padrão. O completo só entra se o G2 mostrou ganho ≥ +1,0.
 
@@ -387,7 +387,7 @@ python -m decide.rental.run --profile econ_b200 --execute --workdir /workspace/d
 
 ## 13. Em aberto
 
-- **Bloqueios que esperam PR de correção (avisos 1 e 2):** o núcleo do kit (#80: OOM por lote, revisões do Hub sem fixar, doador sem cobertura, Squad A) e o gate GT sobre provedor que esconde o raciocínio (#78, Squad C). Quando essas PRs entrarem, este RUNBOOK precisa de uma revisão que tire os avisos e confira os comandos de novo.
+- **O que ainda segura o aviso 1:** o gate GT hospedado não tem evidência operacional (#87, Squad C: os limites de 100 tokens e de 10% não foram medidos num provedor real). Os bloqueantes do núcleo do kit (#80) foram corrigidos no #86 e o aviso deles saiu. Esta seção ainda não foi revista para a parte 2 (reasoning/fold).
 - **Antes de qualquer treino com `--reasoning`:** o motor do kit chamar `fold_reasoning`, e a descontaminação cobrir a coluna `reasoning` dos traços (issue [#83](https://github.com/simpletibr/simplicio-27b/issues/83)).
 - **UNVERIFIED, tudo:** o treino em GPU (a T4 sem bf16, a B200, o DDP em 8 cartas, o LoRA r128 em 27B, a memória e a vazão), o carregamento do 27B real pelo kit, o `hf` e a API do Hub com a sua conta, os preços e os tempos dos perfis, a Modal, as regras do Space.
 - **TODO (Squad A):** notebook de treino do 4B; confirmar o caminho `requests/suite-0.3/`; confirmar o formato dos rótulos exportados pela Modal (`labels/<run>/`) contra o leitor `read_teacher`.
