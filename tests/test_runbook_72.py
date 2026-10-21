@@ -31,8 +31,13 @@ NOT_ON_MAIN: Dict[str, Tuple[str, str]] = {
     "notebooks/decide/docs": ("Squad A, part 2 of the kit", "notebooks/decide/docs"),
 }
 WARNINGS = "Avisos de hoje"
-#: Phrases of the two warnings the owner must see before any session (taken out only together with the correction pull requests).
-WARNING_PHRASES = ("Não rode sessões de GPU do kit", "think_gt_kaggle.ipynb", "backend `transformers`")
+#: Phrases of the warning the owner must see before any session: the official GT verdict comes from the Kaggle notebook only, until the hosted gate has
+#: operational evidence.  (The warning about the core of the kit was taken out when its three blockers were fixed on main, #86; the one about the
+#: false GT FAIL stays, reworded, because its limits were chosen and never measured on a real provider.)
+WARNING_PHRASES = ("think_gt_kaggle.ipynb", "backend `transformers`")
+#: What only the retired warning about the kit said.  Text of a warning that was taken out must not stay anywhere in the RUNBOOK.
+RETIRED_PHRASES = ("Não rode sessões de GPU do kit", "bloqueantes abertos", "bloqueantes do kit", "sem GPU até as correções",
+                   "as correções dele ainda não entraram", "O G2 espera isso", "PR de correção (avisos 1 e 2)")
 
 HelpOf = Callable[[str, Tuple[str, ...]], str]
 
@@ -76,6 +81,14 @@ def runbook_problems(text: str, root: Path, help_of: HelpOf, not_on_main: Dict[s
     for phrase in WARNING_PHRASES:
         if phrase not in warnings:
             problems.append(f"the section '{WARNINGS}' does not say {phrase!r}")
+    for phrase in RETIRED_PHRASES:
+        if phrase in text:
+            problems.append(f"{phrase!r} is text of a warning that was taken out and is still in the RUNBOOK")
+    listed = len(re.findall(r"^\d+\. \*\*", warnings, flags=re.M))
+    for match in re.finditer(r"\bavisos? (\d+)(?: e (\d+))?", text, flags=re.I):
+        for number in filter(None, match.groups()):
+            if listed and int(number) > listed:
+                problems.append(f"{match.group(0)!r} points at a warning that does not exist: the section '{WARNINGS}' lists {listed}")
     named: Dict[str, bool] = {}                                              # NOT_ON_MAIN entries the RUNBOOK uses
     joined = re.sub(r"\\\n\s*", " ", text)
     seen: set = set()
@@ -154,7 +167,7 @@ class CheckerNoticesTest(unittest.TestCase):
     #: what the checker is given as "not on main yet": fixed here, so these tests do not change when the real NOT_ON_MAIN does
     DECLARED = {"decide/later": ("someone", "decide/later"), "notebooks/decide/docs": ("someone", "notebooks/decide/docs"),
                 "decide/later.yaml": ("someone", "decide/later.yaml")}
-    WARN = ("## Avisos de hoje (leia)\n\n" + " ".join(WARNING_PHRASES) + " decide/later decide/later.yaml "
+    WARN = ("## Avisos de hoje (leia)\n\n1. **Kaggle** " + " ".join(WARNING_PHRASES) + "\n2. **Tabela** decide/later decide/later.yaml "
             "notebooks/decide/docs\n\n## 0. Como ler\n")
 
     def tree(self, files: Sequence[str]) -> Path:
@@ -205,6 +218,17 @@ class CheckerNoticesTest(unittest.TestCase):
         for phrase in WARNING_PHRASES:
             warn = self.WARN.replace(phrase, "")
             self.assertTrue(any(phrase in p for p in self.check("text\n", warn=warn)), phrase)
+
+    def test_text_of_a_warning_that_was_taken_out_is_a_problem(self) -> None:
+        for phrase in RETIRED_PHRASES:
+            problems = self.check(f"text {phrase} text\n")
+            self.assertTrue(any(phrase in p and "taken out" in p for p in problems), (phrase, problems))
+
+    def test_a_reference_to_a_warning_that_does_not_exist_is_a_problem(self) -> None:
+        for text in ("see (aviso 3)\n", "(avisos 1 e 3)\n", "Aviso 9\n"):
+            problems = self.check(text)
+            self.assertTrue(any("does not exist" in p for p in problems), (text, problems))
+        self.assertEqual(self.check("(aviso 1), (aviso 2) and (avisos 1 e 2). O aviso do perfil completo e outra coisa.\n"), [])
 
     def test_a_subcommand_is_checked_with_its_own_help(self) -> None:
         seen: List[Tuple[str, Tuple[str, ...]]] = []
