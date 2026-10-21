@@ -26,6 +26,7 @@ from typing import Any, Dict, List
 from decide_b_support import HAVE_PEFT, HAVE_PYARROW, HAVE_TRANSFORMERS, HAVE_YAML, FakeTokenizer, make_targets_dataset, make_tiny_checkpoint
 
 TOKEN = "hf_" + "z" * 30
+OTHER_KEY = "sk-" + "q" * 30                    # a credential of another service that the rented machine happens to export
 
 
 def tiny_profile(**train: Any):
@@ -205,6 +206,9 @@ class WholeDay(unittest.TestCase):
         saved = os.environ.get("HF_TOKEN")
         os.environ["HF_TOKEN"] = TOKEN
         cls.addClassCleanup(lambda: os.environ.pop("HF_TOKEN", None) if saved is None else os.environ.__setitem__("HF_TOKEN", saved))
+        saved_other = os.environ.get("OPENAI_API_KEY")
+        os.environ["OPENAI_API_KEY"] = OTHER_KEY
+        cls.addClassCleanup(lambda: os.environ.pop("OPENAI_API_KEY", None) if saved_other is None else os.environ.__setitem__("OPENAI_API_KEY", saved_other))
         root = Path(cls.tmp.name)
         cls.hub, cls.requests = build_world(root)
         cls.workdir = root / "day"
@@ -213,6 +217,7 @@ class WholeDay(unittest.TestCase):
         cls.kit_a = FakeKit()
         cls.a = make_day(cls.workdir, cls.hub, cls.kit_a, cls.executor).run(until="calibrate")
         cls.calls_after_a = list(cls.executor.modules())
+        cls.day_log_after_a = (cls.workdir / "logs" / "day.log").read_text(encoding="utf-8")        # the later runs may start from an empty folder
         final, run = cls.workdir / "final", cls.workdir / "runs" / "seed1" / "final"
         cls.linked_after_a = all(os.path.samefile(path, run / path.name) for path in final.glob("*.safetensors"))
         cls.config_after_a = json.loads((final / "decision_config.json").read_text(encoding="utf-8"))
@@ -329,6 +334,23 @@ class WholeDay(unittest.TestCase):
         for env in self.executor.envs:
             self.assertNotIn("HF_TOKEN", env)
             self.assertNotIn(TOKEN, json.dumps(env))
+
+    def test_the_children_never_saw_the_other_credentials_of_the_machine_either(self) -> None:
+        self.assertEqual(os.environ.get("OPENAI_API_KEY"), OTHER_KEY)
+        self.assertTrue(self.executor.envs)
+        for env in self.executor.envs:
+            self.assertFalse("OPENAI_API_KEY" in env, "a credential of another service reached a child")       # not assertNotIn: it would print the whole environment
+            self.assertFalse(OTHER_KEY in json.dumps(env), "the value of a credential of another service reached a child")
+
+    def test_the_day_log_names_the_variables_it_left_out_once_and_never_their_values(self) -> None:
+        text = self.day_log_after_a
+        notes = [line for line in text.splitlines() if "child environment" in line]
+        self.assertEqual(len(notes), 1, "one note for the run, not one before every step")
+        self.assertIn("OPENAI_API_KEY", notes[0])
+        self.assertIn("HF_TOKEN", notes[0])
+        self.assertGreater(len([line for line in text.splitlines() if " run " in line]), 1, "the run executed several steps")
+        self.assertFalse(OTHER_KEY in text, "the value of a credential reached the day log")
+        self.assertFalse(TOKEN in text, "the Hub token reached the day log")
 
     def test_the_report_has_measured_seconds_and_the_unverified_estimate(self) -> None:
         report = json.loads((self.workdir / "report" / "day-report.json").read_text(encoding="utf-8"))

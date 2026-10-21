@@ -15,7 +15,7 @@ changed).  Running the mutants takes a long time (each one runs the contract tes
 tiny model); the measured time is in the pull request of F6.
 
 The mutants sit where a wrong line would cost money or leak something: the gates (label coverage before any GPU hour, the GT report
-before the thinker's traces, G4 before the public round and the upload), what the children and the Hub can see (the token), what a
+before the thinker's traces, G4 before the public round and the upload), what the children and the Hub can see (the token and the other credentials of the machine), what a
 rerun trusts (the state and the fingerprints of the outputs), the order and the arguments of the commands of the day, and the checks that
 the data was screened (decontaminated, sealed, tied to the request it answers).
 """
@@ -93,7 +93,7 @@ MUTANTS: Tuple[Mutant, ...] = (
     Mutant('R04', RUN, 'if self.state.status("g4") != "done":\n            raise DayError("nothing is published before G4 passes")', 'if False:\n            raise DayError("nothing is published before G4 passes")', 'weights are published without G4 having passed'),
     Mutant('R05', RUN, 'if info.get("status") != "complete":\n                raise DayError(f"the kit ended the {model.name} run', 'if False:\n                raise DayError(f"the kit ended the {model.name} run', 'G4 scores a run the kit did not finish'),
     Mutant('R06', RUN, 'if info.get("status") != "complete":\n            raise DayError(f"the kit ended the public round', 'if False:\n            raise DayError(f"the kit ended the public round', 'an unfinished public round is recorded as done'),
-    Mutant('R07', RUN, '        env.pop(name, None)', '        pass', 'the Hub token reaches the training child process'),
+    Mutant('R07', RUN, '        del env[name]', '        pass', 'the Hub token reaches the training child process'),
     Mutant('R08', RUN, 'env["HF_HUB_OFFLINE"] = "1"', 'env["HF_HUB_OFFLINE"] = "0"', 'a child process may go online for a model or a dataset'),
     Mutant('R09', RUN, 'except Exception as exc:                  # noqa: BLE001 - a backup that fails', 'except KeyError as exc:                  # noqa: BLE001 - a backup that fails', 'a backup that fails stops the day'),
     Mutant('R10', RUN, 'if phase == "public_round" and status == "skipped" and self._public_requests() is not None:', 'if False:', 'the public requests file given on a second run is ignored: the round stays skipped'),
@@ -185,6 +185,16 @@ MUTANTS: Tuple[Mutant, ...] = (
     Mutant('R38', RUN, '        self._digests = {}                        # a phase may have changed the bytes (calibrate does)', '        pass', 'the digest of the checkpoint is remembered across a phase that changes it'),
     Mutant('R39', RUN, '                same_file = os.fstat(handle).st_ino == os.stat(lock).st_ino', '                same_file = True', 'a lock file removed by the previous holder while we opened it is used',
            equivalent='the race needs two processes to open the lock inside the microseconds between the holder unlinking it and releasing it; a test cannot place a process there without hooks in os.open.  The check is the standard flock-then-compare-inodes guard'),
+    Mutant('R40', RUN, '    for name in dropped_names(cfg, env):\n        del env[name]', '    for name in []:\n        del env[name]', 'the children get the Hub token, the thinker key and every credential of the machine'),
+    Mutant('R41', RUN, 'if name in configured or (name not in KEEP_NAMES and CREDENTIAL_NAME.search(name)))', 'if name in configured)', 'only the two configured names are left out: OPENAI_API_KEY, AWS_* and the rest reach the children'),
+    Mutant('R42', RUN, 'if name in configured or (name not in KEEP_NAMES and CREDENTIAL_NAME.search(name)))', 'if (name not in KEEP_NAMES and CREDENTIAL_NAME.search(name)))', 'a configured name that does not look like a credential (token_env: HUB_LOGIN) reaches the children'),
+    Mutant('R43', RUN, '(name not in KEEP_NAMES and CREDENTIAL_NAME.search(name))', '(CREDENTIAL_NAME.search(name))', 'HF_HUB_DISABLE_IMPLICIT_TOKEN is dropped, so the child may read a token file again'),
+    Mutant('R44', RUN, 'r"|^(?:aws|azure)_"', 'r""', 'AWS_PROFILE and AZURE_TENANT_ID reach the children'),
+    Mutant('R45', RUN, '^(?:aws|azure)_", re.IGNORECASE)', '^(?:aws|azure)_")', 'db_password and other lower-case names reach the children'),
+    Mutant('R46', RUN, 'bearer)(?:_|$)"', 'bearer)"', 'a name that only starts with a credential word (TOKENIZERS_PARALLELISM) is dropped'),
+    Mutant('R47', RUN, 'r"(?:^|_)(?:api_?keys?', 'r"(?:api_?keys?', 'a name that only ends in a credential word (MONKEY_PATCH) is dropped'),
+    Mutant('R48', RUN, '            self._env_noted = True\n', '            pass\n', 'the day log repeats the note before every step'),
+    Mutant('R49', RUN, "({', '.join(left_out)})", "()", 'the day log says that variables were left out but not which'),
 )
 
 
