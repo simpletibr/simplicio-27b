@@ -713,6 +713,65 @@ class TextAndDecontaminationContract(unittest.TestCase):
             hit = idx.check(probe)
             self.assertEqual(hit.reason if hit else None, expect, refs)
 
+    # ---- planner decision on PR #74: format-only marker lines are not short items
+    MARKER_LINES = ("<<<<<<< SEARCH", "<<<< search", "=======", ">>>>>>> REPLACE", ">>>> REPLACE", "  >>>> REPLACE  ", "```", "```python", "```json",
+                    "```c++", "~~~", "~~~bash")
+    NOT_MARKERS = ("replace", "REPLACE", "search", "python", "thanks so much!", "Replace the text", ">>>> REPLACE all", "<< SEARCH", "``` not alone",
+                   "x = ```", "a ======= b", "``` ```", "yes")
+
+    def test_marker_lines_are_an_explicit_versioned_allowlist(self) -> None:
+        self.assertEqual(T.MARKER_LINES_VERSION, 1)
+        for line in self.MARKER_LINES:
+            self.assertTrue(T.is_marker_line(line), line)
+        for line in self.NOT_MARKERS:
+            self.assertFalse(T.is_marker_line(line), line)
+        # every entry says what it is and why it is format, and SCHEMA.md lists it (the docs cannot drift from the code)
+        schema_md = (ROOT / "decide" / "data" / "SCHEMA.md").read_text(encoding="utf-8")
+        for pattern, example, reason in T.MARKER_LINES:
+            self.assertTrue(T.is_marker_line(example), example)
+            self.assertTrue(reason.strip(), pattern)
+            self.assertIn(example, schema_md, f"SCHEMA.md section 9 must list the marker {example!r}")
+
+    def code_edit(self, old: str, new: str, instructions: str) -> dict:
+        state = f"<<<<<<< SEARCH\n{old}\n=======\n{new}\n>>>> REPLACE\n```python\n{old}\n```"
+        return {"state": state, "questions": {"q1": {"type": "noul", "instructions": instructions}}}
+
+    def test_a_marker_line_shared_with_a_reference_is_not_a_leak(self) -> None:
+        # 213 of the 320 Simplicio-Loop traces were rejected for one line, `>>>> REPLACE`, which a code-edit item of the
+        # reference also has; the markers say nothing about the item
+        idx = D.ReferenceIndex()
+        idx.add(self.code_edit("total = price * qty", "total = round(price * qty, 2)", "Does the patch fix the rounding?"), "R:1")
+        idx.freeze()
+        probe = self.code_edit("name = user.first + user.last", "name = f'{user.first} {user.last}'", "Is the joined name correct now?")
+        self.assertIsNone(idx.check(probe))
+        self.assertEqual(idx.check(self.code_edit("total = price * qty", "total = round(price * qty, 2)", "Does the patch fix the rounding?")).reason,
+                         "exact_request", "the marker exclusion does not weaken the other rules")
+
+    def test_a_real_short_item_next_to_a_marker_is_still_caught(self) -> None:
+        idx = D.ReferenceIndex()
+        idx.add({"state": "thanks so much!", "questions": {"q1": {"type": "choice", "instructions": "Pick the intent.", "criteria": {"a": "x", "b": "y"}}}}, "T:1")
+        idx.freeze()
+        probe = {"state": "```text\n>>>> REPLACE\nthanks so much!", "questions": {"q1": {"type": "noul", "instructions": "Is it polite?"}}}
+        self.assertEqual(idx.check(probe).reason, "short_line")
+        self.assertEqual(idx.check(self.intent_request("thanks so much!")).reason, "short_line", "a CLINC-style utterance is still rejected")
+
+    def test_a_marker_line_is_not_indexed_as_a_short_unit(self) -> None:
+        idx = D.ReferenceIndex()
+        idx.add({"state": "thanks so much!\n```python\n>>>> REPLACE", "questions": {"q1": {"type": "noul", "instructions": "Fine?"}}}, "R:1")
+        idx.freeze()
+        stats = idx.stats()
+        self.assertEqual(stats["units"]["short_lines"]["total"], 2, "'thanks so much' and the instruction, not 'python' or 'replace'")
+        self.assertEqual(stats["markers_version"], T.MARKER_LINES_VERSION)
+        self.assertEqual(stats["rules_version"], 3)
+
+    def test_the_allowlist_version_is_part_of_the_fingerprint(self) -> None:
+        # a resumed run must not keep rows that were screened with an older allowlist
+        idx = D.ReferenceIndex()
+        idx.add(self.code_edit("a = 1", "a = 2", "Is a two?"), "R:1")
+        before = idx.fingerprint()
+        with mock.patch.object(T, "MARKER_LINES_VERSION", T.MARKER_LINES_VERSION + 1):
+            self.assertNotEqual(idx.fingerprint(), before)
+
     def test_a_passage_shared_by_many_reference_questions_is_still_detected(self) -> None:
         # review of PR #74: a test passage used by 21 reference requests became "boilerplate" and its copy passed
         passage = ("The committee met on Tuesday to review the harbor expansion plan and voted to postpone the dredging until the "
