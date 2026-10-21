@@ -112,12 +112,13 @@ def interpret(gen: GenResult, options: Dict[str, List[Option]], thinking: bool =
     ended: its text is not scanned for an answer (`no_close`).
 
     Where the kit does not render the template (a hosted endpoint) it cannot know that: a provider may think and return only
-    the final reply.  The reply is read as it is, and a generation of at least C.MIN_THINKING_TOKENS tokens with no reasoning
-    visible is flagged `reasoning_hidden`, so the verdict cannot call that thinker official (compare.py).
+    the final reply.  The reply is read as it is, and a generation of at least C.MIN_THINKING_TOKENS tokens (the ones the model
+    generated: the prompt does not count) with no reasoning visible, which includes a blank `reasoning` field and an empty
+    `<think></think>` block, is flagged `reasoning_hidden`, so the verdict cannot call that thinker official (compare.py).
     """
     content = gen.content if isinstance(gen.content, str) else ""
     truncated = gen.finish_reason == "length"
-    no_close = hidden = False
+    no_close = False
     if gen.reasoning is not None:                           # the server already split the thinking off
         reasoning = gen.reasoning
         _, final = split_reasoning(content)                 # a stray </think> inside the reply is still honored
@@ -125,12 +126,11 @@ def interpret(gen: GenResult, options: Dict[str, List[Option]], thinking: bool =
         reasoning, final = split_reasoning(content)
         if truncated and THINK_CLOSE not in content:        # the template opens <think> itself: a cut reply is all thinking
             reasoning, final = content, None
-        elif thinking and not truncated and THINK_CLOSE not in content and not gen.reasoning_tokens and content.strip():
-            if template_opened:
-                reasoning, final, no_close = content, None, True
-            else:
-                hidden = int(gen.completion_tokens or 0) >= C.MIN_THINKING_TOKENS
+        elif thinking and template_opened and not truncated and THINK_CLOSE not in content and not gen.reasoning_tokens and content.strip():
+            reasoning, final, no_close = content, None, True
     final = final or None
+    hidden = (thinking and not template_opened and not truncated and not gen.reasoning_tokens and bool(content.strip()) and not reasoning.strip()
+              and int(gen.completion_tokens or 0) >= C.MIN_THINKING_TOKENS)
     detail = extract_detailed(final, options)
     return Parsed(reasoning=reasoning, final=final, answers={q: key for q, (key, _how) in detail.items()}, truncated=truncated,
                   no_close=no_close, reasoning_hidden=hidden, read_by={q: how for q, (_key, how) in detail.items()})

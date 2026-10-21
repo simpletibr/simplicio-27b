@@ -76,7 +76,21 @@ python -m decide.think.compare --pack pack.jsonl.gz --thinker work/results.jsonl
   status EXPLORATORY (`reasoning_hidden`); se elas (somadas às `no_close`) passarem de 10% das linhas que responderam, o
   status é INCONCLUSIVE (`reasoning_hidden_or_not_closed`) com o motivo na linha final e no `report.json`. Em nenhum caso
   isso vira um PASS ou FAIL oficial: um FAIL feito de linhas que não dizem nada sobre o modelo mandaria o plano ao modo
-  só-decisor (ADR 0004).
+  só-decisor (ADR 0004). Um campo `reasoning` em branco e um bloco `<think></think>` vazio contam como raciocínio escondido.
+- **O que ainda sai oficial, e o que isso quer dizer.** O kit só vê o que o provedor devolve, então um PASS ou FAIL oficial **não
+  prova** que o modelo pensou em cada linha. Continuam oficiais: linhas com menos de 100 tokens gerados e sem raciocínio visível
+  (abaixo da barra, não são marcadas; se mais da metade delas não mostra pensamento o status é INCONCLUSIVE por
+  `thinking_not_detected`, mas até a metade o veredito sai), e até metade das linhas sem `usage` (sem a contagem de tokens o kit
+  não consegue marcá-las). As respostas dessas linhas são lidas, então isto **não** é o falso FAIL a 0%: o risco é um PASS
+  ou FAIL feito com um pensador que pensou menos do que o protocolo supõe. Confira a mediana de tokens por linha no relatório.
+- **`local-vllm` e o parser do vLLM.** Com `--reasoning-parser qwen3` o raciocínio chega à parte. Se o parser devolver como
+  `content` uma linha que parou sem `</think>` (o comportamento do vLLM 0.31 aí é **UNVERIFIED**), a linha é lida como resposta e
+  marcada `reasoning_hidden`: **uma só** basta para a rodada sair EXPLORATORY, e mais de 10% das linhas a deixam INCONCLUSIVE.
+  Se isso acontecer no G4, o gate oficial fica refém de qualquer linha que não fecha; reinicie com `--max-tokens` maior ou
+  confirme no `transformers`.
+- **Kaggle (`transformers`).** Aqui o kit sabe que abriu o `<think>`, então a linha que para sem `</think>` é `no_close` (erro do
+  pensador). Até 16 de 160 `no_close` ainda dão veredito oficial, e **17 de 160** sem fechar dão INCONCLUSIVE: o número que antes
+  contava essas linhas como erro e seguia (um PASS conservador) agora pede outra rodada com `--max-tokens` maior.
 - **Como cada lado responde.** O decisor responde com o argmax das probabilidades publicadas (primeiro máximo na ordem das
   opções). Uma linha só conta como acerto se **todas** as perguntas dela estão certas (SATA-Bench é exato, como no kit); no
   ChessBench vale qualquer lance do conjunto de empates. O pensador responde com a última linha `ANSWER <pergunta>: <rótulo>`
@@ -443,7 +457,8 @@ Isto é um esboço do que o PASS destrava, não parte do gate.
   escrevem e lêem a forma dobrada. O `from_record` e o `attach_trace` (com `source_id`) **recusam** (`EvaluationDataError`) os ids do
   `gt-sample-manifest.json`: um traço feito sobre uma linha do GT é dado de avaliação. Os resultados do GT também já não
   gravam o raciocínio por padrão (`--keep-reasoning` o liga). `trace.fold_reasoning(estado, raciocínio, max_chars=8000)` é a forma
-  dobrada do SCHEMA.md, repetida aqui (o `trace.py` só usa a biblioteca padrão e não importa `decide/train`); um estado que não é
+  dobrada do SCHEMA.md (`max_chars` abaixo de 64 é recusado com `ValueError`: não cabe o aviso do corte, e o SCHEMA.md não define o
+  que sobra; um corte que deixa uma linha-rótulo no começo do resto a neutraliza, para o estado dobrado ter uma só), repetida aqui (o `trace.py` só usa a biblioteca padrão e não importa `decide/train`); um estado que não é
   texto (objeto, lista) entra como JSON. O arquivo dourado `tests/fold_reasoning_cases.json` (da Squad do treino, 10 casos) é a
   trava: `test_every_case_of_the_golden_file_folds_the_same_way` o lê e falha se um caso divergir. Onde o `trace.py` e o SCHEMA.md divergirem, vale o SCHEMA.md. O SCHEMA.md **mantém** um
   raciocínio cortado pelo orçamento (`finish_reason: length`); o `from_record` o recusa por padrão, então passe

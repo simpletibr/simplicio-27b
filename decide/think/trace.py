@@ -28,7 +28,10 @@ Folded layout:
 * A state that already has a block is refused, never overwritten: strip it first with `split_trace`.
 * Long traces keep their END (that is where the conclusion is) behind a one-line notice of how many
   characters were dropped.  The budget is in characters because this module is standard library only
-  (roughly 3 to 4 characters per token; the real token budget is a decision of the experiment).
+  (roughly 3 to 4 characters per token; the real token budget is a decision of the experiment).  A budget
+  under MIN_MAX_CHARS is refused (`ValueError`): it cannot hold the notice, and what is left of a clip that
+  cannot is not defined by SCHEMA.md.  A cut that leaves a label line at the start of the tail is neutralized
+  like any other label line, so the folded state has exactly one.
 
 The sample of the GT and the public suite are evaluation data: traces made from them never go into a
 training corpus (ADR 0004, item 6).
@@ -43,6 +46,7 @@ from typing import Any, Dict, FrozenSet, Optional, Tuple
 
 MARKER = "Raciocínio:"
 DEFAULT_MAX_CHARS = 8000
+MIN_MAX_CHARS = 64            # the notice of a clip is about 35 characters: below this the clip falls back to a raw tail that the two ways to write the block treat differently
 MODES = ("reasoning", "final", "both")
 GT_MANIFEST = Path(__file__).with_name("gt-sample-manifest.json")
 _GT_IDS: Dict[Path, FrozenSet[str]] = {}
@@ -116,17 +120,23 @@ def clip(text: str, max_chars: int) -> str:
     return f"[... {len(text) - len(tail)} caracteres omitidos ...]\n{tail}"
 
 
+def _check_budget(max_chars: int) -> None:
+    if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars < MIN_MAX_CHARS:
+        raise ValueError(f"max_chars must be an integer of at least {MIN_MAX_CHARS} (room for the notice of a clip), got {max_chars!r}")
+
+
 def render_trace(reasoning: Optional[str] = None, final: Optional[str] = None, *, mode: str = "reasoning",
                  max_chars: int = DEFAULT_MAX_CHARS) -> str:
     """The text that goes under the marker.  `mode` picks the thinker's reasoning, its final answer text, or both."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
+    _check_budget(max_chars)
     parts = []
     if mode in ("reasoning", "both"):
         parts.append(_clean(reasoning))
     if mode in ("final", "both"):
         parts.append(_clean(final))
-    return clip("\n\n".join(p for p in parts if p), max_chars)
+    return _clean(clip("\n\n".join(p for p in parts if p), max_chars))             # a cut can leave a label line at the start of the tail
 
 
 def attach_trace(state: Any, trace: Optional[str], *, source_id: Optional[str] = None) -> str:
@@ -146,16 +156,16 @@ def fold_reasoning(state: Any, reasoning: Any, *, max_chars: int = DEFAULT_MAX_C
     """The folded state of SCHEMA.md section 10: `fold_reasoning` of decide/train/protocol.py, for a state and a reasoning text.
 
     The state loses the whitespace at its end, then come one blank line (none for an empty state), the label line and the reasoning
-    after `_clean`, clipped to `max_chars`.  A state that already has a label line, a `reasoning` that is not a non-empty string
-    and one that is empty after cleaning and clipping are refused, never repaired.
+    after `_clean`, clipped to `max_chars`.  A state that already has a label line and a `reasoning` that is not a non-empty string
+    are refused, never repaired.  (SCHEMA.md also refuses a reasoning that is empty after cleaning and clipping; with a budget of at
+    least MIN_MAX_CHARS and a reasoning that is not blank that cannot happen.)
     """
+    _check_budget(max_chars)
     if not isinstance(reasoning, str) or not reasoning.strip():
         raise TraceError("'reasoning' must be a non-empty string")
     if has_trace(state):
         raise TraceError("the state already holds a Raciocínio: block, so it cannot also take a reasoning")
-    body = clip(_clean(reasoning), max_chars)
-    if not body.strip():
-        raise TraceError("'reasoning' is empty after cleaning and clipping")
+    body = _clean(clip(_clean(reasoning), max_chars))
     head = describe_state(state).rstrip()
     return (head + "\n\n" if head else "") + MARKER + "\n" + body
 

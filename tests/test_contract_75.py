@@ -1078,7 +1078,7 @@ class VerdictStatusContract(unittest.TestCase):
         self.assertIn("bootstrap_b", line)
 
     # -- second review of #78: a provider that thinks and hides it must not make a thinker at 0%
-    def real_rows(self, hidden=0, no_close=0, per=40, benches=(25, 28, 58, 62)):
+    def real_rows(self, hidden=0, no_close=0, per=40, benches=(25, 28, 58, 62), shape=None):
         """160 rows made by the real make_record from replies of 3000 tokens whose reasoning is not visible, as the reviewer's probe did."""
         rows, _ = self.full(per=per, benches=list(benches))
         recs = []
@@ -1087,7 +1087,7 @@ class VerdictStatusContract(unittest.TestCase):
             if k < no_close:                                                    # the kit's own template opened <think> and it never closed
                 gen, kw = T.GenResult(content="ANSWER q: A", finish_reason="stop", completion_tokens=3000), {"template_opened": True}
             elif k < no_close + hidden:                                         # an endpoint that returns the final reply only
-                gen, kw = T.GenResult(content="ANSWER q: A", finish_reason="stop", completion_tokens=3000), {}
+                gen, kw = T.GenResult(**{"content": "ANSWER q: A", "finish_reason": "stop", "completion_tokens": 3000, **(shape or {})}), {}
             else:
                 gen, kw = T.GenResult(reasoning="a long thinking", content="ANSWER q: A", finish_reason="stop", completion_tokens=3000), {}
             recs.append(T.make_record(row, prompt, gen, attempt=1, max_tokens=16384, thinking=True, **kw))
@@ -1109,6 +1109,31 @@ class VerdictStatusContract(unittest.TestCase):
         self.assertTrue("mais de 10% das linhas que responderam esconderam o raciocinio ou pararam sem fechar o pensamento (160 de 160)" in md, md[-1500:])
         self.assertTrue("160 de 160 linhas vieram so com a resposta" in md)
         self.assertTrue("`reasoning_hidden`" in md and "pensa e esconde o raciocinio" in md)
+
+    def test_a_blank_reasoning_or_an_empty_block_makes_the_run_exploratory_and_inconclusive_past_a_tenth(self) -> None:
+        for shape in ({"reasoning": " "}, {"content": "</think>\nANSWER q: A"}):
+            with self.subTest(shape=shape):
+                rows, recs = self.real_rows(hidden=1, shape=shape)
+                v = official(rows, recs)["verdict"]
+                self.assertEqual((v["status"], v["reasons"]), ("EXPLORATORY", ["reasoning_hidden"]))
+                rows, recs = self.real_rows(hidden=160, shape=shape)
+                rep = official(rows, recs)
+                self.assertEqual((rep["verdict"]["status"], rep["verdict"]["reasons"]), ("INCONCLUSIVE", ["reasoning_hidden_or_not_closed"]))
+                self.assertTrue(K.verdict_line(rep).startswith("GT VERDICT: INCONCLUSIVE"))
+
+    def test_the_text_of_the_inconclusive_run_counts_rows_that_hid_and_rows_that_never_closed_and_blames_no_provider(self) -> None:
+        # Review of #87, R2 and N3: the sum is on the last line and in the report, and the kit's own backend has no provider to blame.
+        rows, recs = self.real_rows(no_close=10, hidden=7)
+        rep = official(rows, recs)
+        line, md = K.verdict_line(rep), K.render_markdown(rep)
+        self.assertTrue("17 of 160 rows that answered hid their reasoning (7) or never closed it (10)" in line, line)
+        self.assertTrue("mais de 10% das linhas que responderam esconderam o raciocinio ou pararam sem fechar o pensamento (17 de 160)" in md)
+        rows, recs = self.real_rows(no_close=17)
+        rep = official(rows, recs)
+        for text in (K.verdict_line(rep), K.render_markdown(rep)):
+            self.assertTrue("say nothing about the model" in text or "nao dizem nada sobre o modelo" in text, text[-600:])
+            self.assertTrue("measures the provider" not in text and "mede o provedor" not in text)
+        self.assertEqual(official(rows, recs)["verdict"]["reasons"], ["reasoning_hidden_or_not_closed"])
 
     def test_two_reasons_to_be_inconclusive_are_both_on_the_last_line(self) -> None:
         rows, recs = self.real_rows(hidden=160)
@@ -1390,6 +1415,31 @@ class InterpretContract(unittest.TestCase):
         p = self.parsed(thinking=True, template_opened=True, content="ANSWER q: A", finish_reason="stop", completion_tokens=3000)
         self.assertEqual((p.reasoning_hidden, p.no_close, p.answers), (False, True, {"q": None}), "where the kit renders the template, it is no_close instead")
 
+    def test_a_blank_reasoning_or_an_empty_thinking_block_is_hidden_reasoning_too(self) -> None:
+        # Review of #87, N1: a provider that returns an empty `reasoning` field or an empty block got an official verdict.
+        for why, kw in (("reasoning apart, but blank", {"reasoning": " \n"}),
+                        ("a closing tag with nothing before it", {"content": "</think>\n\nANSWER q: A"}),
+                        ("a thinking block with nothing in it", {"content": "<think>\n</think>\n\nANSWER q: A"})):
+            with self.subTest(why):
+                p = self.parsed(thinking=True, finish_reason="stop", completion_tokens=3000, **{"content": "ANSWER q: A", **kw})
+                self.assertEqual((p.reasoning_hidden, p.no_close, p.answers), (True, False, {"q": "A"}))
+                for off, change in (("a few tokens", {"completion_tokens": C.MIN_THINKING_TOKENS - 1}), ("reasoning tokens counted", {"reasoning_tokens": 2900}),
+                                    ("the reply was cut", {"finish_reason": "length"}), ("a control without thinking", {"thinking": False}),
+                                    ("the kit renders the template", {"template_opened": True})):
+                    q = self.parsed(**{"thinking": True, "finish_reason": "stop", "completion_tokens": 3000, "content": "ANSWER q: A", **kw, **change})
+                    self.assertFalse(q.reasoning_hidden, f"{why}, but {off}")
+        p = self.parsed(thinking=True, finish_reason="stop", completion_tokens=3000, reasoning="a real thinking", content="ANSWER q: A")
+        self.assertFalse(p.reasoning_hidden)
+        p = self.parsed(thinking=True, finish_reason="stop", completion_tokens=3000, content="a real thinking\n</think>\nANSWER q: A")
+        self.assertFalse(p.reasoning_hidden)
+        p = self.parsed(thinking=True, finish_reason="stop", completion_tokens=3000, content="  ")
+        self.assertFalse(p.reasoning_hidden, "no reply at all is not a reply that hides its reasoning")
+
+    def test_the_prompt_does_not_count_towards_the_bar_of_hidden_thinking(self) -> None:
+        # Review of #87, R5: only the tokens the model generated say that it thought.
+        p = self.parsed(thinking=True, content="ANSWER q: A", finish_reason="stop", prompt_tokens=5000, completion_tokens=12)
+        self.assertEqual((p.reasoning_hidden, p.answers), (False, {"q": "A"}))
+
     def test_a_cut_reply_is_truncated_not_no_close(self) -> None:
         p = self.parsed(thinking=True, content="so the answer is B", finish_reason="length")
         self.assertEqual((p.truncated, p.no_close), (True, False))
@@ -1469,6 +1519,12 @@ class RecordContract(unittest.TestCase):
         self.assertEqual((r["answers"], r["no_close"], r["reasoning_hidden"], r["thought"]), ({"q": "B"}, False, False, False))
         r = self.record(T.GenResult(reasoning="t", content="ANSWER q: B", finish_reason="stop", completion_tokens=3000))
         self.assertIs(r["reasoning_hidden"], False)
+
+    def test_the_row_with_a_blank_reasoning_field_or_an_empty_block_is_flagged_and_counts_as_thinking(self) -> None:
+        for gen in (T.GenResult(reasoning=" ", content="ANSWER q: B", finish_reason="stop", completion_tokens=3000),
+                    T.GenResult(content="</think>\nANSWER q: B", finish_reason="stop", completion_tokens=3000)):
+            r = self.record(gen)
+            self.assertEqual((r["answers"], r["reasoning_hidden"], r["thought"]), ({"q": "B"}, True, True), gen)
 
     def test_how_each_answer_was_found_is_recorded(self) -> None:
         r = self.record(T.GenResult(content="t</think>\nANSWER q: B", finish_reason="stop"))
@@ -2397,12 +2453,18 @@ class TraceContract(unittest.TestCase):
         self.assertFalse(TR.has_trace({"k": "Raciocínio:"}))
         self.assertEqual(TR.attach_trace({"k": 1}, ""), {"k": 1}, "an empty trace adds nothing, and the state is not touched")
 
+    def test_the_leading_spaces_and_tabs_of_the_reasoning_stay(self) -> None:
+        # Review of #87, R3: SCHEMA.md step 4 takes the line breaks at the ends of the reasoning, not its indent (protocol.py keeps it).
+        self.assertEqual(TR.fold_reasoning("s", "  indented\nx"), "s\n\nRaciocínio:\n  indented\nx")
+        self.assertEqual(TR.fold_reasoning("s", "\n\n\tindented\n"), "s\n\nRaciocínio:\n\tindented")
+        self.assertEqual(TR.attach_trace("s", TR.render_trace("  indented")), "s\n\nRaciocínio:\n  indented")
+
     def test_fold_reasoning_refuses_what_the_training_side_refuses(self) -> None:
         for bad in (None, "", "  \n\t", 5, ["x"]):
             with self.subTest(reasoning=bad), self.assertRaisesRegex(TR.TraceError, "non-empty string"):
                 TR.fold_reasoning("state", bad)
-        with self.assertRaisesRegex(TR.TraceError, "empty after cleaning and clipping"):
-            TR.fold_reasoning("state", "x", max_chars=0)                              # a budget of nothing leaves no block to write
+        with self.assertRaisesRegex(ValueError, "max_chars"):
+            TR.fold_reasoning("state", "x", max_chars=0)                              # a budget of nothing is refused, not folded into nothing
         with self.assertRaises(TR.TraceError):
             TR.fold_reasoning("s\nRaciocínio:\nold", "new")                        # never overwritten
         self.assertEqual(TR.fold_reasoning("s", "Raciocínio:"), "s\n\nRaciocínio:\nRaciocínio :", "a label line in the reasoning is neutralized, not dropped")
@@ -2500,9 +2562,48 @@ class TraceContract(unittest.TestCase):
         self.assertLessEqual(len(clipped), 100)
         self.assertTrue(clipped.endswith("y"))
 
-    def test_a_budget_too_small_for_the_notice_still_obeys_it(self) -> None:
-        self.assertLessEqual(len(TR.render_trace("z" * 500, max_chars=10)), 10)
-        self.assertEqual(TR.render_trace("abc", max_chars=0), "")
+    def test_a_budget_too_small_for_the_notice_is_refused(self) -> None:
+        # Review of #87, N4: below the size of the notice the two ways to write the block clipped differently, so the kit says no.
+        self.assertEqual(TR.MIN_MAX_CHARS, 64)
+        for bad in (-1, 0, 1, 7, 10, 33, 63):
+            with self.subTest(max_chars=bad):
+                with self.assertRaisesRegex(ValueError, "max_chars"):
+                    TR.render_trace("z" * 500, max_chars=bad)
+                with self.assertRaisesRegex(ValueError, "max_chars"):
+                    TR.fold_reasoning("s", "z" * 500, max_chars=bad)
+                with self.assertRaisesRegex(ValueError, "max_chars"):
+                    TR.from_record({"status": "ok", "truncated": False, "reasoning": "z" * 500}, max_chars=bad)
+        self.assertLessEqual(len(TR.render_trace("z" * 500, max_chars=TR.MIN_MAX_CHARS)), TR.MIN_MAX_CHARS)
+        self.assertTrue(TR.fold_reasoning("s", "z" * 500, max_chars=TR.MIN_MAX_CHARS).endswith("z"))
+        self.assertEqual(TR.render_trace("abc", max_chars=64), "abc")
+
+    def test_the_two_ways_to_write_the_block_agree_for_every_budget_they_accept(self) -> None:
+        import random as _random
+        rng = _random.Random(87)
+        pieces = ["a", "b", " ", "  ", "\n", "\n\n", "\t", "é", "日", "本", "語", "Raciocínio:", " Raciocínio:", "Raciocínio :", "\r\n", "x" * 20]
+        states = ["s", "", "s  \n\n", {"k": 1}, ["a", "é"]]
+        done = 0
+        for _ in range(400):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 120)))
+            if not text.strip():
+                continue
+            budget, state = rng.randint(TR.MIN_MAX_CHARS, 300), rng.choice(states)
+            folded = TR.fold_reasoning(state, text, max_chars=budget)
+            self.assertEqual(TR.attach_trace(state, TR.render_trace(text, max_chars=budget)), folded, (state, text, budget))
+            self.assertEqual(sum(TR._is_marker(line) for line in folded.split("\n")), 1, "one label line in the folded state, the one that opens the block")
+            done += 1
+        self.assertGreater(done, 300)
+
+    def test_a_cut_that_leaves_a_label_line_at_the_start_of_the_tail_is_neutralized_too(self) -> None:
+        # Review of #87, N4 (second half): "x" + spaces + "Raciocínio:" cut after the spaces made a second label line, on both sides.
+        text = "x" + " " * 600 + "Raciocínio:"
+        for budget in (64, 100, 300):
+            with self.subTest(max_chars=budget):
+                folded = TR.fold_reasoning("s", text, max_chars=budget)
+                self.assertEqual(sum(TR._is_marker(line) for line in folded.split("\n")), 1)
+                self.assertTrue(folded.endswith("Raciocínio :"), folded[-40:])
+                self.assertFalse(TR.has_trace(TR.render_trace(text, max_chars=budget)))
+                self.assertEqual(TR.attach_trace("s", TR.render_trace(text, max_chars=budget)), folded)
 
     def test_default_budget(self) -> None:
         self.assertEqual(TR.DEFAULT_MAX_CHARS, 8000)
@@ -3656,6 +3757,16 @@ class ReadmeContract(unittest.TestCase):
         self.assertTrue("`/kaggle/working` é a saída da versão salva" in text)
         for flag in ("--keep-reasoning", "--max-attempts", "--retry-failed"):
             self.assertTrue(text.count(flag) >= 1, flag)
+
+    def test_the_readme_says_what_a_hidden_reasoning_still_lets_through_and_where_one_row_or_seventeen_matter(self) -> None:
+        # Review of #87, N1, N2 and N3: what a reader of an official PASS or FAIL must not assume.
+        text = readme_text()
+        for needle in ("**O que ainda sai oficial, e o que isso quer dizer.**", "prova** que o modelo pensou em cada linha", "não** é o falso FAIL a 0%",
+                       "Um campo `reasoning` em branco e um bloco `<think></think>` vazio contam como raciocínio escondido",
+                       "**`local-vllm` e o parser do vLLM.**", "(o comportamento do vLLM 0.31 aí é **UNVERIFIED**)",
+                       "**uma só** basta para a rodada sair EXPLORATORY", "**Kaggle (`transformers`).**", "**17 de 160** sem fechar dão INCONCLUSIVE",
+                       "`max_chars` abaixo de 64 é recusado"):
+            self.assertTrue(needle in text, needle)
 
     def test_the_tests_the_readme_names_exist(self) -> None:
         names = set(re.findall(r"`(test_[a-z0-9_]+)`", readme_text()))
