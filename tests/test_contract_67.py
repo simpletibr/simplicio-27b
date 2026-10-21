@@ -995,6 +995,23 @@ class ProxyContract(unittest.TestCase):
         self.assertEqual((out["n"], out["ties"]), (3, 2), "a shared top counts even when the gold option is not one of the tied ones")
         self.assertEqual(P.score_rows(reqs[:1], [row(0, [0.7, 0.1, 0.1, 0.1])])["ties"], 0)
 
+    def test_the_score_does_not_depend_on_the_order_in_which_the_options_are_written(self) -> None:
+        """The comparison of two models on the same rows must not change because the author of the set wrote the options in another order."""
+        import random
+
+        rng = random.Random(7)
+        for _ in range(300):
+            probs = [rng.choice((0.1, 0.2, 0.2, 0.4)) for _ in range(4)]            # ties are common with these values
+            gold, order = rng.randrange(4), rng.sample(range(4), 4)
+            self.assertEqual(P.top_credit(probs, gold), P.top_credit([probs[i] for i in order], order.index(gold)), (probs, gold, order))
+        keys, golds = "ABCD", [rng.randrange(4) for _ in range(60)]
+        table = [[rng.choice((0.1, 0.2, 0.2, 0.4)) for _ in range(4)] for _ in golds]
+        written = lambda flip: P.score_rows(                                                              # noqa: E731
+            [(f"e{i}", choice_request(), {"q1": keys[3 - g if flip else g]}, "s1") for i, g in enumerate(golds)],
+            [{"example_id": f"e{i}", "question_id": "q1", "codes": list(keys), "probs": p[::-1] if flip else p} for i, p in enumerate(table)])
+        self.assertEqual(written(False)["proxy"], written(True)["proxy"])
+        self.assertEqual(written(False)["ties"], written(True)["ties"])
+
     def test_top_credit(self) -> None:
         self.assertEqual(P.top_credit([0.7, 0.1, 0.1, 0.1], 0), (1.0, False))
         self.assertEqual(P.top_credit([0.7, 0.1, 0.1, 0.1], 1), (0.0, False))
