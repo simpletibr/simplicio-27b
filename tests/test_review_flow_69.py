@@ -219,8 +219,10 @@ class ResumeStateAtTheEnd(unittest.TestCase):
     def test_a_run_that_resumed_to_the_end_leaves_none_either(self) -> None:
         out = self.dies_in_the_final_save("cut_then_done", *ARGS, *FULL)
         self.assertTrue((out / "resume.pt").is_file())
+        (out / "resume.pt.pending").write_bytes(b"a resume state that was being written when the machine died")
         self.assertEqual(resume("cut_then_done", *ARGS, *FULL), 0)
         self.assertFalse((out / "resume.pt").exists())
+        self.assertFalse((out / "resume.pt.pending").exists(), "what a killed save of the resume state left is not kept either")
 
     def test_a_run_stopped_by_max_steps_keeps_its_resume_state(self) -> None:
         out = train("stopped_early", *NO_EVERY, *FULL, "--max-steps", "5", cache=False)
