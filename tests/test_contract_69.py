@@ -67,6 +67,7 @@ class PureModules(unittest.TestCase):
     def test_pure_modules_do_not_import_torch(self) -> None:
         code = ("import sys; sys.modules['torch'] = None; sys.modules['transformers'] = None\n"
                 "import decide.train.codes, decide.train.permute, decide.train.targets, decide.train.schedule, decide.train.protocol, decide.train.batching\n"
+                "import decide.train.events\n"
                 "print('ok')")
         done = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=60)
         self.assertEqual((done.returncode, done.stdout.strip()), (0, "ok"), done.stderr[-400:])
@@ -406,6 +407,47 @@ class ProtocolContract(unittest.TestCase):
         self.assertEqual(encoder.encode(biggest).counts, (255,))
 
 
+class EventsContract(unittest.TestCase):
+    """The event log of a run: one file per run, chosen for the duration of the run (a notebook trains several seeds in one process)."""
+
+    def setUp(self) -> None:
+        from decide.train import events as EV
+
+        self.EV = EV
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.addCleanup(os.environ.pop, "DECIDE_EVENTS", None)
+        os.environ.pop("DECIDE_EVENTS", None)
+
+    def kinds(self, path: Path):
+        return [json.loads(line)["kind"] for line in path.read_text(encoding="utf-8").splitlines()] if path.is_file() else []
+
+    def test_the_default_log_lasts_for_the_block_only(self) -> None:
+        with self.EV.default_log(self.root / "a.jsonl") as path:
+            self.assertEqual(path, self.root / "a.jsonl")
+            self.assertEqual(os.environ["DECIDE_EVENTS"], str(self.root / "a.jsonl"))
+            self.EV.record("first")
+        self.assertNotIn("DECIDE_EVENTS", os.environ)
+        with self.EV.default_log(self.root / "b.jsonl"):
+            self.EV.record("second")
+        self.assertEqual((self.kinds(self.root / "a.jsonl"), self.kinds(self.root / "b.jsonl")), (["first"], ["second"]))
+
+    def test_it_is_put_back_when_the_block_fails(self) -> None:
+        with self.assertRaises(RuntimeError):
+            with self.EV.default_log(self.root / "a.jsonl"):
+                raise RuntimeError("boom")
+        self.assertNotIn("DECIDE_EVENTS", os.environ)
+
+    def test_a_log_the_caller_chose_wins_and_stays(self) -> None:
+        os.environ["DECIDE_EVENTS"] = str(self.root / "chosen.jsonl")
+        with self.EV.default_log(self.root / "a.jsonl") as path:
+            self.assertEqual(path, self.root / "chosen.jsonl")
+            self.EV.record("kept")
+        self.assertEqual(os.environ["DECIDE_EVENTS"], str(self.root / "chosen.jsonl"))
+        self.assertEqual((self.kinds(self.root / "chosen.jsonl"), self.kinds(self.root / "a.jsonl")), (["kept"], []))
+
+
 class ScheduleContract(unittest.TestCase):
     def test_learning_rate_factor(self) -> None:
         f = SC.learning_rate_factor
@@ -435,6 +477,16 @@ class ScheduleContract(unittest.TestCase):
         self.assertEqual(a, SC.epoch_order(50, seed=3, epoch=0))
         self.assertNotEqual(a, SC.epoch_order(50, seed=3, epoch=1))
         self.assertNotEqual(a, SC.epoch_order(50, seed=4, epoch=0))
+
+    def test_step_seed_depends_on_seed_step_and_rank_only(self) -> None:
+        # the dropout masks of a step are drawn from this, so a resumed run draws what an uninterrupted one would have
+        a = SC.step_seed(1, 5, 0)
+        self.assertEqual(a, SC.step_seed(1, 5, 0))
+        self.assertEqual(len({SC.step_seed(1, s, 0) for s in range(1000)}), 1000)
+        for other in (SC.step_seed(2, 5, 0), SC.step_seed(1, 6, 0), SC.step_seed(1, 5, 1)):
+            self.assertNotEqual(a, other)
+        self.assertTrue(0 <= a < 2 ** 63, "what torch.manual_seed takes")
+        self.assertEqual(a, int.from_bytes(hashlib.sha256(b"decide-step-seed-v1|1|5|0").digest()[:8], "big") >> 1, "the documented algorithm")
 
     def test_plan_counts_steps(self) -> None:
         plan = SC.plan_steps(rows=1000, effective_batch=256, epochs=2)
