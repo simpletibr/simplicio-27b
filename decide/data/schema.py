@@ -12,7 +12,7 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 SCHEMA_VERSION = 1
 MAX_OPTIONS = 255
@@ -20,6 +20,7 @@ QUESTION_TYPES = ("choice", "noul", "score")
 CORPUS_COLUMNS = ("example_id", "source", "license", "split", "lang", "request", "gold")
 TEACHER_COLUMNS = ("example_id", "question_id", "teacher", "codes", "probs", "temperature")
 SPLITS = ("train", "dev")
+MANIFEST_NAME = "manifest.json"
 PROB_TOLERANCE = 1e-3
 BATCH_ROWS = 20_000
 _LANG = re.compile(r"^(mul|[a-z]{2,3}(-[A-Za-z0-9]{2,8})*)$")
@@ -27,6 +28,10 @@ _LANG = re.compile(r"^(mul|[a-z]{2,3}(-[A-Za-z0-9]{2,8})*)$")
 
 class SchemaError(ValueError):
     """A row or request does not follow the schema; the message lists every problem found."""
+
+
+class ManifestError(SchemaError):
+    """manifest.json is missing, unreadable, or does not match the files next to it."""
 
 
 # --------------------------------------------------------------------------- hashing
@@ -245,12 +250,62 @@ def write_teacher_part(path: os.PathLike, rows: Sequence[Mapping[str, Any]]) -> 
     return _write_part(Path(path), rows, teacher_arrow_schema(), TEACHER_COLUMNS)
 
 
-def corpus_files(path: os.PathLike) -> List[Path]:
-    """The parquet files of a dataset: the file itself, or every ``*.parquet`` under a directory, sorted."""
+def _listed_parts(directory: Path, verify: bool) -> Optional[List[Path]]:
+    """The parts a ``manifest.json`` lists, checked against their sha256; ``None`` when there is no usable list."""
+    manifest_path = directory / MANIFEST_NAME
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ManifestError(f"{manifest_path} is not valid JSON: {exc}") from exc
+    entries = None
+    if isinstance(manifest, Mapping):
+        if isinstance(manifest.get("parts"), list):
+            entries = manifest["parts"]
+        elif isinstance(manifest.get("file"), Mapping):      # the proxy manifest names its single file
+            entries = [manifest["file"]]
+    if entries is None:
+        return None
+    files: List[Path] = []
+    for entry in entries:
+        name = entry.get("name") if isinstance(entry, Mapping) else None
+        relative = Path(name) if isinstance(name, str) and name else None
+        if relative is None or relative.is_absolute() or ".." in relative.parts:
+            raise ManifestError(f"{manifest_path}: part name {name!r} must be a relative path inside the directory")
+        file = directory / relative
+        if not file.is_file():
+            raise ManifestError(f"{manifest_path} lists {name} but the file is missing (an interrupted copy?)")
+        expected = entry.get("sha256")
+        if verify:
+            if not isinstance(expected, str) or not expected:
+                raise ManifestError(f"{manifest_path}: part {name} has no sha256, so it cannot be checked")
+            if sha256_file(file) != expected:
+                raise ManifestError(f"{file} does not match the sha256 in {manifest_path}: the part changed after the manifest was written")
+        files.append(file)
+    return files
+
+
+def corpus_files(path: os.PathLike, *, require_manifest: bool = False, verify: bool = True) -> List[Path]:
+    """The parquet files of a dataset.
+
+    * a file: itself;
+    * a directory with a ``manifest.json`` listing its ``parts`` (or the single ``file`` of a proxy): exactly those
+      parts, in the manifest order, each checked against its sha256 (``verify``).  Any other ``*.parquet`` next to
+      them (an old build, shards a smaller cap left behind) is ignored: what the manifest does not list is not data;
+    * a directory without a usable list: every ``*.parquet`` below it, sorted, unless ``require_manifest`` (then
+      ``ManifestError``: an unfinished or hand-made directory is not a build output).
+    """
     p = Path(path)
-    if p.is_dir():
-        return sorted(f for f in p.rglob("*.parquet") if f.is_file())
-    return [p]
+    if not p.is_dir():
+        return [p]
+    listed = _listed_parts(p, verify)
+    if listed is not None:
+        return listed
+    if require_manifest:
+        raise ManifestError(f"{p} has no {MANIFEST_NAME} listing its parts: it is not the output of a finished build "
+                            "(rebuild it, or pass the parquet file itself)")
+    return sorted(f for f in p.rglob("*.parquet") if f.is_file())
 
 
 def _read_rows(path: os.PathLike, columns: Sequence[str]) -> Iterator[Dict[str, Any]]:

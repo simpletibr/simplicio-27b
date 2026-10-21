@@ -228,13 +228,22 @@ def decontaminate_corpus(corpus_in: os.PathLike, out_dir: os.PathLike, index: Re
                          resume: bool = True) -> Dict[str, Any]:
     """Write the clean rows of ``corpus_in`` to ``out_dir`` part by part; returns (and saves) the report."""
     out = Path(out_dir)
+    if out.resolve() == Path(corpus_in).resolve():
+        raise ValueError("--out must be a different directory from --corpus: the clean corpus never overwrites its input")
+    # the input is read through its manifest.json (only the parts it lists, sha256 checked), before anything in out changes
+    files = S.corpus_files(corpus_in, require_manifest=True)
+    names = [f.name for f in files]
+    if len(set(names)) != len(names):
+        raise ValueError(f"the parts of {corpus_in} must have distinct file names (found {sorted(n for n in set(names) if names.count(n) > 1)})")
     out.mkdir(parents=True, exist_ok=True)
+    for stale in (S.MANIFEST_NAME, "decontamination.json"):      # describes the previous run; rewritten at the end
+        (out / stale).unlink(missing_ok=True)
     fingerprint = index.fingerprint()
     parts_report: List[Dict[str, Any]] = []
     reasons: Dict[str, int] = {}
     by_source: Dict[str, Dict[str, int]] = {}
     resumed = 0
-    for file in S.corpus_files(corpus_in):
+    for file in files:
         sha = S.sha256_file(file)
         marker = out / (file.name + ".done.json")
         if resume and marker.exists():
@@ -273,8 +282,9 @@ def decontaminate_corpus(corpus_in: os.PathLike, out_dir: os.PathLike, index: Re
         S.write_manifest(marker, done)
         parts_report.append(done)
         _accumulate(done, reasons, by_source)
+    removed = _prune_outputs(out, names, [p["part"] for p in parts_report if p["rows_out"]])
     report = {
-        "schema_version": S.SCHEMA_VERSION, "index": index.stats(), "references": index.sources,
+        "schema_version": S.SCHEMA_VERSION, "index": index.stats(), "references": index.sources, "removed_stale": removed,
         "parts": len(parts_report), "parts_resumed": resumed,
         "rows_in": sum(p["rows_in"] for p in parts_report), "rows_out": sum(p["rows_out"] for p in parts_report),
         "rejected": sum(p["rejected"] for p in parts_report), "reasons": dict(sorted(reasons.items())),
@@ -285,6 +295,25 @@ def decontaminate_corpus(corpus_in: os.PathLike, out_dir: os.PathLike, index: Re
     S.write_manifest(out / "manifest.json", {"schema_version": S.SCHEMA_VERSION, "kind": "corpus", "rows": report["rows_out"],
                                              "parts": manifest_parts, "decontamination": "decontamination.json"})
     return report
+
+
+def _prune_outputs(out: Path, input_parts: Sequence[str], kept_parts: Sequence[str]) -> List[str]:
+    """Delete what earlier runs left in ``out`` for parts that are no longer in the input (a rebuilt corpus with fewer
+    shards, a source that left it): clean parts, markers, rejection lists and half-written files."""
+    inputs, kept = set(input_parts), set(kept_parts)
+    removed: List[str] = []
+    for f in sorted(out.iterdir()):
+        name = f.name
+        if not f.is_file():
+            continue
+        base = name[: -len(".done.json")] if name.endswith(".done.json") else name[: -len(".rejected.jsonl")] if name.endswith(".rejected.jsonl") else None
+        stale = ((name.endswith(".parquet") and name not in kept)
+                 or (base is not None and base not in inputs)
+                 or name.endswith((".parquet.tmp", ".json.tmp", ".jsonl.tmp")))
+        if stale:
+            f.unlink()
+            removed.append(name)
+    return removed
 
 
 def _count(items: Iterable[str]) -> Dict[str, int]:

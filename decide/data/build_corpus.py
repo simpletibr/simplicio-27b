@@ -2,7 +2,12 @@
 
 Sources come from sources.yaml (deny by default; ``role: train`` and ``allow`` unless ``--include-review``), from
 the Simplicio-Loop traces (``--loop``) and from the optional generator (off by default, see generate.py).  Each
-source is written as its own parquet parts and marked done in the manifest, so a rerun skips what is finished.
+source is written as its own parquet parts and marked done, so a rerun skips what is finished.
+
+``--out`` always holds exactly the corpus of the last finished run: ``manifest.json`` is removed when a run starts
+and written when it ends, it lists the parts (with sha256) and every reader goes through it; parts of sources that are
+no longer selected (``--only``, ``--include-review`` off) and shards a smaller cap no longer writes are deleted.
+Use one ``--out`` per corpus.
 
     python -m decide.data.build_corpus --out work/corpus --reader hub
     python -m decide.data.build_corpus --out work/corpus --reader local:work/raw --only clinc_oos,gsm8k
@@ -12,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
@@ -50,6 +56,27 @@ def _done_path(out: Path, name: str) -> Path:
     return out / f"{name}.done.json"
 
 
+_PART_NAME = re.compile(r"-\d{4}\.parquet$")
+
+
+def _prune_stale(out: Path, keep_parts: Iterable[str], keep_markers: Iterable[str]) -> List[str]:
+    """Delete what an earlier run left in ``out`` and this run does not list: parts of sources that left the build
+    (``--include-review`` turned off, a source turned from allow to deny), shards a smaller cap no longer writes,
+    their ``.done.json`` markers and half-written ``.tmp`` files.  Only files named like this builder's own
+    outputs are touched; any other file in the directory is left alone (and, not being in the manifest, never read)."""
+    parts, markers = set(keep_parts), set(keep_markers)
+    removed: List[str] = []
+    for f in sorted(out.iterdir()):
+        name = f.name
+        stale = f.is_file() and ((_PART_NAME.search(name) and name not in parts)
+                                 or (name.endswith(".done.json") and name not in markers)
+                                 or name.endswith((".parquet.tmp", ".json.tmp")))
+        if stale:
+            f.unlink()
+            removed.append(name)
+    return removed
+
+
 def _already_done(out: Path, name: str, cfg: str, resume: bool) -> Optional[Dict[str, Any]]:
     path = _done_path(out, name)
     if not (resume and path.exists()):
@@ -67,6 +94,9 @@ def build_corpus(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: An
     SRC.check_policy(sources)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    # the manifest of an earlier run describes files this run is about to replace or delete: a directory without a
+    # manifest is not finished, and readers (which go through the manifest) refuse it until this run writes a new one
+    (out / S.MANIFEST_NAME).unlink(missing_ok=True)
     wanted = set(only) if only else None
     chosen = [s for k, s in sorted(sources.items()) if SRC.usable(s, include_review=include_review) and (wanted is None or k in wanted)]
     if wanted and not wanted <= set(sources):
@@ -99,6 +129,7 @@ def build_corpus(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: An
                         "license": sorted({r["license"] for r in rows}), "decision": "owner", "revision": None, "kind": "extra"}
         S.write_manifest(_done_path(out, name), report[name])
     parts = [p for k in sorted(report) for p in report[k]["parts"]]
+    removed = _prune_stale(out, (p["name"] for p in parts), (_done_path(out, k).name for k in report))
     S.assert_unique_example_ids(out / p["name"] for p in parts)
     manifest = {
         "schema_version": S.SCHEMA_VERSION, "kind": "corpus", "seed": seed, "dev_percent": dev_percent,
@@ -107,6 +138,7 @@ def build_corpus(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: An
         "sources": {k: {kk: v[kk] for kk in ("rows", "license", "decision", "revision", "kind", "stats")} for k, v in sorted(report.items())},
         "parts": parts,
         "resumed": sorted(resumed),
+        "removed_stale": removed,
     }
     S.write_manifest(out / "manifest.json", manifest)
     return manifest
@@ -169,7 +201,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             include_review=args.include_review, only=args.only.split(",") if args.only else None,
                             caps_scale=args.scale, shard_rows=args.shard_rows, extra_rows=extra, resume=not args.no_resume)
     print(json.dumps({"rows": manifest["rows"], "sources": {k: v["rows"] for k, v in manifest["sources"].items()},
-                      "resumed": manifest["resumed"]}, indent=2))
+                      "resumed": manifest["resumed"], "removed_stale": manifest["removed_stale"]}, indent=2))
     return 0
 
 
