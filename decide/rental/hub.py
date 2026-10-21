@@ -26,9 +26,12 @@ from typing import Any, Callable, Iterator, List, Optional, Sequence
 #: (``resume.pt``, optimizer shards, ``events.jsonl``, ``*.tmp``).
 CHECKPOINT_PATTERNS = ("*.safetensors", "*.json", "*.jinja", "*.txt", "tokenizer*", "*.model", "vocab*", "merges*")
 KINDS = ("model", "dataset")
-#: A tokenizer's ``added_tokens.json`` and ``special_tokens_map.json`` are not credentials; ``token.json`` and ``hf_token.txt`` are.
+#: A tokenizer's ``added_tokens.json`` and ``special_tokens_map.json`` are not credentials; ``token.json`` and ``hf_token.txt`` are.  A name with ``key``
+#: or ``bearer`` as a word of its own (``openai_key.txt``, ``gcp-key.json``, ``bearer.txt``) or ``service-account`` in it is refused; ``keyword_args.json`` is not.
+#: It is a list of NAMES: a secret in a file called ``notes.txt`` goes through (the RUNBOOK says so).
 _SECRET = re.compile(r"(^\.env)|((^|[_-])(hf|access|api|auth|bearer)[_-]?tokens?([._-]|$))|(^tokens?(\.[a-z0-9]+)?$)|secret|credential"
                      r"|(^|[_-])api[_-]?keys?([._-]|$)|(^|[_-])o?auth([._-]|$)|passw(or)?d|^\.(netrc|npmrc|pypirc|pgpass)$"
+                     r"|(^|[_-])keys?([._-]|$)|(^|[_-])bearer([._-]|$)|service[_-]?account"
                      r"|^id_(rsa|dsa|ecdsa|ed25519)|\.(pem|key|p12|pfx)$", re.IGNORECASE)
 
 

@@ -1721,7 +1721,9 @@ class LocalHubContract(unittest.TestCase):
             hub = self.hub(tmp)
             hub.ensure_repo("me/day", kind="model")
             for bad in (".env", "hf_token.json", "my-secret.json", "id_rsa", "cert.pem", "api.key", "sub/.env.local",
-                        "apikey.txt", "api_key.json", "auth.json", "oauth.json", ".netrc", ".npmrc", ".pypirc", "password.txt", "passwd", "openai-api-key"):
+                        "apikey.txt", "api_key.json", "auth.json", "oauth.json", ".netrc", ".npmrc", ".pypirc", "password.txt", "passwd", "openai-api-key",
+                        "openai_key.txt", "gcp-key.json", "keys.json", "private_key", "service-account.json", "service_account.json", "serviceaccount.json",
+                        "bearer.txt", "bearer", "my-bearer.json"):
                 src = self.folder(Path(tmp) / bad.replace("/", "_"), {"ok.json": b"{}", bad: b"x"})
                 with self.assertRaises(H.HubError) as caught:
                     hub.upload("me/day", src, kind="model", patterns=["*.json", "*", ".env*"])
@@ -1733,9 +1735,10 @@ class LocalHubContract(unittest.TestCase):
             hub = self.hub(tmp)
             hub.ensure_repo("me/day", kind="model")
             names = ["added_tokens.json", "special_tokens_map.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors.index.json", "readout.safetensors",
-                     "authors.json", "generation_config.json", "chat_template.jinja"]
+                     "authors.json", "generation_config.json", "chat_template.jinja", "max_tokens.json", "author.json", "preprocessor_config.json", "vocab.json",
+                     "merges.txt", "model-00001-of-00012.safetensors", "keyword_args.json", "monkey.json", "turkey.md", "bearers_of_news.md", "service.json"]
             src = self.folder(tmp, {name: b"{}" for name in names})
-            hub.upload("me/day", src, kind="model", patterns=["*.json", "*.safetensors", "*.jinja"])
+            hub.upload("me/day", src, kind="model", patterns=["*.json", "*.safetensors", "*.jinja", "*.txt", "*.md"])
             self.assertEqual(hub.files("me/day", kind="model"), sorted(names))
 
     def test_the_checkpoint_patterns_take_the_weights_and_the_configs_and_not_the_training_state(self) -> None:
