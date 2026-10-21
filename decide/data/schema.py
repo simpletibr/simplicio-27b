@@ -264,6 +264,26 @@ def read_corpus(path: os.PathLike) -> Iterator[Dict[str, Any]]:
     return _read_rows(path, CORPUS_COLUMNS)
 
 
+def assert_unique_example_ids(files: Iterable[os.PathLike], *, limit: int = 5) -> int:
+    """Number of ids in ``files``; ``SchemaError`` when one appears twice (SCHEMA.md section 3: ``example_id`` is unique)."""
+    _, pq = _arrow()
+    first_seen: Dict[str, str] = {}
+    repeated: List[str] = []
+    repeats = 0
+    for file in files:
+        for batch in pq.ParquetFile(file).iter_batches(batch_size=BATCH_ROWS, columns=["example_id"]):
+            for example_id in batch.column(0).to_pylist():
+                if example_id in first_seen:
+                    repeats += 1
+                    if len(repeated) < limit:
+                        repeated.append(f"{example_id!r} ({first_seen[example_id]} and {Path(file).name})")
+                else:
+                    first_seen[example_id] = Path(file).name
+    if repeats:
+        raise SchemaError(f"{repeats} example_id values repeat (SCHEMA.md section 3 requires unique ids), e.g. " + "; ".join(repeated))
+    return len(first_seen)
+
+
 def read_teacher(path: os.PathLike) -> Iterator[Dict[str, Any]]:
     return _read_rows(path, TEACHER_COLUMNS)
 

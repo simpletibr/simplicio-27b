@@ -272,7 +272,7 @@ class IngestContract(unittest.TestCase):
         with self.assertRaises(ING.AdapterError) as caught:
             ING.convert_source(self.source(), R.ListDataset(self.rows(["x", "y", "x"])), seed=1)
         message = str(caught.exception)
-        for needle in ("t", "'x'", "id"):
+        for needle in ("t:x", "rows 0 and 2", "id: pid"):
             self.assertIn(needle, message)
 
     def test_a_native_id_shared_by_an_identical_request_is_a_plain_duplicate(self) -> None:

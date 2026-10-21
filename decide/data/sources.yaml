@@ -78,9 +78,10 @@ sources:
     decision: allow
     evidence: "API do HF, cardData.license=cc-by-4.0, sha 61c95318 (2026-10-21); atribuicao no card"
     adapter: nli
-    args: {premise: premise, hypothesis: hypothesis, label: gold, labels: [entailment, neutral, contradiction], id: pairID}
+    args: {premise: premise, hypothesis: hypothesis, label: gold, labels: [entailment, neutral, contradiction], id: id}
     cap: 40000
     fields_verified: true
+    notes: "o `pairID` NAO e unico (102.885 linhas, 56.572 valores): o id do exemplo vem da coluna `id` (102.885 distintos), medido no parquet real"
   civil_comments:
     hf_id: google/civil_comments
     split: train

@@ -39,6 +39,10 @@ def convert_source(source: Source, dataset: Dataset, *, seed: int, cap: Optional
         args.update(PREPARERS[source.adapter](dataset.rows(), args))
     stats: Dict[str, Any] = {"seen": 0, "converted": 0, "skipped": 0, "canary": 0, "duplicates": 0, "invalid": 0}
     seen_requests = set()
+    # example_id -> index of the first row that used it.  Only needed when the ids come from a column of the source;
+    # row indexes are unique by construction.
+    id_column = args.get("id")
+    first_row_of_id: Dict[str, int] = {}
     kept: List[Tuple[int, int, Dict[str, Any]]] = []     # heap of (-rank, index, row) when capped
     first_keys: List[str] = []
     for idx, raw in enumerate(dataset.rows()):
@@ -63,9 +67,15 @@ def convert_source(source: Source, dataset: Dataset, *, seed: int, cap: Optional
         if digest in seen_requests:
             stats["duplicates"] += 1
             continue
+        example_id = f"{source.key}:{native if native is not None else idx}"
+        if id_column:
+            earlier = first_row_of_id.setdefault(example_id, idx)
+            if earlier != idx:
+                raise AdapterError(
+                    f"{source.key}: the id {example_id!r} is used by rows {earlier} and {idx}, which hold different requests; "
+                    f"the 'id: {id_column}' column of sources.yaml is not unique (SCHEMA.md section 3): pick a unique column or drop 'id' to use the row index")
         seen_requests.add(digest)
         stats["converted"] += 1
-        example_id = f"{source.key}:{native if native is not None else idx}"
         row = {"example_id": example_id, "source": source.key, "license": source.license, "lang": source.lang,
                "request": request, "gold": gold}
         r = rank(seed, source.key, example_id)

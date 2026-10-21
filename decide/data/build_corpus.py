@@ -98,12 +98,14 @@ def build_corpus(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: An
         report[name] = {"config_hash": cfg, "rows": len(rows), "parts": parts, "stats": {"converted": len(rows)},
                         "license": sorted({r["license"] for r in rows}), "decision": "owner", "revision": None, "kind": "extra"}
         S.write_manifest(_done_path(out, name), report[name])
+    parts = [p for k in sorted(report) for p in report[k]["parts"]]
+    S.assert_unique_example_ids(out / p["name"] for p in parts)
     manifest = {
         "schema_version": S.SCHEMA_VERSION, "kind": "corpus", "seed": seed, "dev_percent": dev_percent,
         "include_review": include_review, "caps_scale": caps_scale, "shard_rows": shard_rows,
         "rows": sum(r["rows"] for r in report.values()),
         "sources": {k: {kk: v[kk] for kk in ("rows", "license", "decision", "revision", "kind", "stats")} for k, v in sorted(report.items())},
-        "parts": [p for k in sorted(report) for p in report[k]["parts"]],
+        "parts": parts,
         "resumed": sorted(resumed),
     }
     S.write_manifest(out / "manifest.json", manifest)
