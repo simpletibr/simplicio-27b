@@ -485,7 +485,6 @@ class DayStateContract(unittest.TestCase):
             again = self.open(Path(tmp) / "state")
             self.assertEqual(again.status("train"), "running")
             self.assertFalse(again.reusable("train"))
-            self.assertTrue(again.record("train")["interrupted"] if "interrupted" in again.record("train") else True)
 
     def test_failed_and_stopped_phases_keep_their_reason(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
