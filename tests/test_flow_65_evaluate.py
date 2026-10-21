@@ -142,13 +142,14 @@ class EvaluateFlow(HermeticTestCase):
         for t in fit["temperatures"].values():
             self.assertGreater(t, 0)
 
-    def test_evaluate_sample_shrinks_runs_scores_and_resumes_with_the_same_rows(self):
+    def test_evaluate_sample_shrinks_runs_and_resumes_with_the_same_rows(self):
+        """Scoring is left out on purpose (it has its own test below, which needs the kit): this one holds in an interpreter without the kit."""
         selection = sample.select(self.rows, per_benchmark=6, seed=7, edition="0.3")
         sample.write(selection, self.dir / "sample")
         budget = budget_mod.Budget(session_hours=0.1, reserve_minutes=0)         # 360 s
         slow = {"tokens_per_second": 1.0, "n": 8, "seconds": 1.0, "proxy_tokens": 1, "requests_per_second": 1.0, "run_ids": [], "failed": 0}
         with mock.patch.object(self.ev, "measure_throughput", return_value=slow):
-            first = self.ev.evaluate_sample(self.engine(), self.dir / "sample", self.dir / "eval", budget=budget, safety=0.5, log=None, name="tiny")
+            first = self.ev.evaluate_sample(self.engine(), self.dir / "sample", self.dir / "eval", budget=budget, safety=0.5, log=None, name="tiny", score=False)
         # 1 token/s x 360 s x 0.5 = 180 proxy tokens: one group per benchmark (60..70 + 70..80 tokens) fits, two do not.
         self.assertEqual(first["plan"]["per_benchmark"], 1)
         self.assertIn("shrunk", first["plan"]["message"])
@@ -162,7 +163,7 @@ class EvaluateFlow(HermeticTestCase):
         self.assertEqual(metrics["plan"]["per_benchmark"], 1)
         # the second call must not measure again and must keep the same rows
         with mock.patch.object(self.ev, "measure_throughput", side_effect=AssertionError("measured again")):
-            second = self.ev.evaluate_sample(self.engine(), self.dir / "sample", self.dir / "eval", budget=budget, log=None, name="tiny")
+            second = self.ev.evaluate_sample(self.engine(), self.dir / "sample", self.dir / "eval", budget=budget, log=None, name="tiny", score=False)
         self.assertEqual(second["plan"], first["plan"])
         self.assertEqual(second["run"]["rows"], 0)
 
