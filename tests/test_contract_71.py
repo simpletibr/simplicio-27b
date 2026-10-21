@@ -1116,6 +1116,21 @@ class G4Contract(unittest.TestCase):
         self.assertIn(got["status"], ("PASS", "FAIL"), got)             # not INVALID, and no AssertionError from the units / scorer cross-check
         self.assertEqual(got["new"]["ties"], 24)
 
+    def test_a_longer_second_answer_that_starts_like_the_first_is_a_different_answer(self) -> None:
+        requests, new, base = self.fixture(50, 40, 20)
+        longer = dict(new[0], probs=list(new[0]["probs"]) + [0.0])
+        got = self.verdict(requests, new + [longer], base)
+        self.assertEqual((got["status"], got["reasons"]), ("INVALID", ["new_bad_rows"]))
+        self.assertEqual((got["new"]["bad"], got["new"]["conflicting"]), (1, 1))
+
+    def test_a_malformed_row_written_twice_is_malformed_not_conflicting(self) -> None:
+        """NaN != NaN: the same NaN row twice is one malformed answer, not an answer given twice with different numbers."""
+        requests, new, base = self.fixture(50, 40, 20)
+        broken = [dict(new[0], probs=[float("nan"), 0.1, 0.1, 0.1]), dict(new[0], probs=[float("nan"), 0.1, 0.1, 0.1])]
+        got = self.verdict(requests, new[1:] + broken, base)
+        self.assertEqual((got["status"], got["reasons"]), ("INVALID", ["new_bad_rows"]))
+        self.assertEqual((got["new"]["bad"], got["new"]["conflicting"]), (1, 0))
+
     def test_a_duplicate_of_a_question_nobody_scores_does_not_matter(self) -> None:
         requests, new, base = self.fixture(50, 40, 20)
         stray = [{"run_id": "not-in-the-proxy", "question_id": "q1", "probs": [1, 0, 0, 0]}, {"run_id": "not-in-the-proxy", "question_id": "q1", "probs": [0, 1, 0, 0]}]

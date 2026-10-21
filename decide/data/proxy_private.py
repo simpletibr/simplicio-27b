@@ -238,6 +238,11 @@ def _row_id(row: Mapping[str, Any]) -> Optional[str]:
     return None
 
 
+def _same_numbers(first: Sequence[float], second: Sequence[float]) -> bool:
+    """Equal lists of numbers, a NaN equal to a NaN (each NaN read from a file is its own object, and ``nan != nan``)."""
+    return len(first) == len(second) and all(a == b or (a != a and b != b) for a, b in zip(first, second))
+
+
 def result_table(results: Iterable[Mapping[str, Any]]) -> Tuple[Dict[Tuple[str, str], List[float]], Set[Tuple[str, str]]]:
     """``(run_id, question_id) -> probabilities`` of the rows that have an id, a question and probabilities, and the keys that two rows
     answer with different numbers.  The same row twice (a run appended to itself) is one answer; two different ones are not: neither the
@@ -249,7 +254,7 @@ def result_table(results: Iterable[Mapping[str, Any]]) -> Tuple[Dict[Tuple[str, 
         probs = r.get("probs", r.get("probabilities"))
         if rid is not None and qid is not None and probs is not None:
             key, values = (rid, str(qid)), [float(p) for p in probs]
-            if key in table and table[key] != values:
+            if key in table and not _same_numbers(table[key], values):
                 conflicting.add(key)
             table[key] = values
     return table, conflicting
