@@ -1345,6 +1345,15 @@ class LocalHubContract(unittest.TestCase):
                 self.assertIn("secret", str(caught.exception))
             self.assertEqual(hub.files("me/day", kind="model"), [])
 
+    def test_the_files_of_a_tokenizer_are_not_mistaken_for_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            hub = self.hub(tmp)
+            hub.ensure_repo("me/day", kind="model")
+            names = ["added_tokens.json", "special_tokens_map.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors.index.json", "readout.safetensors"]
+            src = self.folder(tmp, {name: b"{}" for name in names})
+            hub.upload("me/day", src, kind="model", patterns=["*.json", "*.safetensors"])
+            self.assertEqual(hub.files("me/day", kind="model"), sorted(names))
+
     def test_the_checkpoint_patterns_take_the_weights_and_the_configs_and_not_the_training_state(self) -> None:
         import fnmatch
 
