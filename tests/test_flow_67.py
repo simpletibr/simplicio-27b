@@ -445,6 +445,15 @@ class ProxyFlow(unittest.TestCase):
         only_sources = self.build(corpus_manifest={"sources": {"toy_mcq": {}}})
         self.assertEqual(only_sources["corpus_leak_check"], {"checked": False, "sources_only": True})
 
+    def test_proxy_example_ids_are_unique(self) -> None:
+        self.build()
+        taken = next(S.read_corpus(self.root / "proxy" / "proxy.parquet"))["example_id"]
+        extra = {"example_id": taken, "source": "gen:x", "license": "provider-terms", "lang": "en",
+                 "request": choice_request(instructions=lorem(41, 9)), "gold": {"q1": "A"}}
+        with self.assertRaises(S.SchemaError) as caught:
+            self.build(extra_rows=[extra])
+        self.assertIn(taken, str(caught.exception))
+
     def test_the_cli_requires_a_leak_check_or_an_explicit_skip(self) -> None:
         base = ["build", "--out", str(self.root / "cli-proxy"), "--reader", f"local:{self.raw}", "--sources", str(self.sources_yaml), "--per-source", "5"]
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:

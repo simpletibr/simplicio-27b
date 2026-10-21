@@ -288,9 +288,18 @@ def score_proxy(results_path: Union[str, Path], proxy_path: Union[str, Path]) ->
 
 def build_proxy(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: Any, corpus_manifest: Optional[Union[str, Path, Mapping[str, Any]]] = None,
                 corpus: Optional[Union[str, Path]] = None, per_source: int = DEFAULT_PER_SOURCE, seed: int = 20261021,
-                include_review: bool = False, extra_rows: Optional[Sequence[Mapping[str, Any]]] = None) -> Dict[str, Any]:
-    """Write ``proxy.parquet`` (corpus schema, split ``dev``) from the held-out sources, plus ``manifest.json``."""
+                include_review: bool = False, extra_rows: Optional[Sequence[Mapping[str, Any]]] = None,
+                skip_leak_check: bool = False) -> Dict[str, Any]:
+    """Write ``proxy.parquet`` (corpus schema, split ``dev``) from the held-out sources, plus ``manifest.json``.
+
+    The proxy must not share a source (``corpus_manifest``) or a request (``corpus``) with the training corpus, and the
+    build says which of the two it checked: it refuses to run with neither unless ``skip_leak_check`` is passed on
+    purpose (the manifest then says so).  The usual order: build the proxy with the manifest of the raw corpus,
+    decontaminate the corpus against the proxy, then run this again with ``corpus`` = the clean corpus."""
     SRC.check_policy(sources)
+    if corpus_manifest is None and corpus is None and not skip_leak_check:
+        raise ValueError("nothing to check the proxy against: pass corpus_manifest (sources must not overlap) and/or corpus "
+                         "(no request may overlap), or skip_leak_check=True to build it without a check")
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     chosen = [s for _, s in sorted(sources.items()) if SRC.usable(s, include_review=include_review, role="heldout")]
@@ -310,9 +319,15 @@ def build_proxy(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: Any
         stats.setdefault(r["source"], {"rows": 0, "license": r["license"], "stats": {}})["rows"] += 1
     built = [S.corpus_row(example_id=r["example_id"], source=r["source"], license=r["license"], split="dev", lang=r["lang"],
                           request=r["request"], gold=r["gold"]) for r in rows]
+    ids = [r["example_id"] for r in built]
+    if len(set(ids)) != len(ids):
+        repeated = sorted({i for i in ids if ids.count(i) > 1})
+        raise S.SchemaError(f"example_id values repeat in the proxy (SCHEMA.md section 3 requires unique ids), e.g. {repeated[:5]}")
     info = S.write_corpus_part(out / "proxy.parquet", built)
     leaks: Dict[str, Any] = {"checked": False}
-    if corpus is not None:
+    if corpus is None:
+        leaks["sources_only" if corpus_manifest is not None else "skipped"] = True
+    else:
         index = D.ReferenceIndex()
         for r in built:
             index.add(S.parse_row(r)[0], r["example_id"])
@@ -341,6 +356,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     b.add_argument("--per-source", type=int, default=DEFAULT_PER_SOURCE)
     b.add_argument("--corpus-manifest", default=None, help="corpus manifest.json (sources must not overlap)")
     b.add_argument("--corpus", default=None, help="corpus directory to scan for leaks of proxy requests")
+    b.add_argument("--skip-leak-check", action="store_true", help="build without checking against a corpus (say so on purpose)")
     b.add_argument("--include-review", action="store_true")
     s = sub.add_parser("score", help="score a per-row probabilities file on the proxy")
     s.add_argument("--results", required=True)
@@ -354,8 +370,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.cmd == "build":
         from .build_corpus import make_reader
 
+        if not (args.corpus_manifest or args.corpus or args.skip_leak_check):
+            ap.error("build needs --corpus-manifest and/or --corpus (what the proxy must not overlap), or --skip-leak-check on purpose")
+
         res = build_proxy(Path(args.out), sources=SRC.load_sources(args.sources), reader=make_reader(args.reader), corpus_manifest=args.corpus_manifest,
-                          corpus=args.corpus, per_source=args.per_source, include_review=args.include_review)
+                          corpus=args.corpus, per_source=args.per_source, include_review=args.include_review,
+                          skip_leak_check=args.skip_leak_check)
         print(json.dumps({"rows": res["rows"], "sources": {k: v["rows"] for k, v in res["sources"].items()}}, indent=2))
     elif args.cmd == "score":
         print(json.dumps(score_proxy(args.results, args.proxy), indent=2))

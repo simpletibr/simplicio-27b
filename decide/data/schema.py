@@ -79,13 +79,24 @@ def option_texts(question: Mapping[str, Any]) -> List[Any]:
     return [criteria.get("false") or "No / false", criteria.get("true") or "Yes / true"]
 
 
+def _is_content(value: Any) -> bool:
+    """``Content`` of pplx-decider's types.py: text, or any JSON object or list (the encoder serializes it)."""
+    return isinstance(value, (str, Mapping, list, tuple))
+
+
 def validate_request(request: Any) -> List[str]:
-    """Problems with a request (empty list = valid).  Mirrors ``Encoder.validate`` of pplx-decider v1.2."""
+    """Problems with a request (empty list = valid).
+
+    ``Encoder.validate`` of pplx-decider v1.2 plus the types of its ``types.py``, which the encoder does not check but
+    relies on: ``state`` and every description are ``Content`` (text, object or list), a noul's ``criteria`` is
+    ``{"true"|"false": Content | None}`` or absent, a choice option may have no description (``None``)."""
     if not isinstance(request, Mapping):
         return ["request must be an object"]
     problems: List[str] = []
     if "state" not in request:
         problems.append("missing 'state'")
+    elif not _is_content(request["state"]):
+        problems.append("'state' must be text, an object or a list")
     if "images" in request:
         problems.append("images are not supported in the corpus")
     questions = request.get("questions")
@@ -99,11 +110,23 @@ def validate_request(request: Any) -> List[str]:
         if kind not in QUESTION_TYPES:
             problems.append(f"{qid}: type must be one of {QUESTION_TYPES}")
             continue
-        if kind == "choice" and not isinstance(question.get("criteria"), Mapping):
+        instructions = question.get("instructions")
+        if instructions is not None and not _is_content(instructions):
+            problems.append(f"{qid}: instructions must be text, an object or a list")
+            continue
+        criteria = question.get("criteria")
+        if kind == "choice" and not isinstance(criteria, Mapping):
             problems.append(f"{qid}: choice criteria must be an object (option key -> description)")
             continue
-        if kind == "score" and not isinstance(question.get("criteria"), list):
+        if kind == "score" and not isinstance(criteria, list):
             problems.append(f"{qid}: score criteria must be a list of level descriptions")
+            continue
+        if kind == "noul" and criteria is not None and not (isinstance(criteria, Mapping) and set(criteria) <= {"true", "false"}):
+            problems.append(f"{qid}: noul criteria must be absent or an object with the keys 'true' and 'false'")
+            continue
+        described = list(criteria.values()) if isinstance(criteria, Mapping) else list(criteria or [])
+        if any(not (_is_content(d) or (d is None and kind != "score")) for d in described):
+            problems.append(f"{qid}: option descriptions must be text, an object or a list")
             continue
         count = len(option_keys(question))
         if not 1 <= count <= MAX_OPTIONS:

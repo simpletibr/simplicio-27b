@@ -15,6 +15,7 @@ import json
 import os
 import re
 import subprocess
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
@@ -66,9 +67,17 @@ class CommandProvider:
         return done.stdout
 
 
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
 class OpenAICompatibleProvider:
+    """Any ``/chat/completions`` endpoint.  The bearer key goes over https only (a local server on this machine may use http)."""
+
     def __init__(self, base_url: str, model: str, api_key_env: str = "GENERATOR_API_KEY", name: str = "openai-compatible",
                  timeout: float = 120.0) -> None:
+        parsed = urllib.parse.urlparse(base_url)
+        if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in LOCAL_HOSTS):
+            raise ValueError(f"base_url must be https:// (http:// only for {', '.join(LOCAL_HOSTS)}): the API key would travel in clear text; got {base_url!r}")
         self.base_url, self.model, self.api_key_env, self.name, self.timeout = base_url.rstrip("/"), model, api_key_env, name, timeout
 
     def complete(self, prompt: str, seed: Optional[int] = None) -> str:
