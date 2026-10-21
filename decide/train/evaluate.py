@@ -21,6 +21,21 @@ from .protocol import RequestEncoder
 from .schedule import microbatches
 
 
+def subset(examples: Sequence[Example], limit: int) -> List[Example]:
+    """At most ``limit`` examples, chosen by a hash of the id (not by file order); all of them when ``limit`` is 0."""
+    if limit <= 0 or len(examples) <= limit:
+        return list(examples)
+    return sorted(examples, key=lambda e: hashlib.sha256(e.example_id.encode("utf-8")).digest())[:limit]
+
+
+def brief(report: Dict[str, Any]) -> Dict[str, Any]:
+    """The numbers of an evaluation report worth keeping in an event log or a summary."""
+    keep = {key: report[key] for key in ("examples", "questions", "skipped_too_long", "raw", "fitted", "heldout") if key in report}
+    if "temperature" in report:
+        keep["temperature"] = {key: value for key, value in report["temperature"].items() if key != "counts"}
+    return keep
+
+
 def fold_of(example_id: str) -> int:
     """0 or 1, by a hash of the id: the same example is always on the same side."""
     return hashlib.sha256(("decide-fold-v1|" + example_id).encode("utf-8")).digest()[0] & 1

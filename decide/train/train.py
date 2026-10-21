@@ -38,12 +38,13 @@ from .batching import Item, ReasoningPolicy, TooLong, make_item
 from .codes import ANSWER_CODES
 from .data import Example, load_examples
 from .distributed import DistributedTraining
-from .evaluate import evaluate_examples
+from .evaluate import brief, evaluate_examples, subset
 from .loss import decision_loss
 from .model import JointModel, LoraSpec, check_codes, collate, load_tokenizer, read_config, target_tensors
 from .optim import CPUOffloadAdamW
 from .protocol import RequestEncoder
 from .schedule import epoch_order, learning_rate_factor, microbatches, plan_steps
+from .temperature import CalibrationError, calibration_fields
 
 DEFAULT_LR = {"lora": 2e-5, "full": 2e-6}
 DEFAULT_SEED = 20261021
@@ -127,13 +128,6 @@ def pick_device(requested: str) -> str:
     if requested == "auto":
         return "cuda" if torch.cuda.is_available() else "cpu"
     return requested
-
-
-def subset(examples: Sequence[Example], limit: int) -> List[Example]:
-    """At most ``limit`` examples, chosen by a hash of the id (not by file order); all of them when ``limit`` is 0."""
-    if limit <= 0 or len(examples) <= limit:
-        return list(examples)
-    return sorted(examples, key=lambda e: hashlib.sha256(e.example_id.encode("utf-8")).digest())[:limit]
 
 
 def save_resume(path: Path, step: int, optimizer: CPUOffloadAdamW, fingerprint: Dict[str, Any]) -> None:
@@ -238,7 +232,7 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
         if policy.mode != "off" and any(e.reasoning is not None for e in dev):
             report["reasoning"] = evaluate_examples(model, encoder, dev, reasoning=True, seed=args.seed, max_length=args.max_length,
                                                     token_budget=args.token_budget * 2, max_rows=args.batch_rows, device=device)
-        events.record("evaluation", reason=reason, step=step, **{k: _brief(v) for k, v in report.items()})
+        events.record("evaluation", reason=reason, step=step, **{k: brief(v) for k, v in report.items()})
         return report
 
     while step < stop:
@@ -320,34 +314,23 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
         else:
             model.merge()
             report = evaluate("final") if dev else {}
-            plain = report.get("plain", {})
-            temperature = (plain.get("temperature") or {}).get("all")
             extra: Dict[str, Any] = {"training": {"method": args.mode, "steps": step, "examples": len(train), "alpha": args.alpha, "seed": args.seed,
                                                   "reasoning": args.reasoning, "run_fingerprint": fingerprint}}
-            if temperature is not None:
-                by_type = {key: value for key, value in plain["temperature"].items() if key in ("choice", "noul", "score")}
-                extra["temperature_by_type"] = by_type
-                extra["temperature_fallback"] = plain["temperature"]["fallback"]
-                extra["temperature_is_placeholder"] = False
-            reasoning_temperature = ((report.get("reasoning") or {}).get("temperature") or {}).get("all")
-            if reasoning_temperature is not None:
-                extra["temperature_with_reasoning"] = reasoning_temperature
+            temperature = None
+            try:       # the same fit, and the same keys, as ``python -m decide.train.temperature --write``
+                fields = calibration_fields(report.get("plain", {}), report.get("reasoning"))
+                temperature = fields.pop("temperature")
+                extra.update(fields)
+            except CalibrationError:
+                pass   # no dev question with a gold label: the checkpoint keeps the temperature it started with
             saved = model.save(out / "final", temperature=temperature, extra=extra)
-            summary.update({"checkpoint": str(saved), "temperature": temperature, "evaluation": {k: _brief(v) for k, v in report.items()}})
+            summary.update({"checkpoint": str(saved), "temperature": temperature, "evaluation": {k: brief(v) for k, v in report.items()}})
             events.record("checkpoint_saved", path=str(saved), temperature=temperature)
         (out / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
         events.record("training_finished", **{k: v for k, v in summary.items() if k != "plan"})
 
     distributed.on_primary(finish)
     return 0
-
-
-def _brief(report: Dict[str, Any]) -> Dict[str, Any]:
-    """The numbers of an evaluation report worth keeping in the event log."""
-    keep = {key: report[key] for key in ("examples", "questions", "skipped_too_long", "raw", "fitted", "heldout") if key in report}
-    if "temperature" in report:
-        keep["temperature"] = {key: value for key, value in report["temperature"].items() if key != "counts"}
-    return keep
 
 
 if __name__ == "__main__":

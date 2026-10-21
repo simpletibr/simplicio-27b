@@ -28,6 +28,10 @@ NOT_COPIED = {"decision_config.json", "model.safetensors.index.json", "readout.s
               "README.md", "LICENSE", "NOTICE"}
 
 
+#: Keys of an input's ``decision_config.json`` that describe that one run (its calibration and training record); a soup drops them.
+INHERITED_FROM_ONE_RUN = ("temperature_by_type", "temperature_fallback", "temperature_with_reasoning", "temperature_is_placeholder", "calibration", "training")
+
+
 class SoupError(ValueError):
     """The inputs cannot be averaged (different tensors, shapes or dtypes, bad weights, ...)."""
 
@@ -212,6 +216,8 @@ def average_checkpoints(inputs: Sequence[os.PathLike], out: os.PathLike, weights
         if item.is_file() and item.suffix != ".safetensors" and item.name not in NOT_COPIED:
             shutil.copyfile(item, work / item.name)
     config = dict(configs_and_temperatures[0][0])
+    for key in INHERITED_FROM_ONE_RUN:
+        config.pop(key, None)       # the averaged weights are nobody's run: the first input's fit and record would lie
     config["temperature"] = float(temperature) if temperature is not None else mean_temperature
     config["soup"] = {
         "method": "weighted mean in fp32, stored in the dtype of the inputs",
