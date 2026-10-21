@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from decide_support import ROOT, HermeticTestCase, needs_bnb, needs_kit, needs_numpy, needs_torch
+from decide_support import ROOT, HermeticTestCase, needs_bnb, needs_kit, needs_numpy, needs_torch, needs_transformers
 
 from decide.sd import budget as B
 from decide.sd import config as C
@@ -1331,6 +1331,52 @@ class Nf4Contract(HermeticTestCase):
         layer = self.N.Nf4Linear(64, 8)
         with self.assertRaises(ValueError):
             layer.set_weight(self.torch.zeros(9, 64))
+
+
+@needs_transformers
+class LoaderContract(HermeticTestCase):
+    @classmethod
+    def setUpClass(cls):
+        from decide.sd import loader
+
+        cls.L = loader
+
+    def test_split_layers_is_contiguous_and_proportional(self):
+        for caps, n in (([1, 1], 64), ([0.85, 1.0], 64), ([3, 1], 8), ([1], 5), ([1, 1, 1], 7)):
+            with self.subTest(caps=caps, n=n):
+                out = self.L.split_layers(n, caps)
+                self.assertEqual(len(out), n)
+                self.assertEqual(out, sorted(out))
+                for i, c in enumerate(caps):
+                    self.assertAlmostEqual(out.count(i), n * c / sum(caps), delta=1.0)
+
+    def test_split_layers_refuses_no_capacity(self):
+        with self.assertRaises(self.L.LoaderError):
+            self.L.split_layers(4, [0, 0])
+        with self.assertRaises(self.L.LoaderError):
+            self.L.split_layers(4, [])
+
+    def test_plan_skips_vision_and_unmerged_patterns_and_routes_donors(self):
+        names = ["language_model.embed_tokens.weight", "language_model.layers.0.mlp.up_proj.weight", "visual.blocks.0.attn.proj.weight",
+                 "language_model.norm.weight"]
+        donors = [["language_model.layers.0.mlp.up_proj.weight", "language_model.norm.weight"], ["language_model.norm.weight"]]
+        plans = {p.name: p for p in self.L.plan_tensors(names, donors, {"model.language_model.layers.0.mlp.up_proj": 1}, ("embed_tokens", "visual."), False)}
+        self.assertNotIn("visual.blocks.0.attn.proj.weight", plans)
+        self.assertFalse(plans["language_model.embed_tokens.weight"].merged)
+        self.assertEqual(plans["language_model.layers.0.mlp.up_proj.weight"].donors, [0])
+        self.assertEqual(plans["language_model.layers.0.mlp.up_proj.weight"].lora, "model.language_model.layers.0.mlp.up_proj")
+        self.assertEqual(plans["language_model.norm.weight"].donors, [0, 1])
+        with_vision = self.L.plan_tensors(names, donors, {}, ("embed_tokens", "visual."), True)
+        self.assertIn("visual.blocks.0.attn.proj.weight", [p.name for p in with_vision])
+
+    def test_options_follow_the_config(self):
+        from decide.sd import config as C
+
+        o = self.L.LoadOptions.from_config(C.load_config())
+        self.assertEqual((o.quant, o.compute_dtype, o.absmax_dtype), ("nf4", "float16", "float16"))
+        self.assertEqual(tuple(o.skip_merge), ("embed_tokens", "visual."))
+        bf16 = self.L.LoadOptions.from_config(C.load_config(overrides={"eval": {"quant": "bf16"}}))
+        self.assertEqual((bf16.quant, bf16.compute_dtype), ("none", "bfloat16"))
 
 
 class VendorContract(unittest.TestCase):

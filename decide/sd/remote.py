@@ -324,7 +324,8 @@ class HubRepo:
     """A model repo read through Range requests.  `endpoint` is overridable for tests."""
 
     def __init__(self, repo_id: str, revision: Optional[str] = None, token: Optional[str] = None,
-                 endpoint: str = "https://huggingface.co", transport=None, **transport_kw) -> None:
+                 endpoint: str = "https://huggingface.co", transport=None, probe: int = 1 << 18, **transport_kw) -> None:
+        self.probe = probe
         self.repo_id = repo_id
         self.revision = revision or "main"
         self.endpoint = endpoint.rstrip("/")
@@ -355,7 +356,7 @@ class HubRepo:
         with self._lock:
             sf = self._shards.get(filename)
             if sf is None:
-                sf = SafetensorsFile(self.url(filename), self.transport)
+                sf = SafetensorsFile(self.url(filename), self.transport, self.probe)
                 self._shards[filename] = sf
             return sf
 
