@@ -297,5 +297,20 @@ class CheckerNoticesTest(unittest.TestCase):
         self.assertIn(("decide.train.soup", ("build",)), seen)
 
 
+class ChildEnvironmentLimitsTest(unittest.TestCase):
+    """The RUNBOOK says what the filter on the variables of the training children leaves through (``decide.rental.run.CREDENTIAL_NAME``)."""
+
+    def test_the_runbook_says_what_is_dropped_and_what_still_passes(self) -> None:
+        from decide.rental import run
+
+        text = RUNBOOK.read_text(encoding="utf-8")
+        line = next((l for l in text.splitlines() if l.startswith("- Processos filhos")), "")
+        self.assertTrue(line, "the line about the child processes is gone")
+        for phrase in ("GIT_CONFIG_", "PGPASSWORD", "MYSQL_PWD", "KUBECONFIG", "NETRC", "DOCKER_CONFIG", "no valor", "logs/day.log"):
+            self.assertIn(phrase, line, f"the RUNBOOK does not say {phrase!r} about the environment of the children")
+        for name in ("KUBECONFIG", "NETRC", "DOCKER_CONFIG"):
+            self.assertIsNone(run.CREDENTIAL_NAME.search(name), f"{name} now is dropped: the RUNBOOK says it passes")
+
+
 if __name__ == "__main__":
     unittest.main()

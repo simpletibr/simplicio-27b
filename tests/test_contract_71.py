@@ -2470,6 +2470,34 @@ class ExecutorContract(unittest.TestCase):
         self.assertEqual(env["PATH"], "/bin")
         self.assertNotIn("value-of-", json.dumps(env))
 
+    def test_git_config_in_the_environment_does_not_reach_the_child(self) -> None:
+        """``GIT_CONFIG_COUNT`` / ``_KEY_n`` / ``_VALUE_n`` are git's ``-c`` as variables: dropping only the ``KEY`` ones leaves a count and values (an ``Authorization`` header, say) and a fatal error in the child's git."""
+        from decide.rental import run as R
+
+        cfg = {"hub": {"token_env": "HF_TOKEN"}, "thinker": {"api_key_env": "THINKER_API_KEY"}}
+        names = ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_PARAMETERS", "git_config_count")
+        env = R.child_env(cfg, dict({name: "value-of-" + name for name in names}, PATH="/bin", GIT_DIR="/x/.git"))
+        self.assertEqual([name for name in names if name in env], [])
+        self.assertEqual(env["GIT_DIR"], "/x/.git", "only the config variables go, not every GIT_*")
+
+    def test_database_passwords_and_names_with_the_credential_word_glued_at_the_end_do_not_reach_the_child(self) -> None:
+        from decide.rental import run as R
+
+        cfg = {"hub": {"token_env": "HF_TOKEN"}, "thinker": {"api_key_env": "THINKER_API_KEY"}}
+        names = ("PGPASSWORD", "PGPASS", "PGPASSFILE", "pgpassword", "MYSQL_PWD", "MYTOKEN", "HFTOKEN", "TOKEN2", "MYTOKENS", "DEPLOYSECRET", "ROOTPASSWORD", "DBPASSWD",
+                 "SLACKTOKEN_2")
+        env = R.child_env(cfg, dict({name: "value-of-" + name for name in names}, PATH="/bin"))
+        self.assertEqual([name for name in names if name in env], [])
+
+    def test_the_wider_filter_still_keeps_ordinary_names(self) -> None:
+        from decide.rental import run as R
+
+        cfg = {"hub": {"token_env": "HF_TOKEN"}, "thinker": {"api_key_env": "THINKER_API_KEY"}}
+        kept = ("PWD", "OLDPWD", "PGHOST", "PGUSER", "PGDATABASE", "MYSQL_HOST", "TOKENIZERS_PARALLELISM", "SECRETARY", "PASSTHROUGH", "COMPASS", "BYPASS_CACHE", "GIT_DIR",
+                "GIT_TERMINAL_PROMPT", "GITHUB_ACTIONS", "GIT_CONFIGURED_BY", "HF_HUB_DISABLE_IMPLICIT_TOKEN", "KEYBOARD_LAYOUT", "MONKEY")
+        env = R.child_env(cfg, {name: "kept-" + name for name in kept})
+        self.assertEqual({name: env.get(name) for name in kept}, {name: "kept-" + name for name in kept})
+
     def test_the_child_keeps_the_variables_a_training_step_needs(self) -> None:
         from decide.rental import run as R
 

@@ -111,12 +111,19 @@ class DayResult:
 # --------------------------------------------------------------------------- child processes
 
 #: A variable whose name has a credential word as a whole part (``OPENAI_API_KEY``, ``GITHUB_TOKEN``, ``db_password``, ``SSH_AUTH_SOCK``,
-#: ``GOOGLE_APPLICATION_CREDENTIALS``; not ``TOKENIZERS_PARALLELISM`` or ``MONKEY_PATCH``), or any ``AWS_*`` / ``AZURE_*`` one, is a credential of
-#: the machine and a training step needs none of them.  A list of what to drop, not of what to keep: a variable that a GPU run needs and that
-#: the list forgot would only show on a rented GPU (UNVERIFIED), and the day log names every variable that was left out.
+#: ``GOOGLE_APPLICATION_CREDENTIALS``; not ``TOKENIZERS_PARALLELISM`` or ``MONKEY_PATCH``), or ending in one of ``token``, ``secret``, ``password``,
+#: ``passwd`` with nothing in between, and perhaps a number after (``MYTOKEN``, ``TOKEN2``, ``SLACKTOKEN_2``, ``PGPASSWORD``), or any ``AWS_*`` / ``AZURE_*`` one, or ``GIT_CONFIG_*`` (git's ``-c`` as
+#: variables: a count, keys and values, and a value can be an ``Authorization`` header), or ``PGPASS*`` / ``MYSQL_PWD``, is a credential of the machine and a
+#: training step needs none of them.  A list of what to drop, not of what to keep: a variable that a GPU run needs and that the list forgot would only
+#: show on a rented GPU (UNVERIFIED), and the day log names every variable that was left out.
+#: **What still passes** (the RUNBOOK says so): a name without these words (``HUB_LOGIN``), a variable that names a credential *file* (``KUBECONFIG``,
+#: ``NETRC``, ``DOCKER_CONFIG``), a name with a hyphen or a dot, and a secret in the *value* of a variable with an innocent name
+#: (``PIP_INDEX_URL=https://user:password@host``).
 CREDENTIAL_NAME = re.compile(r"(?:^|_)(?:api_?keys?|access_?keys?|private_?keys?|keys?|tokens?|secrets?|passw(?:or)?ds?|passphrases?|credentials?|auth|cookies?|bearer)(?:_|$)"
-                             r"|^(?:aws|azure)_", re.IGNORECASE)
-#: Credential-looking names that stay: this one tells the Hub client not to read a token file, which is what we want the child to keep doing.
+                             r"|(?:token|secret|passw(?:or)?d)s?(?:_?\d+)?$"
+                             r"|^(?:aws|azure)_|^git_config_|^pgpass|^mysql_pwd$", re.IGNORECASE)
+#: Credential-looking names that stay.  This one tells the Hub client not to read a token file; it is only kept as the parent had it, ``child_env`` does not
+#: set it (the child runs offline, so there is no request to send a token with).
 KEEP_NAMES = frozenset({"HF_HUB_DISABLE_IMPLICIT_TOKEN"})
 
 
