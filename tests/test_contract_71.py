@@ -2484,10 +2484,10 @@ class ExecutorContract(unittest.TestCase):
     def test_the_names_that_are_left_out_are_listed_without_their_values(self) -> None:
         from decide.rental import run as R
 
-        cfg = {"hub": {"token_env": "MY_HUB_TOKEN"}, "thinker": {"api_key_env": "THINKER_API_KEY"}}
-        parent = {"PATH": "/bin", "MY_HUB_TOKEN": "hf_x", "OPENAI_API_KEY": "sk-1", "AWS_REGION": "eu-1", "HF_TOKEN": "hf_y", "THINKER_API_KEY": "sk-2", "CUDA_HOME": "/usr/local/cuda"}
-        self.assertEqual(R.dropped_names(cfg, parent), ["AWS_REGION", "HF_TOKEN", "MY_HUB_TOKEN", "OPENAI_API_KEY", "THINKER_API_KEY"])
-        self.assertEqual(sorted(set(parent) - set(R.child_env(cfg, parent))), sorted(set(R.dropped_names(cfg, parent)) | {"PYTHONUNBUFFERED"} - {"PYTHONUNBUFFERED"}))
+        cfg = {"hub": {"token_env": "HUB_LOGIN"}, "thinker": {"api_key_env": "THINKER_LOGIN"}}               # names a pattern would not catch
+        parent = {"PATH": "/bin", "HUB_LOGIN": "hf_x", "OPENAI_API_KEY": "sk-1", "AWS_REGION": "eu-1", "HF_TOKEN": "hf_y", "THINKER_LOGIN": "sk-2", "CUDA_HOME": "/usr/local/cuda"}
+        self.assertEqual(R.dropped_names(cfg, parent), ["AWS_REGION", "HF_TOKEN", "HUB_LOGIN", "OPENAI_API_KEY", "THINKER_LOGIN"])
+        self.assertEqual(sorted(set(parent) - set(R.child_env(cfg, parent))), R.dropped_names(cfg, parent), "what is listed is exactly what the child does not get")
         self.assertEqual(R.dropped_names(cfg, {"PATH": "/bin"}), [])
 
     def test_the_child_cannot_go_online_for_a_model_even_if_the_parent_could(self) -> None:

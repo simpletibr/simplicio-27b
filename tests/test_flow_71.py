@@ -217,6 +217,7 @@ class WholeDay(unittest.TestCase):
         cls.kit_a = FakeKit()
         cls.a = make_day(cls.workdir, cls.hub, cls.kit_a, cls.executor).run(until="calibrate")
         cls.calls_after_a = list(cls.executor.modules())
+        cls.day_log_after_a = (cls.workdir / "logs" / "day.log").read_text(encoding="utf-8")        # the later runs may start from an empty folder
         final, run = cls.workdir / "final", cls.workdir / "runs" / "seed1" / "final"
         cls.linked_after_a = all(os.path.samefile(path, run / path.name) for path in final.glob("*.safetensors"))
         cls.config_after_a = json.loads((final / "decision_config.json").read_text(encoding="utf-8"))
@@ -342,13 +343,14 @@ class WholeDay(unittest.TestCase):
             self.assertFalse(OTHER_KEY in json.dumps(env), "the value of a credential of another service reached a child")
 
     def test_the_day_log_names_the_variables_it_left_out_once_and_never_their_values(self) -> None:
-        text = (self.workdir / "logs" / "day.log").read_text(encoding="utf-8")
-        lines = [line for line in text.splitlines() if "child environment" in line]
-        self.assertEqual(len(lines), 1, lines)
-        self.assertIn("OPENAI_API_KEY", lines[0])
-        self.assertIn("HF_TOKEN", lines[0])
-        self.assertNotIn(OTHER_KEY, text)
-        self.assertNotIn(TOKEN, text)
+        text = self.day_log_after_a
+        notes = [line for line in text.splitlines() if "child environment" in line]
+        self.assertEqual(len(notes), 1, "one note for the run, not one before every step")
+        self.assertIn("OPENAI_API_KEY", notes[0])
+        self.assertIn("HF_TOKEN", notes[0])
+        self.assertGreater(len([line for line in text.splitlines() if " run " in line]), 1, "the run executed several steps")
+        self.assertFalse(OTHER_KEY in text, "the value of a credential reached the day log")
+        self.assertFalse(TOKEN in text, "the Hub token reached the day log")
 
     def test_the_report_has_measured_seconds_and_the_unverified_estimate(self) -> None:
         report = json.loads((self.workdir / "report" / "day-report.json").read_text(encoding="utf-8"))
