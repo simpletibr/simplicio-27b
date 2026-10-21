@@ -27,7 +27,7 @@ import math
 import os
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
@@ -46,6 +46,9 @@ PLAN_NAME = "plan.json"
 SUBSET_DIR = "subset"
 JSONL_SUFFIXES = (".jsonl", ".jsonl.gz", ".ndjson", ".ndjson.gz")
 META_KEYS = ("example_id", "source", "license", "split", "lang", "catalog_id", "group_id", "track", "proxy_tokens", "dataset", "origin")
+REASONING_REFUSE, REASONING_FOLD = "refuse", "fold"
+REASONING_MODES = (REASONING_REFUSE, REASONING_FOLD)             # what `run_requests` does with a request that carries `reasoning`
+REQUEST_KEYS = ("state", "questions", "images", "reasoning")      # what a row of the suite or a flat row hands to the engine as its request
 ORIGIN_SUITE, ORIGIN_REQUESTS, ORIGIN_UNKNOWN = "public-suite", "requests", "unknown"
 EVALUATION_ORIGINS = (ORIGIN_SUITE, "gt-sample")                 # ADR 0004, item 6: evaluation data, never training or fitting data
 TERMINAL_ERRORS = ("FloatingPointError",)                        # the same request gives the same non-finite logits: an error row that is final
@@ -68,6 +71,51 @@ def _final_status(row: Mapping[str, Any], retry_nonfinite: bool = False) -> str:
     if row["status"] == "error" and row.get("exception") in TERMINAL_ERRORS and not retry_nonfinite:
         return STATUS_NONFINITE
     return row["status"]
+
+
+def fold_request(request: Mapping[str, Any], max_chars: Optional[int] = None) -> Dict[str, Any]:
+    """A copy of the request with its `reasoning` folded into the state text, by the training protocol's own `fold_reasoning`.
+
+    The reasoning block of the prompt has one definition, `decide.train.protocol.fold_reasoning` (golden cases in `tests/fold_reasoning_cases.json`);
+    this is only the door to it, so the model is asked at evaluation the prompt it was trained on.  The import is late: `decide.sd` does
+    not import `decide.train` until a fold is asked for.  A request that cannot be folded (a state that already has the block, an empty
+    reasoning) raises `Unsupported` with the reason.
+    """
+    from decide.train import protocol
+    try:
+        return protocol.fold_reasoning(request, **({} if max_chars is None else {"max_chars": max_chars}))
+    except protocol.RequestError as exc:
+        raise Unsupported(f"reasoning cannot be folded into the state: {exc}") from exc
+
+
+def _fold_items(items: Sequence["Item"]) -> Tuple[List["Item"], Dict[str, Unsupported]]:
+    """(the items with their reasoning folded in, the rows that could not be folded and why).  Rows without reasoning are left alone."""
+    out: List[Item] = []
+    refused: Dict[str, Unsupported] = {}
+    for item in items:
+        if item.inputs.get("reasoning") is None:
+            out.append(item)
+            continue
+        meta = {**item.meta, "reasoning_mode": REASONING_FOLD}
+        try:
+            out.append(replace(item, inputs=fold_request(item.inputs), meta=meta))
+        except Unsupported as exc:
+            refused[item.run_id] = exc
+            out.append(replace(item, meta=meta))
+    return out, refused
+
+
+def _answers(engine: Any, items: Sequence["Item"], refused: Mapping[str, Unsupported]) -> List[Any]:
+    """`_call`, except that a request that could not be folded is answered here and never reaches the engine."""
+    sent = [item for item in items if item.run_id not in refused]
+    got = iter(_call(engine, sent) if sent else [])
+    return [refused[item.run_id] if item.run_id in refused else next(got) for item in items]
+
+
+def _refused_before_the_fold(item: "Item", row: Optional[Mapping[str, Any]], final: Mapping[str, str]) -> bool:
+    """A fold was asked for and this request's last row is the engine's refusal of its reasoning, from a run that did not ask."""
+    return (item.meta.get("reasoning_mode") == REASONING_FOLD and final.get(item.run_id) == "unsupported"
+            and row is not None and row.get("reasoning_mode") != REASONING_FOLD)
 
 
 def _utc() -> str:
@@ -119,13 +167,13 @@ def item_from_row(row: Any, where: str = "row") -> Item:
     if isinstance(marker, Mapping):                              # a row of the Decision Index suite
         meta = {**marker, "origin": ORIGIN_SUITE}                # a suite row says so itself: its marker cannot declare another origin
         run_id = meta.get("run_id")
-        request = {k: row[k] for k in ("state", "questions", "images") if k in row}
+        request = {k: row[k] for k in REQUEST_KEYS if k in row}
         gold = row.get("expected")
     else:                                                        # {run_id | example_id, request | state + questions, gold}
         run_id = row.get("run_id", row.get("example_id"))
         request = row.get("request")
         if request is None:
-            request = {k: row[k] for k in ("state", "questions", "images") if k in row}
+            request = {k: row[k] for k in REQUEST_KEYS if k in row}
             if "questions" in request:
                 request["questions"] = _json_field(request["questions"], where, "questions")
         else:
@@ -336,7 +384,7 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
                  budget: Any = None, resume: bool = True, chunk: int = 16, limit: Optional[int] = None,
                  log: Optional[Callable[[str], None]] = print, state: Any = None, state_prefix: Optional[str] = None,
                  clock: Callable[[], float] = time.monotonic, table: bool = True, tokens_per_second: Optional[float] = None,
-                 retry_nonfinite: bool = False) -> Dict[str, Any]:
+                 retry_nonfinite: bool = False, reasoning: str = REASONING_REFUSE) -> Dict[str, Any]:
     """Answer every request of `requests_path` that has no final result yet.  See the module docstring.
 
     `tokens_per_second` (proxy tokens, as `measure_throughput` and `plan.json` give it) prices the first chunk before this run has measured
@@ -346,6 +394,11 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
     same logits, so a resume does not redo it.  `retry_nonfinite=True` asks again (after a change of `compute_dtype`, say).  Any other
     `error` row is retried on every resume.
 
+    A request with a `reasoning` text is refused by the engine (`unsupported`, with the reason) unless `reasoning="fold"` is asked for: then
+    the text is folded into the state with the training protocol's `fold_reasoning` (`fold_request`) and the engine answers the same
+    prompt a `--reasoning mixed` training run saw.  Nothing is folded unasked.  The rows say so (`reasoning_mode: "fold"`), rows refused
+    under the default are asked again when a resume asks for the fold, and an output holding folded rows is not resumed without it.
+
     Returns `{"rows": new rows, "total": rows with a result, "tokens": input tokens of the new rows, "seconds", "status":
     "complete" | "budget" | "limit", "counts": statuses of the new rows, "skipped": rows kept from before, "files": {...}}`.
     """
@@ -354,9 +407,14 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
     if tokens_per_second is not None and not (isinstance(tokens_per_second, (int, float)) and not isinstance(tokens_per_second, bool)
                                               and math.isfinite(tokens_per_second) and tokens_per_second > 0):
         raise EvaluateError(f"tokens_per_second must be a positive number, got {tokens_per_second!r}")
+    if reasoning not in REASONING_MODES:
+        raise EvaluateError(f"reasoning must be one of {REASONING_MODES}, got {reasoning!r}")
     say = log or (lambda text: None)
     out_dir, table_path = _paths(out_path)
     items = read_items(requests_path)                            # refuses duplicates before any work is done
+    refused: Dict[str, Unsupported] = {}
+    if reasoning == REASONING_FOLD:
+        items, refused = _fold_items(items)
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path, raw_path = out_dir / RESULTS_NAME, out_dir / RAW_NAME
     prefix = (state_prefix or f"runs/{out_dir.name}").strip("/")
@@ -374,7 +432,11 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
                 os.replace(path, path.with_name(f"{path.name}.old-{stamp}"))
     for path in (results_path, raw_path):
         _drop_partial_tail(path)
-    final = {run_id: _final_status(row, retry_nonfinite) for run_id, row in read_results(results_path).items()}
+    before = read_results(results_path)
+    if reasoning == REASONING_REFUSE and any(row.get("reasoning_mode") == REASONING_FOLD for row in before.values()):
+        raise EvaluateError(f"{results_path} holds rows answered with the reasoning folded into the state; ask for reasoning={REASONING_FOLD!r} "
+                            "to resume it, or start again (resume=False or another folder): one output answers one prompt")
+    final = {run_id: _final_status(row, retry_nonfinite) for run_id, row in before.items()}
     engine_name = str(getattr(engine, "name", type(engine).__name__))
     started_at = clock()
     event_base = {"engine": engine_name, "requests": len(items)}
@@ -385,6 +447,7 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
     origins = dict(collections.Counter(item.origin for item in items))
     environment: Dict[str, Any] = {"engine": engine_name, "model_source": dict(getattr(engine, "provenance", {}) or {}),
                                    "requests_file": Path(requests_path).name, "started_utc": _utc(), "origins": origins}
+    environment["reasoning"] = reasoning
     try:
         environment.update(engine.runtime())
     except Exception as exc:                                     # noqa: BLE001 - bookkeeping must not stop the run
@@ -393,7 +456,7 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
     if state is not None:
         state.set_meta(f"{prefix}/origins", origins)
 
-    todo = [item for item in items if final.get(item.run_id) in (None, "error")]
+    todo = [item for item in items if final.get(item.run_id) in (None, "error") or _refused_before_the_fold(item, before.get(item.run_id), final)]
     skipped = len(items) - len(todo)
     counts: collections.Counter = collections.Counter()
     new_rows = new_tokens = 0
@@ -404,6 +467,10 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
     if stuck:
         say(f"[evaluate] {stuck} row{'s' if stuck != 1 else ''} ended with non-finite logits in an earlier run and are not retried "
             "(retry_nonfinite=True asks again, e.g. after a change of compute_dtype)")
+    folding = sum(1 for item in todo if item.meta.get("reasoning_mode") == REASONING_FOLD)
+    if folding:
+        say(f"[evaluate] reasoning={REASONING_FOLD!r}: {folding} request{'s' if folding != 1 else ''} carry reasoning, folded into the state"
+            + (f" ({len(refused)} cannot be)" if refused else ""))
     event(event="ready", todo=len(todo), skipped=skipped)
     position = 0
     while position < len(todo):
@@ -423,7 +490,7 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
                 break
         t0 = clock()
         started = _utc()
-        got = _call(engine, piece)
+        got = _answers(engine, piece, refused)
         try:
             engine.synchronize()
         except Exception:                                        # noqa: BLE001
