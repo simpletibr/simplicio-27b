@@ -199,6 +199,7 @@ Vale só para a regra `short_line`: a linha inteira, sem espaços nas pontas, te
 | `=======` | três ou mais `=` | separa as duas metades do bloco (sem letras, nunca contou; listada por completude) |
 | `>>>>>>> REPLACE` | três ou mais `>` e `REPLACE` | fecha o bloco; os traços do loop escrevem com quatro `>` |
 | `` ```python `` | três ou mais crases ou til, com etiqueta de linguagem opcional | cerca de código |
+
 Uma referência que não rende nenhum pedido, ou cujas linhas não lidas passam de 1 %, derruba a rodada (`ReferenceDataError`):
 a triagem contra uma referência não lida deixaria tudo passar. O relatório (`decontamination.json`) lista parâmetros,
 contagens por motivo e por fonte, linhas lidas/puladas por referência e o sha256 das entradas.
