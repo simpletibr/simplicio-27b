@@ -1,0 +1,110 @@
+# decide/config.yaml :: configuracao do kit (Squad A).
+# Tudo que muda entre sessoes fica aqui. Segredos NAO ficam aqui: HF_TOKEN vem do ambiente,
+# dos Kaggle Secrets ou do Colab userdata.
+# Arquivos decide/config.*.yaml (config.data.yaml, config.rental.yaml, ... da Squad B) sao
+# sobrepostos por sd.config.load_config em ordem alfabetica; chaves desta Squad: hub, models,
+# merge, eval, budget, calibration, tta, fidelity, gates, modal, kit.
+
+hub:
+  user: wesleysimplicio
+  state_dataset: wesleysimplicio/simplicio-decide-state      # privado: state.json, amostra, resultados por linha
+  winner_repo: wesleysimplicio/Simplicio-Decide-27B          # destino do vencedor materializado (bf16)
+  endpoint: https://huggingface.co
+
+models:
+  # Pesos de referencia para task vectors (reference: base usa a base; reference: anchor usa a ancora)
+  base:
+    repo: Qwen/Qwen3.8-27B
+    revision: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0       # NOTICE do pplx-decider-v1.2
+  # Ancora: fornece formato (protocolo joint v3), cabeca de leitura, visao e pesos-base do merge
+  anchor:
+    name: pplx
+    repo: perplexity-ai/pplx-decider-v1.2
+    revision: null
+    protocol: pplx_joint
+  # Doadores de BACKBONE (Apache-2.0). weight = peso relativo entre doadores; lambda (grade abaixo)
+  # escala o total. Cabecas nunca sao mediadas (fase0b). Lychee (CC BY-NC) e amos (cabeca incompativel)
+  # ficam de fora de proposito.
+  donors:
+    - {name: d3,       repo: vllm-sr/d3,       weight: 1.0, enabled: true,  revision: null}
+    # d3-turbo usa mascara prefix_bidir (diferente da ancora): opcional e sinalizado, desligado por padrao
+    - {name: d3-turbo, repo: vllm-sr/d3-turbo, weight: 0.5, enabled: false, revision: null}
+  # LoRA do usuario (adapter sobre Qwen/Qwen3.8-27B). delta = (alpha/r) * B@A, somado com peso pequeno.
+  # Vem SO do adapter, nunca tambem dos shards ja mesclados (contaria duas vezes).
+  lora:
+    repo: wesleysimplicio/Simplicio-27B
+    revision: null
+    weight: 0.1
+    weight_grid: [0.1, 0.25]
+    enabled: true
+  # Modelos 4B para o ensaio (F1/F4): fp16 no T4, sem NF4
+  rehearsal:
+    pplx_flash: {repo: perplexity-ai/pplx-decider-flash-v1.2, protocol: pplx_joint}
+    d3_mini:    {repo: vllm-sr/d3-mini,                       protocol: d3}
+  # d3 com o protocolo proprio dele (uma pergunta por passada, leitura no ultimo token): so para a fidelidade
+  d3:
+    repo: vllm-sr/d3
+    protocol: d3
+
+merge:
+  method: task_arithmetic          # task_arithmetic | ties
+  reference: anchor                # anchor (economiza ~55 GB de leitura por candidato) | base
+  lambda_grid: [0.25, 0.5, 0.75]   # escala dos task vectors dos doadores
+  ties:
+    density: 0.5                   # fracao de entradas mantidas (por magnitude)
+  head: anchor                     # anchor | refit (a cabeca nunca e media)
+  skip_patterns: ["embed_tokens", "visual."]   # tensores copiados da ancora sem merge
+  chunk_mb: 256                    # janela de leitura Range
+
+eval:
+  per_benchmark: 16                # grupos por benchmark na amostra
+  seed: 20261021
+  edition: "0.3"
+  max_proxy_tokens: 6000           # linhas maiores ficam fora da amostra (T4 16 GB); contadas no manifest
+  quant: nf4                       # nf4 | fp16 | bf16 | none
+  compute_dtype: float16           # T4 nao tem bf16
+  double_quant: true
+  max_gpu_gb: 14.0                 # limite por GPU no device_map
+  batch_tokens: 4096
+  min_rows_per_benchmark: 4        # piso ao encolher a amostra por orcamento
+
+budget:
+  session_hours: 11.5
+  reserve_minutes: 20
+  weekly_gpu_hours: 30             # so informativo (cota Kaggle)
+
+calibration:
+  by: question_type                # question_type | type_k
+  holdout: 0.5
+  grid: [0.5, 4.0]                 # intervalo de busca da temperatura
+
+tta:
+  rotations: 2                     # visoes por pergunta de escolha
+  mode: reverse                    # reverse (visao 2 = ordem inversa, como o d3) | rotate (deslocamento ciclico)
+
+fidelity:                          # F1: argmax igual ao resultado bf16 publicado, por linha
+  min_rows: 500
+  seed: 20261021
+  published:
+    d3_mini: {dataset: vllm-sr/d3-mini-decision-index, run: d3-mini}
+    d3:      {dataset: vllm-sr/d3-decision-index,      run: d3}
+
+gates:                             # criterios do report.py
+  g0_agree_4b: 0.98                # G0 (#66): 4B, argmax igual >= 98% em >= 500 linhas
+  g0_agree_27b_nf4: 0.95           # G0 (#66): 27B 4-bit; o limiar esta a recalibrar
+  g2_min_delta: 0.0                # melhor merge - ancora, mesma amostra (IC bootstrap reportado)
+  g3_min_delta: 0.0                # G3 (#70): melhor merge >= pplx v1.2 pura
+  calib_min_delta: 0.0             # ganho de calibracao/TTA
+
+modal:                             # rodada final bf16 e rotulagem; precos/FLOPs: ESTIMATIVAS, confira antes de rodar
+  gpu: B200                        # B200 | H200 | H100 | RTX-PRO-6000 (ver decide/modal/common.py)
+  volume: simplicio-decide-cache
+  secret: huggingface              # modal secret create huggingface HF_TOKEN=...
+  shard_requests: 2000             # pedidos por parte (um checkpoint no dataset de estado por parte)
+  timeout_minutes: 120
+  billed_tokens_jev_full: 291826668   # medido: tokens de entrada cobrados na rodada completa do Jev (methodology.json)
+  pricing_as_of: "2026-10-21"      # https://modal.com/pricing (copiado por web fetch; NAO verificado em conta)
+
+kit:
+  repo: https://github.com/apolinario/decision-index
+  commit: 25c6ec7b6b5f44a216c63c3a700de3a9c6d6699d
