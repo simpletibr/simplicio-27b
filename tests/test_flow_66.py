@@ -201,7 +201,7 @@ class FidelityFlow(HermeticTestCase):
 
     @classmethod
     def make_engine(cls, repo):
-        decider = cls.L.load_decider({"anchor": repo, "protocol": "d3"}, cls.L.LoadOptions(quant="none", compute_dtype="float32", workers=2),
+        decider = cls.L.load_decider({"anchor": repo, "anchor_revision": "d" * 40, "protocol": "d3"}, cls.L.LoadOptions(quant="none", compute_dtype="float32", workers=2),
                                      repo_factory=hub_repos(cls.hub), processor_factory=cls.tm.processor_factory)
         return cls.E.DecisionEngine(decider, name=f"tiny:{repo}")
 
@@ -302,7 +302,6 @@ class FidelityFlow(HermeticTestCase):
         self.assertEqual(len(ids), 8)
         self.assertNotIn("29:T:T:3", ids)
         self.assertNotIn("29:T:T:2", ids)                           # the other row of the same group: a group is all or nothing
-
 
 if __name__ == "__main__":
     unittest.main()

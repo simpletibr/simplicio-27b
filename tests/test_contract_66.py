@@ -14,7 +14,10 @@ from pathlib import Path
 
 from decide_support import FakeHub, HermeticTestCase, needs_requests
 
+from decide.sd import config as sd_config
 from decide.sd import fidelity as fid
+
+PIN = "a1b2c3d4" * 5                                            # a full commit hash: the only revision the kit reads a dataset at
 
 
 def choice(keys, probs):
@@ -196,17 +199,98 @@ class PublishedContract(HermeticTestCase):
             digest = hashlib.sha256(self.blob).hexdigest()
             hub.files["org/pub/runs/mini/results.jsonl.gz"] = self.blob
             hub.files["org/pub/runs/mini/SHA256SUMS"] = f"{digest}  results.jsonl.gz\n".encode()
-            path = fid.fetch_published("org/pub", "mini", self.dir / "dl", endpoint=hub.base_url, sleep=lambda s: None)
+            fetch = lambda dest: fid.fetch_published("org/pub", "mini", dest, endpoint=hub.base_url, revision=PIN, sleep=lambda s: None)
+            path = fetch(self.dir / "dl")
             self.assertEqual(path.read_bytes(), self.blob)
-            self.assertEqual(fid.fetch_published("org/pub", "mini", self.dir / "dl", endpoint=hub.base_url, sleep=lambda s: None), path)
+            self.assertEqual(fetch(self.dir / "dl"), path)
             hub.files["org/pub/runs/mini/SHA256SUMS"] = f"{'1' * 64}  results.jsonl.gz\n".encode()
             with self.assertRaisesRegex(fid.FidelityError, "sha256"):
-                fid.fetch_published("org/pub", "mini", self.dir / "dl2", endpoint=hub.base_url, sleep=lambda s: None)
+                fetch(self.dir / "dl2")
             self.assertFalse((self.dir / "dl2" / "results.jsonl.gz").exists())                     # a bad file is not left behind
 
     def test_fetch_resolves_datasets_not_models(self):
         with FakeHub() as hub:
-            self.assertIn("/datasets/org/pub/resolve/main/runs/mini/results.jsonl.gz", fid.published_url("org/pub", "mini", endpoint=hub.base_url))
+            self.assertIn(f"/datasets/org/pub/resolve/{PIN}/runs/mini/results.jsonl.gz", fid.published_url("org/pub", "mini", endpoint=hub.base_url, revision=PIN))
+
+    @needs_requests
+    def test_both_files_are_read_at_the_pinned_commit_and_at_no_other(self):
+        with FakeHub() as hub:
+            digest = hashlib.sha256(self.blob).hexdigest()
+            hub.files["org/pub/runs/mini/results.jsonl.gz"] = self.blob
+            hub.files["org/pub/runs/mini/SHA256SUMS"] = f"{digest}  results.jsonl.gz\n".encode()
+            fid.fetch_published("org/pub", "mini", self.dir / "dl", endpoint=hub.base_url, revision=PIN, sleep=lambda s: None)
+            self.assertEqual(hub.requested, {("org/pub", PIN)})
+            hub.requested.clear()
+            fid.fetch_published("org/pub", "mini", self.dir / "dl-unchecked", endpoint=hub.base_url, revision=PIN, verify=False, sleep=lambda s: None)
+            self.assertEqual(hub.requested, {("org/pub", PIN)})
+
+    @needs_requests
+    def test_a_missing_or_loose_revision_is_refused_before_anything_is_asked(self):
+        bad = {"none": None, "empty": "", "a branch": "main", "a short hash": PIN[:7], "39 characters": PIN[:-1], "41 characters": PIN + "0",
+               "capitals": PIN.upper(), "a trailing newline": PIN + "\n", "a tag": "v1.2", "a number": 12345}
+        with FakeHub() as hub:
+            for name, revision in bad.items():
+                with self.subTest(name):
+                    with self.assertRaisesRegex(fid.FidelityError, "40"):
+                        fid.published_url("org/pub", "mini", endpoint=hub.base_url, revision=revision)
+                    with self.assertRaisesRegex(fid.FidelityError, "40"):
+                        fid.fetch_published("org/pub", "mini", self.dir / "dl", endpoint=hub.base_url, revision=revision, sleep=lambda s: None)
+            self.assertEqual(hub.requested, set())
+            self.assertFalse((self.dir / "dl" / "results.jsonl.gz").exists())
+        with self.assertRaises(TypeError):                                       # there is no default to fall back on
+            fid.published_url("org/pub", "mini")                                 # type: ignore[call-arg]
+        with self.assertRaises(TypeError):
+            fid.fetch_published("org/pub", "mini", self.dir / "dl")              # type: ignore[call-arg]
+
+
+class ConfiguredContract(HermeticTestCase):
+    """The config names, for each published run, the dataset, the run and the commit it is read at; the fetch uses those and no other."""
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        self.cfg = sd_config.load_config()
+
+    def test_the_shipped_config_gives_every_published_run_a_full_commit(self):
+        entries = fid.published_entries(self.cfg)
+        self.assertEqual(sorted(entries), sorted(self.cfg["fidelity"]["published"]))
+        self.assertGreaterEqual(len(entries), 2)
+        for name, entry in entries.items():
+            with self.subTest(name):
+                raw = self.cfg["fidelity"]["published"][name]
+                self.assertEqual(entry, {"dataset": raw["dataset"], "run": raw["run"], "revision": raw["revision"]})
+                self.assertRegex(entry["revision"], r"^[0-9a-f]{40}$")
+
+    def test_a_name_the_config_does_not_have_says_which_it_has(self):
+        with self.assertRaisesRegex(fid.FidelityError, r"d3_mini"):
+            fid.published_entry(self.cfg, "d3_midi")
+
+    def test_an_entry_without_a_full_commit_is_refused(self):
+        for revision in (None, "main", PIN[:7], PIN.upper()):
+            with self.subTest(repr(revision)):
+                entry = {"dataset": "org/pub", "run": "mini"}
+                if revision is not None:
+                    entry["revision"] = revision
+                with self.assertRaisesRegex(fid.FidelityError, "revision"):
+                    fid.published_entry({"fidelity": {"published": {"x": entry}}}, "x")
+        with self.assertRaisesRegex(fid.FidelityError, "dataset"):
+            fid.published_entry({"fidelity": {"published": {"x": {"run": "mini", "revision": PIN}}}}, "x")
+        with self.assertRaisesRegex(fid.FidelityError, "run"):
+            fid.published_entry({"fidelity": {"published": {"x": {"dataset": "org/pub", "revision": PIN}}}}, "x")
+
+    @needs_requests
+    def test_fetch_configured_reads_the_commit_the_config_names(self):
+        blob = gzip.compress(b'{"run_id": "r0", "status": "ok"}\n')
+        digest = hashlib.sha256(blob).hexdigest()
+        cfg = {"fidelity": {"published": {"mini": {"dataset": "org/pub", "run": "mini", "revision": PIN}}}, "hub": {"endpoint": "unused"}}
+        with FakeHub() as hub:
+            hub.files["org/pub/runs/mini/results.jsonl.gz"] = blob
+            hub.files["org/pub/runs/mini/SHA256SUMS"] = f"{digest}  results.jsonl.gz\n".encode()
+            path = fid.fetch_configured(cfg, "mini", self.dir / "dl", endpoint=hub.base_url, sleep=lambda s: None)
+            self.assertEqual(path.read_bytes(), blob)
+            self.assertEqual(hub.requested, {("org/pub", PIN)})
 
 
 if __name__ == "__main__":

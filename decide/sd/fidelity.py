@@ -28,7 +28,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 
 from decide.sd import evaluate
 from decide.sd import sample as sample_mod
-from decide.sd.remote import HttpTransport, RemoteError
+from decide.sd.remote import COMMIT_SHA, HttpTransport, RemoteError
 
 ENDPOINT = "https://huggingface.co"
 RESULTS_FILE = "results.jsonl.gz"
@@ -43,8 +43,39 @@ class FidelityError(RuntimeError):
 
 # --------------------------------------------------------------------------- the published files
 
-def published_url(dataset: str, run: str, filename: str = RESULTS_FILE, *, endpoint: str = ENDPOINT, revision: str = "main") -> str:
-    return f"{endpoint.rstrip('/')}/datasets/{dataset}/resolve/{revision}/runs/{run}/{filename}"
+def pinned(revision: Any) -> str:
+    """The commit a published file is read at: 40 lowercase hex, never a branch, because a branch moves and the comparison would change under us."""
+    if not isinstance(revision, str) or not COMMIT_SHA.fullmatch(revision):
+        raise FidelityError(f"a published dataset is read at a full commit hash (40 lowercase hex characters), not {revision!r}")
+    return revision
+
+
+def published_url(dataset: str, run: str, filename: str = RESULTS_FILE, *, revision: str, endpoint: str = ENDPOINT) -> str:
+    return f"{endpoint.rstrip('/')}/datasets/{dataset}/resolve/{pinned(revision)}/runs/{run}/{filename}"
+
+
+def published_entries(cfg: Mapping[str, Any]) -> Dict[str, Dict[str, str]]:
+    """`fidelity.published` of the config: name -> {dataset, run, revision}, each checked (a full commit hash, nothing else)."""
+    names = sorted(((cfg.get("fidelity") or {}).get("published") or {}))
+    return {name: published_entry(cfg, name) for name in names}
+
+
+def published_entry(cfg: Mapping[str, Any], name: str) -> Dict[str, str]:
+    """The dataset, run and commit that the config names for one published run (`d3_mini`, `d3`)."""
+    table = (cfg.get("fidelity") or {}).get("published") or {}
+    if name not in table:
+        raise FidelityError(f"no published run {name!r} in fidelity.published; the config has {sorted(table)}")
+    entry = table[name]
+    if not isinstance(entry, Mapping):
+        raise FidelityError(f"fidelity.published.{name} must be a mapping with dataset, run and revision")
+    for key in ("dataset", "run"):
+        if not isinstance(entry.get(key), str) or not entry[key].strip():
+            raise FidelityError(f"fidelity.published.{name}.{key} is missing")
+    try:
+        revision = pinned(entry.get("revision"))
+    except FidelityError as exc:
+        raise FidelityError(f"fidelity.published.{name}.revision: {exc}") from None
+    return {"dataset": entry["dataset"], "run": entry["run"], "revision": revision}
 
 
 def parse_sha256sums(text: str) -> Dict[str, str]:
@@ -74,10 +105,11 @@ def verify_sha256(path: Union[str, os.PathLike], sums_text: str, name: Optional[
         raise FidelityError(f"{key}: sha256 {got} does not match the published {sums[key]}; the download is damaged or the dataset changed")
 
 
-def fetch_published(dataset: str, run: str, dest_dir: Union[str, os.PathLike], *, token: Optional[str] = None, endpoint: str = ENDPOINT,
-                    revision: str = "main", sleep: Callable[[float], None] = time.sleep, verify: bool = True,
+def fetch_published(dataset: str, run: str, dest_dir: Union[str, os.PathLike], *, revision: str, token: Optional[str] = None,
+                    endpoint: str = ENDPOINT, sleep: Callable[[float], None] = time.sleep, verify: bool = True,
                     transport: Any = None) -> Path:
-    """Download `runs/<run>/results.jsonl.gz` of a public results dataset (about 47 MB) and check it against its SHA256SUMS."""
+    """Download `runs/<run>/results.jsonl.gz` of a public results dataset (about 47 MB) at the commit `revision` and check it against its SHA256SUMS."""
+    pinned(revision)                                              # before anything is asked of the network
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
     target = dest / RESULTS_FILE
@@ -110,6 +142,17 @@ def fetch_published(dataset: str, run: str, dest_dir: Union[str, os.PathLike], *
         raise
     os.replace(tmp, target)
     return target
+
+
+def fetch_configured(cfg: Mapping[str, Any], name: str, dest_dir: Union[str, os.PathLike], *, endpoint: Optional[str] = None, **options: Any) -> Path:
+    """`fetch_published` for the run that the config calls `name`: the dataset, the run and the commit all come from `fidelity.published`.
+
+    The endpoint is `hub.endpoint` of the config unless one is given.  Nothing else picks the commit: a caller that wants another one
+    changes the config, where the pin is reviewed with the rest.
+    """
+    entry = published_entry(cfg, name)
+    where = endpoint or (cfg.get("hub") or {}).get("endpoint") or ENDPOINT
+    return fetch_published(entry["dataset"], entry["run"], dest_dir, revision=entry["revision"], endpoint=where, **options)
 
 
 def load_published(path: Union[str, os.PathLike], wanted: Optional[Iterable[str]] = None) -> Dict[str, Dict[str, Any]]:
