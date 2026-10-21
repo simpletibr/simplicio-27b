@@ -30,31 +30,7 @@ from decide.sd.vendor.pplx_decider.protocol import (
     answer,
 )
 
-try:
-    from decision_index.engines.base import Engine, Unsupported
-except ImportError:                                          # the scoring kit is optional for loading and labeling
-    class Unsupported(ValueError):                           # type: ignore[no-redef]
-        pass
-
-    class Engine:                                            # type: ignore[no-redef]
-        name = "engine"
-        provenance: Dict[str, Any] = {}
-        latency = "In-process request wall time including prompt construction; excludes model loading."
-
-        def __init__(self, **options: Any) -> None:
-            self.options = options
-
-        def warmup(self) -> None:
-            pass
-
-        def runtime(self) -> Dict[str, Any]:
-            return {}
-
-        def synchronize(self) -> None:
-            pass
-
-        def close(self) -> None:
-            pass
+from decide.sd.kitapi import Engine, Unsupported
 
 SUPPORTED_TYPES = ("choice", "noul")
 OOM_ERRORS: Tuple[type, ...] = tuple(e for e in (getattr(torch, "OutOfMemoryError", None), getattr(torch.cuda, "OutOfMemoryError", None)) if e)
