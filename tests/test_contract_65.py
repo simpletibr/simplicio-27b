@@ -19,7 +19,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from decide_support import ROOT, HermeticTestCase, needs_torch
+from decide_support import ROOT, HermeticTestCase, needs_numpy, needs_torch
 
 from decide.sd import budget as B
 from decide.sd import config as C
@@ -451,6 +451,283 @@ class MergeMathContract(unittest.TestCase):
         anchor, refit = self.rt(3, 4, seed=1), self.rt(3, 4, seed=2)
         self.assertIs(self.M.choose_head(anchor), anchor)
         self.assertIs(self.M.choose_head(anchor, refit), refit)
+
+
+class TtaContract(unittest.TestCase):
+    """Option-order TTA: the permutations are bijections and the inverse mapping is exact."""
+
+    @classmethod
+    def setUpClass(cls):
+        from decide.sd import tta
+
+        cls.T = tta
+
+    def test_reverse_mode_orders(self):
+        T = self.T
+        self.assertEqual(T.permutations(1, 2), [[0]])
+        self.assertEqual(T.permutations(2, 2), [[0, 1], [1, 0]])
+        self.assertEqual(T.permutations(4, 2), [[0, 1, 2, 3], [3, 2, 1, 0]])
+        self.assertEqual(T.permutations(4, 1), [[0, 1, 2, 3]])
+        self.assertEqual(T.permutations(5, 3, "reverse"), [[0, 1, 2, 3, 4], [4, 3, 2, 1, 0], [3, 4, 0, 1, 2]])
+
+    def test_rotate_mode_shifts_are_evenly_spaced(self):
+        T = self.T
+        self.assertEqual(T.permutations(5, 2, "rotate"), [[0, 1, 2, 3, 4], [2, 3, 4, 0, 1]])
+        self.assertEqual(T.permutations(4, 2, "rotate"), [[0, 1, 2, 3], [2, 3, 0, 1]])
+        self.assertEqual(T.permutations(2, 2, "rotate"), [[0, 1], [1, 0]])
+
+    def test_views_are_distinct_bijections_starting_with_the_identity(self):
+        for mode in self.T.MODES:
+            for n in range(0, 10):
+                for views in (1, 2, 3, 4):
+                    with self.subTest(mode=mode, n=n, views=views):
+                        perms = self.T.permutations(n, views, mode)
+                        self.assertEqual(perms[0], list(range(n)))
+                        self.assertEqual(len({tuple(p) for p in perms}), len(perms))
+                        self.assertLessEqual(len(perms), views)
+                        for perm in perms:
+                            self.assertEqual(sorted(perm), list(range(n)))
+
+    def test_two_options_never_run_more_than_two_views(self):
+        self.assertEqual(len(self.T.permutations(2, 5, "reverse")), 2)
+        self.assertEqual(len(self.T.permutations(2, 5, "rotate")), 2)
+
+    def test_unpermute_inverts_apply_exactly(self):
+        import random
+
+        rng = random.Random(7)
+        for mode in self.T.MODES:
+            for n in range(1, 10):
+                for perm in self.T.permutations(n, 4, mode):
+                    x = [rng.random() for _ in range(n)]
+                    with self.subTest(mode=mode, n=n, perm=perm):
+                        self.assertEqual(self.T.unpermute(self.T.apply(x, perm), perm), x)
+                        self.assertEqual(self.T.apply(self.T.unpermute(x, perm), perm), x)
+                        self.assertEqual(self.T.apply(x, self.T.invert(perm)), self.T.unpermute(x, perm))
+
+    def test_the_inverse_is_not_the_forward_map_for_a_non_involution(self):
+        perm = self.T.rotation(5, 2)              # [2, 3, 4, 0, 1]
+        x = [10, 11, 12, 13, 14]
+        shown = self.T.apply(x, perm)
+        self.assertEqual(shown, [12, 13, 14, 10, 11])
+        self.assertEqual(self.T.unpermute(shown, perm), x)
+        self.assertNotEqual(self.T.apply(shown, perm), x)
+
+    def test_bad_permutations_and_lengths_are_rejected(self):
+        for bad in ([0, 0, 1], [1, 2, 3], [0, 2]):
+            with self.assertRaises(ValueError):
+                self.T.check(bad)
+        with self.assertRaises(ValueError):
+            self.T.apply([1, 2, 3], [0, 1])
+        with self.assertRaises(ValueError):
+            self.T.unpermute([1, 2], [0, 1, 2])
+        with self.assertRaises(ValueError):
+            self.T.permutations(3, 2, "shuffle")
+        with self.assertRaises(ValueError):
+            self.T.permutations(3, 0)
+
+    def test_average_is_the_elementwise_mean(self):
+        self.assertEqual(self.T.average([[1.0, 0.0], [0.0, 1.0]]), [0.5, 0.5])
+        with self.assertRaises(ValueError):
+            self.T.average([[1.0], [1.0, 2.0]])
+        with self.assertRaises(ValueError):
+            self.T.average([])
+
+    def request(self):
+        return {
+            "state": "s",
+            "questions": {
+                "c": {"type": "choice", "criteria": {"a": "A", "b": None, "c": "C"}},
+                "y": {"type": "noul", "criteria": {"false": "F", "true": "T"}},
+                "one": {"type": "choice", "criteria": {"only": "x"}},
+            },
+        }
+
+    def test_plan_permutes_choice_questions_only(self):
+        views = self.T.plan(self.request(), 2, "reverse")
+        self.assertEqual(len(views), 2)
+        self.assertEqual(views[0], {"c": [0, 1, 2], "y": [], "one": []})
+        self.assertEqual(views[1], {"c": [2, 1, 0], "y": [], "one": []})
+
+    def test_permute_request_reorders_criteria_without_touching_the_original(self):
+        req = self.request()
+        before = repr(req)
+        out = self.T.permute_request(req, {"c": [2, 0, 1], "y": [], "one": []})
+        self.assertEqual(list(out["questions"]["c"]["criteria"]), ["c", "a", "b"])
+        self.assertEqual(out["questions"]["c"]["criteria"]["b"], None)
+        self.assertEqual(out["questions"]["y"], req["questions"]["y"])
+        self.assertEqual(out["state"], "s")
+        self.assertEqual(repr(req), before)
+
+    def test_a_model_without_position_bias_gives_the_same_answer_in_every_view(self):
+        """End to end on the request: score by option content, present permuted, map back, average."""
+        content = {"a": 0.2, "b": 1.5, "c": -0.7, "d": 0.9, "e": 0.0}
+        req = {"state": "s", "questions": {"q": {"type": "choice", "criteria": {k: None for k in content}}}}
+
+        def model(request):                      # probability per *presented* position, from content only
+            keys = list(request["questions"]["q"]["criteria"])
+            z = [content[k] for k in keys]
+            e = [math.exp(v) for v in z]
+            return [v / sum(e) for v in e]
+
+        base = model(req)
+        for mode in self.T.MODES:
+            for views in (2, 3):
+                with self.subTest(mode=mode, views=views):
+                    rows = []
+                    for perms in self.T.plan(req, views, mode):
+                        shown = model(self.T.permute_request(req, perms))
+                        rows.append(self.T.restore_question(shown, perms["q"]))
+                    for row in rows:
+                        for got, want in zip(row, base):
+                            self.assertAlmostEqual(got, want, places=12)
+                    for got, want in zip(self.T.average(rows), base):
+                        self.assertAlmostEqual(got, want, places=12)
+
+    def test_averaging_two_orders_cancels_a_pure_position_bias(self):
+        """A model that only prefers the first presented option gives a flat answer after reverse-TTA."""
+        req = {"state": "s", "questions": {"q": {"type": "choice", "criteria": {"a": None, "b": None, "c": None, "d": None}}}}
+
+        def biased(_request):
+            return [0.7, 0.1, 0.1, 0.1]
+
+        rows = [self.T.restore_question(biased(self.T.permute_request(req, p)), p["q"]) for p in self.T.plan(req, 2, "reverse")]
+        avg = self.T.average(rows)
+        self.assertEqual(rows[0], [0.7, 0.1, 0.1, 0.1])
+        self.assertEqual(rows[1], [0.1, 0.1, 0.1, 0.7])
+        self.assertAlmostEqual(avg[0], avg[3])
+        self.assertAlmostEqual(sum(avg), 1.0)
+
+
+@needs_numpy
+class CalibrateContract(unittest.TestCase):
+    """Per-question-type temperature fitting, probability metrics and the holdout protocol."""
+
+    @classmethod
+    def setUpClass(cls):
+        import numpy as np
+
+        from decide.sd import calibrate
+
+        cls.np, cls.K = np, calibrate
+
+    def synth(self, n, k, temp, qtype="choice", seed=0, views=1, prefix="r"):
+        """Items whose gold is drawn from softmax(logits / temp): the best temperature is `temp`."""
+        rng = self.np.random.default_rng(seed)
+        items = []
+        for i in range(n):
+            z = rng.normal(0.0, 2.0, size=k)
+            p = self.np.exp(z / temp - (z / temp).max())
+            p /= p.sum()
+            gold = int(rng.choice(k, p=p))
+            logits = [z.tolist()] + [(z + rng.normal(0, 0.0, size=k)).tolist() for _ in range(views - 1)]
+            items.append(self.K.Item(f"{prefix}{i}", "q", qtype, logits, gold))
+        return items
+
+    def test_fit_recovers_a_known_temperature(self):
+        for true in (0.7, 1.0, 1.8, 2.6):
+            with self.subTest(true=true):
+                fitted = self.K.fit_temperature_items(self.synth(6000, 5, true, seed=int(true * 10)))
+                self.assertAlmostEqual(fitted, true, delta=0.06 * true)
+
+    def test_fit_by_question_type_separates_the_types(self):
+        items = self.synth(5000, 6, 1.8, "choice", seed=1, prefix="c") + self.synth(5000, 2, 0.8, "noul", seed=2, prefix="n")
+        out = self.K.fit_groups(items, by="question_type", holdout=0.5, seed=3)
+        temps = out["temperatures"]
+        self.assertAlmostEqual(temps["choice"], 1.8, delta=0.15)
+        self.assertAlmostEqual(temps["noul"], 0.8, delta=0.08)
+
+    def test_the_search_stays_inside_the_grid(self):
+        items = self.synth(3000, 4, 6.0, seed=5)
+        self.assertLessEqual(self.K.fit_temperature_items(items, grid=(0.5, 3.0)), 3.0 + 1e-9)
+        items = self.synth(3000, 4, 0.2, seed=6)
+        self.assertGreaterEqual(self.K.fit_temperature_items(items, grid=(0.5, 3.0)), 0.5 - 1e-9)
+
+    def test_nll_is_minimal_at_the_fitted_temperature(self):
+        items = self.synth(2500, 4, 1.5, seed=9)
+        best = self.K.fit_temperature_items(items)
+        floor = self.K.nll(items, best)
+        for t in (best * 0.8, best * 1.25, 0.5, 1.0, 3.0):
+            self.assertLessEqual(floor, self.K.nll(items, t) + 1e-9)
+
+    def test_softmax_matches_a_reference_and_is_stable(self):
+        np = self.np
+        z = [1.0, 2.0, 3.0]
+        ref = np.exp(np.array(z) / 2.0)
+        ref /= ref.sum()
+        self.assertTrue(np.allclose(self.K.softmax(z, 2.0), ref))
+        big = self.K.softmax([1e4, 1e4 + 1.0], 1.0)
+        self.assertTrue(np.isfinite(big).all())
+        self.assertAlmostEqual(float(big.sum()), 1.0)
+        with self.assertRaises(ValueError):
+            self.K.softmax([1.0], 0.0)
+
+    def test_tta_probabilities_are_the_mean_of_the_view_softmaxes(self):
+        np = self.np
+        item = self.K.Item("r", "q", "choice", [[2.0, 0.0, 0.0], [0.0, 0.0, 2.0]], 0)
+        p = self.K.item_probs(item, 1.0)
+        a, b = self.K.softmax([2.0, 0.0, 0.0], 1.0), self.K.softmax([0.0, 0.0, 2.0], 1.0)
+        self.assertTrue(np.allclose(p, (a + b) / 2))
+        self.assertTrue(np.allclose(self.K.item_probs(item, 1.0, views=[0]), a))
+        self.assertTrue(np.allclose(self.K.item_probs(item, 1.0, views=[1]), b))
+
+    def test_metrics_on_hand_computed_cases(self):
+        sure_right = self.K.Item("a", "q", "choice", [[50.0, 0.0]], 0)
+        sure_wrong = self.K.Item("b", "q", "choice", [[50.0, 0.0]], 1)
+        m = self.K.metrics([sure_right], 1.0)
+        self.assertAlmostEqual(m["nll"], 0.0, places=6)
+        self.assertAlmostEqual(m["brier"], 0.0, places=6)
+        self.assertEqual(m["accuracy"], 1.0)
+        self.assertAlmostEqual(m["ece"], 0.0, places=6)
+        w = self.K.metrics([sure_wrong], 1.0)
+        self.assertEqual(w["accuracy"], 0.0)
+        self.assertAlmostEqual(w["brier"], 2.0, places=6)           # (1-0)^2 + (0-1)^2
+        self.assertAlmostEqual(w["ece"], 1.0, places=6)             # confidence 1, accuracy 0
+        flat = self.K.Item("c", "q", "choice", [[0.0, 0.0, 0.0, 0.0]], 2)
+        f = self.K.metrics([flat], 1.0)
+        self.assertAlmostEqual(f["nll"], math.log(4), places=9)
+        self.assertAlmostEqual(f["brier"], 0.75, places=9)          # 3 * (1/4)^2 + (3/4)^2
+
+    def test_items_without_a_gold_label_are_ignored(self):
+        items = self.synth(200, 3, 1.0, seed=2) + [self.K.Item("x", "q", "choice", [[1.0, 2.0, 3.0]], None)]
+        self.assertEqual(self.K.metrics(items, 1.0)["n"], 200)
+
+    def test_holdout_split_is_deterministic_disjoint_and_by_request(self):
+        items = self.synth(400, 3, 1.0, seed=4)
+        items += [self.K.Item(it.run_id, "second", it.qtype, it.logits, it.gold) for it in items[:100]]   # same request, 2nd question
+        fit, hold = self.K.split_holdout(items, 0.5, seed=11)
+        self.assertEqual(len(fit) + len(hold), len(items))
+        self.assertEqual({i.run_id for i in fit} & {i.run_id for i in hold}, set())
+        fit2, hold2 = self.K.split_holdout(items, 0.5, seed=11)
+        self.assertEqual([(i.run_id, i.question_id) for i in fit], [(i.run_id, i.question_id) for i in fit2])
+        self.assertGreater(len(hold), 120)
+        other, _ = self.K.split_holdout(items, 0.5, seed=12)
+        self.assertNotEqual([i.run_id for i in fit], [i.run_id for i in other])
+
+    def test_holdout_metrics_improve_when_the_model_is_miscalibrated(self):
+        items = self.synth(8000, 5, 2.2, seed=7)                        # the model is over-confident at T=1
+        out = self.K.fit_groups(items, by="question_type", holdout=0.5, seed=1, baseline=1.0)
+        self.assertLess(out["holdout"]["after"]["nll"], out["holdout"]["before"]["nll"])
+        self.assertLess(out["holdout"]["after"]["ece"], out["holdout"]["before"]["ece"])
+        self.assertEqual(out["n_fit"] + out["n_holdout"], 8000)
+        self.assertAlmostEqual(out["temperatures"]["choice"], 2.2, delta=0.25)
+
+    def test_type_k_groups_split_by_option_count(self):
+        K = self.K
+        a = K.Item("r", "q", "choice", [[0.0, 0.0]], 0)
+        b = K.Item("r", "q", "choice", [[0.0] * 3], 0)
+        c = K.Item("r", "q", "choice", [[0.0] * 7], 0)
+        d = K.Item("r", "q", "choice", [[0.0] * 20], 0)
+        self.assertEqual([K.group_of(x, "type_k") for x in (a, b, c, d)], ["choice:2", "choice:3-4", "choice:5-8", "choice:9+"])
+        self.assertEqual(K.group_of(a, "question_type"), "choice")
+        with self.assertRaises(ValueError):
+            K.group_of(a, "nope")
+
+    def test_small_groups_fall_back_to_the_overall_temperature(self):
+        items = self.synth(3000, 4, 1.6, "choice", seed=1, prefix="c") + self.synth(5, 2, 0.4, "noul", seed=2, prefix="n")
+        out = self.K.fit_groups(items, by="question_type", holdout=0.5, seed=3, min_items=50)
+        self.assertEqual(out["temperatures"]["noul"], out["default"])
+        self.assertIn("noul", out["fallback"])
 
 
 class VendorContract(unittest.TestCase):
