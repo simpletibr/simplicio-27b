@@ -797,6 +797,44 @@ class CalibrateContract(unittest.TestCase):
 
         cls.np, cls.K = np, calibrate
 
+    # two views that disagree: view 0 prefers option 0 by a wide margin and option 2 almost as much, view 1 is flat with a bump on option 1
+    VIEWS = [[6.0, 0.0, 5.0], [0.0, 2.0, 0.0]]
+
+    def test_with_several_views_the_temperature_can_change_the_winner(self):
+        item = self.K.Item("r", "q", "choice", self.VIEWS, None)
+        self.assertEqual(int(self.K.item_probs(item, 0.5).argmax()), 1)
+        self.assertEqual(int(self.K.item_probs(item, 4.0).argmax()), 0)
+
+    def test_with_one_view_the_temperature_never_changes_the_winner(self):
+        for view in self.VIEWS:
+            item = self.K.Item("r", "q", "choice", [view], None)
+            self.assertEqual({int(self.K.item_probs(item, t).argmax()) for t in (0.3, 0.5, 1.0, 4.0, 20.0)}, {int(self.np.argmax(view))})
+
+    def test_the_module_does_not_promise_what_tta_breaks(self):
+        doc = " ".join(self.K.__doc__.split())
+        self.assertNotRegex(doc, r"never which option wins")
+        self.assertNotRegex(doc, r"leaves argmax-based benchmark scores alone")
+        self.assertIn("can change which option wins", doc)
+        self.assertIn("[[6, 0, 5], [0, 2, 0]]", doc)                    # the example the claim is shown with: it is the one tested above
+
+    def test_the_teacher_probabilities_come_from_the_views_not_from_the_mixed_probabilities(self):
+        t_teacher = 1.3823494677922652
+        exact = self.K.reprobabilities(self.VIEWS, t_teacher)
+        mixed = self.K.reprobabilities(self.VIEWS, 1.0)
+        rescaled = self.K.softmax(self.np.log(mixed), t_teacher)         # what you get by re-temperaturing the probabilities that were reported
+        self.assertGreater(float(self.np.abs(self.np.array(exact) - rescaled).max()), 0.02)
+        single = self.K.reprobabilities(self.VIEWS[:1], t_teacher)       # with one view the two routes agree: nothing to mix
+        self.assertTrue(self.np.allclose(single, self.K.softmax(self.np.log(self.K.reprobabilities(self.VIEWS[:1], 1.0)), t_teacher)))
+
+    def test_the_modules_say_which_logits_a_teacher_label_is_made_from(self):
+        from decide.sd import engine
+
+        for doc in (self.K.__doc__, engine.__doc__):
+            flat = " ".join(doc.split())
+            self.assertIn("teacher", flat)
+            self.assertIn("per-view raw logits", flat)
+            self.assertIn("reprobabilities", flat)
+
     def synth(self, n, k, temp, qtype="choice", seed=0, views=1, prefix="r"):
         """Items whose gold is drawn from softmax(logits / temp): the best temperature is `temp`."""
         rng = self.np.random.default_rng(seed)

@@ -45,7 +45,9 @@ METRICS_NAME = "metrics.json"
 PLAN_NAME = "plan.json"
 SUBSET_DIR = "subset"
 JSONL_SUFFIXES = (".jsonl", ".jsonl.gz", ".ndjson", ".ndjson.gz")
-META_KEYS = ("example_id", "source", "license", "split", "lang", "catalog_id", "group_id", "track", "proxy_tokens", "dataset")
+META_KEYS = ("example_id", "source", "license", "split", "lang", "catalog_id", "group_id", "track", "proxy_tokens", "dataset", "origin")
+ORIGIN_SUITE, ORIGIN_REQUESTS, ORIGIN_UNKNOWN = "public-suite", "requests", "unknown"
+EVALUATION_ORIGINS = (ORIGIN_SUITE, "gt-sample")                 # ADR 0004, item 6: evaluation data, never training or fitting data
 DEVICE_ERRORS = ("OutOfMemoryError", "AcceleratorError")
 DEVICE_MARKERS = ("device-side assert", "CUDA error", "CUDA out of memory", "HIP error")
 NOTE = ("Sample index: computed with the scoring kit's own scorer on the sampled rows only; benchmarks that are not in the "
@@ -80,6 +82,11 @@ class Item:
     def proxy_tokens(self) -> int:
         return int(self.meta.get("proxy_tokens") or 0)
 
+    @property
+    def origin(self) -> str:
+        """Where the row comes from: `public-suite` (a Decision Index suite row), `gt-sample`, or whatever the row declares; else `requests`."""
+        return str(self.meta.get("origin") or ORIGIN_REQUESTS)
+
     def tokens(self) -> int:
         """Proxy tokens when the row has them, else a rough count (a third of the JSON characters)."""
         return self.proxy_tokens or max(1, len(json.dumps(self.inputs, ensure_ascii=False)) // 3)
@@ -99,7 +106,7 @@ def item_from_row(row: Any, where: str = "row") -> Item:
         raise EvaluateError(f"{where}: a request row is a JSON object")
     marker = row.get("_evaluation")
     if isinstance(marker, Mapping):                              # a row of the Decision Index suite
-        meta = dict(marker)
+        meta = {**marker, "origin": ORIGIN_SUITE}                # a suite row says so itself: its marker cannot declare another origin
         run_id = meta.get("run_id")
         request = {k: row[k] for k in ("state", "questions", "images") if k in row}
         gold = row.get("expected")
@@ -113,9 +120,12 @@ def item_from_row(row: Any, where: str = "row") -> Item:
         else:
             request = _json_field(request, where, "request")
         gold = _json_field(row.get("gold"), where, "gold")
-        meta = {"run_id": run_id, **{k: row[k] for k in META_KEYS if k in row and row[k] is not None}}
+        meta = {"run_id": run_id, "origin": ORIGIN_REQUESTS, **{k: row[k] for k in META_KEYS if k in row and row[k] is not None}}
     if not isinstance(run_id, str) or not run_id:
         raise EvaluateError(f"{where}: no run_id (or example_id)")
+    origin = meta.get("origin")
+    if origin is not None and (not isinstance(origin, str) or not origin):
+        raise EvaluateError(f"{where} ({run_id}): origin must be a non-empty string such as {ORIGIN_REQUESTS!r} or 'gt-sample', got {origin!r}")
     questions = request.get("questions") if isinstance(request, Mapping) else None
     if not isinstance(questions, Mapping) or not questions or "state" not in request:
         raise EvaluateError(f"{where} ({run_id}): the request needs 'state' and a non-empty 'questions' object")
@@ -356,13 +366,16 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
     def event(**kw: Any) -> None:
         _atomic_json(out_dir / STATUS_NAME, {"time": _utc(), **event_base, **kw})
 
+    origins = dict(collections.Counter(item.origin for item in items))
     environment: Dict[str, Any] = {"engine": engine_name, "model_source": dict(getattr(engine, "provenance", {}) or {}),
-                                   "requests_file": Path(requests_path).name, "started_utc": _utc()}
+                                   "requests_file": Path(requests_path).name, "started_utc": _utc(), "origins": origins}
     try:
         environment.update(engine.runtime())
     except Exception as exc:                                     # noqa: BLE001 - bookkeeping must not stop the run
         environment["runtime_error"] = f"{type(exc).__name__}: {exc}"
     _atomic_json(out_dir / ENVIRONMENT_NAME, environment)
+    if state is not None:
+        state.set_meta(f"{prefix}/origins", origins)
 
     todo = [item for item in items if final.get(item.run_id) in (None, "error")]
     skipped = len(items) - len(todo)
@@ -444,7 +457,7 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
 
 # --------------------------------------------------------------------------- the probability table
 
-TABLE_COLUMNS = ("run_id", "catalog_id", "group_id", "track", "question_id", "qtype", "status", "n_options", "option_keys", "codes",
+TABLE_COLUMNS = ("run_id", "catalog_id", "group_id", "track", "origin", "question_id", "qtype", "status", "n_options", "option_keys", "codes",
                  "probs", "logits", "views", "temperature", "applied_temperature", "tokens", "gold", "error")
 
 
@@ -462,7 +475,7 @@ def table_rows(run_dir: Union[str, os.PathLike], golds: Optional[Mapping[str, Ma
     raws = read_raw(run_dir)
     golds = golds or {}
     for run_id, row in results.items():
-        base = {k: row.get(k) for k in ("run_id", "catalog_id", "group_id", "track", "status")}
+        base = {k: row.get(k) for k in ("run_id", "catalog_id", "group_id", "track", "origin", "status")}
         answers = (row.get("response") or {}).get("answers") if row.get("status") == "ok" else None
         if not answers:
             yield {**base, "question_id": None, "qtype": None, "n_options": 0, "option_keys": [], "codes": [], "probs": [], "logits": [],
@@ -493,7 +506,7 @@ def write_table(run_dir: Union[str, os.PathLike], golds: Optional[Mapping[str, M
         raise EvaluateError("writing the probability table needs pyarrow (pyarrow is in notebooks/decide/requirements.txt)") from exc
     out = Path(path) if path else Path(run_dir) / TABLE_NAME
     schema = pa.schema([
-        ("run_id", pa.string()), ("catalog_id", pa.int64()), ("group_id", pa.string()), ("track", pa.string()),
+        ("run_id", pa.string()), ("catalog_id", pa.int64()), ("group_id", pa.string()), ("track", pa.string()), ("origin", pa.string()),
         ("question_id", pa.string()), ("qtype", pa.string()), ("status", pa.string()), ("n_options", pa.int32()),
         ("option_keys", pa.list_(pa.string())), ("codes", pa.list_(pa.string())), ("probs", pa.list_(pa.float64())),
         ("logits", pa.list_(pa.list_(pa.float64()))),
@@ -524,20 +537,39 @@ def _table_batches(path: Union[str, os.PathLike], columns: Sequence[str]) -> Ite
         yield from batch.to_pylist()
 
 
-def table_items(path: Union[str, os.PathLike]) -> List[calibrate.Item]:
-    """`calibrate.Item`s from a probability table (the file, or the run directory that holds it).
+def _table_columns(path: Union[str, os.PathLike]) -> List[str]:
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise EvaluateError("reading the probability table needs pyarrow (pyarrow is in notebooks/decide/requirements.txt)") from exc
+    return list(pq.ParquetFile(str(_table_file(path))).schema_arrow.names)
 
-    Rows that are not `ok`, have no gold label, or whose gold is not one of the option keys are left out.
-    """
-    items: List[calibrate.Item] = []
-    for row in _table_batches(path, ("run_id", "question_id", "qtype", "status", "option_keys", "logits", "gold")):
+
+def _table_records(path: Union[str, os.PathLike]) -> Iterator[Tuple[calibrate.Item, str]]:
+    """(item, origin) for every question of the table that can be fitted on.  A table without an origin column says `unknown`."""
+    wanted = ["run_id", "question_id", "qtype", "status", "option_keys", "logits", "gold", "origin"]
+    have = _table_columns(path)
+    for row in _table_batches(path, [c for c in wanted if c in have]):
         keys, gold, views = row.get("option_keys") or [], row.get("gold"), row.get("logits") or []
         if row.get("status") != "ok" or row.get("question_id") is None or gold is None or gold not in keys:
             continue
         if not views or any(len(view) != len(keys) for view in views):
             continue
-        items.append(calibrate.Item(row["run_id"], row["question_id"], str(row["qtype"]), [[float(x) for x in v] for v in views], keys.index(gold)))
-    return items
+        item = calibrate.Item(row["run_id"], row["question_id"], str(row["qtype"]), [[float(x) for x in v] for v in views], keys.index(gold))
+        yield item, str(row.get("origin") or ORIGIN_UNKNOWN)
+
+
+def table_items(path: Union[str, os.PathLike]) -> List[calibrate.Item]:
+    """`calibrate.Item`s from a probability table (the file, or the run directory that holds it).
+
+    Rows that are not `ok`, have no gold label, or whose gold is not one of the option keys are left out.
+    """
+    return [item for item, _ in _table_records(path)]
+
+
+def table_origins(path: Union[str, os.PathLike]) -> Dict[str, int]:
+    """How many of the items `table_items` returns come from each origin (`public-suite`, `gt-sample`, `requests`, ..., `unknown`)."""
+    return dict(collections.Counter(origin for _, origin in _table_records(path)))
 
 
 def table_temperature(path: Union[str, os.PathLike]) -> Optional[float]:

@@ -351,7 +351,7 @@ class ApiFlow(HermeticTestCase):
         rows = self.gold_rows(40)
         eng = self.engine("anchor", tta_rotations=2)
         api.run_requests(eng, self.write_requests(rows), self.dir / "run", log=None)
-        fit = api.fit_temperature(self.dir / "run" / self.ev.TABLE_NAME, min_items=5, seed=3)
+        fit = api.fit_temperature(self.dir / "run" / self.ev.TABLE_NAME, min_items=5, seed=3, allow_evaluation_data=True)      # suite rows
         items = self.ev.calibration_items(self.dir / "run", rows)
         direct = self.cal.fit_groups(items, by="question_type", holdout=0.5, seed=3, baseline=self.tm.TEMPERATURE, grid=(0.5, 4.0), min_items=5)
         for key in ("temperatures", "default", "n_fit", "n_holdout", "fit_counts", "holdout", "baseline"):
@@ -359,11 +359,29 @@ class ApiFlow(HermeticTestCase):
         self.assertEqual(sorted(fit["temperatures"]), ["choice", "noul"])
         self.assertEqual(fit["n_items"], len(items))
         self.assertTrue(fit["source"].endswith(self.ev.TABLE_NAME))
-        self.assertEqual(api.fit_temperature(self.dir / "run", min_items=5, seed=3)["temperatures"], fit["temperatures"])
+        self.assertEqual(api.fit_temperature(self.dir / "run", min_items=5, seed=3, allow_evaluation_data=True)["temperatures"],
+                         fit["temperatures"])
+        self.assertEqual((fit["fitted_on"], fit["evaluation_rows"]), ({"public-suite": 80}, 80))
+
+    def dev_rows(self, count=30):
+        """The same questions as plain request rows (a dev split of a training corpus), not rows of the public suite."""
+        return [{"example_id": f"dev{i}", "request": {k: row[k] for k in ("state", "questions")}, "gold": row["expected"]}
+                for i, row in enumerate(self.gold_rows(count))]
+
+    @needs_pyarrow
+    def test_a_run_on_the_public_suite_cannot_be_fitted_but_a_run_on_dev_rows_can(self):
+        api.run_requests(self.engine("anchor"), self.write_requests(self.gold_rows(12), "suite.jsonl"), self.dir / "suite", log=None)
+        api.run_requests(self.engine("anchor"), self.write_requests(self.dev_rows(12), "dev.jsonl"), self.dir / "dev", log=None)
+        with self.assertRaisesRegex(api.ApiError, "public-suite"):
+            api.fit_temperature(self.dir / "suite", min_items=3)
+        fit = api.fit_temperature(self.dir / "dev", min_items=3)
+        self.assertEqual((fit["fitted_on"], fit["evaluation_rows"]), ({"requests": 24}, 0))
+        env = json.loads((self.dir / "suite" / self.ev.ENVIRONMENT_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(env["origins"], {"public-suite": 12})
 
     @needs_pyarrow
     def test_the_fitted_temperatures_go_back_into_an_engine(self):
-        rows = self.gold_rows(40)
+        rows = self.dev_rows(40)
         api.run_requests(self.engine("anchor"), self.write_requests(rows), self.dir / "run", log=None)
         fit = api.fit_temperature(self.dir / "run", min_items=5)
         eng = self.engine("anchor", temperatures=fit["temperatures"])

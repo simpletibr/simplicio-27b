@@ -5,9 +5,11 @@ Everything here is pure (no download, no model).  The tests that build `LoadOpti
 from __future__ import annotations
 
 import copy
+import tempfile
 import unittest
+from pathlib import Path
 
-from decide_support import HermeticTestCase, needs_torch
+from decide_support import HermeticTestCase, needs_pyarrow, needs_torch
 
 from decide.sd import api, env
 from decide.sd import config as C
@@ -328,6 +330,77 @@ class FitTemperatureContract(HermeticTestCase):
     def test_by_must_be_a_known_grouping(self):
         with self.assertRaisesRegex(api.ApiError, "by"):
             api.fit_temperature("/tmp/x", by="colour")
+
+
+@needs_pyarrow
+class FitTemperatureOriginContract(HermeticTestCase):
+    """A temperature is not fitted on evaluation data (ADR 0004, item 6: the GT sample and the public suite are not training data)."""
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+
+    def table(self, origins, name="results.parquet", per=40):
+        """A probability table with `per` questions for each origin in `origins` (None: no origin column at all)."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        rows = []
+        for origin in origins:
+            for i in range(per):
+                gold = "A" if i % 2 else "B"
+                wrong = i % 4 == 0
+                top = (0 if gold == "A" else 1) if not wrong else (1 if gold == "A" else 0)
+                logits = [[3.0, 0.0] if top == 0 else [0.0, 3.0]]
+                row = {"run_id": f"{origin}-{i}", "question_id": "q", "qtype": "choice", "status": "ok", "option_keys": ["A", "B"],
+                       "logits": logits, "gold": gold, "temperature": 1.0}
+                if origin != "none":
+                    row["origin"] = origin
+                rows.append(row)
+        pq.write_table(pa.Table.from_pylist(rows), str(self.dir / name))
+        return self.dir / name
+
+    def test_a_table_of_the_public_suite_is_refused_and_the_refusal_says_why(self):
+        with self.assertRaisesRegex(api.ApiError, r"public-suite.*ADR 0004"):
+            api.fit_temperature(self.table(["public-suite"]), min_items=5)
+
+    def test_the_gt_sample_is_evaluation_data_too(self):
+        with self.assertRaisesRegex(api.ApiError, "gt-sample"):
+            api.fit_temperature(self.table(["gt-sample"]), min_items=5)
+
+    def test_a_few_evaluation_rows_among_clean_ones_are_still_refused(self):
+        with self.assertRaisesRegex(api.ApiError, "public-suite"):
+            api.fit_temperature(self.table(["requests", "public-suite"], per=20), min_items=5)
+
+    def test_the_refusal_names_the_flag_that_overrides_it(self):
+        with self.assertRaisesRegex(api.ApiError, "allow_evaluation_data"):
+            api.fit_temperature(self.table(["public-suite"]), min_items=5)
+
+    def test_rows_that_are_not_evaluation_data_are_fitted_and_the_result_says_what_they_were(self):
+        fit = api.fit_temperature(self.table(["requests"]), min_items=5, seed=1)
+        self.assertEqual(fit["fitted_on"], {"requests": 40})
+        self.assertEqual(fit["evaluation_rows"], 0)
+        self.assertNotIn("warning", fit)
+        self.assertIn("choice", fit["temperatures"])
+
+    def test_the_flag_allows_it_and_the_result_carries_the_mark(self):
+        fit = api.fit_temperature(self.table(["public-suite", "requests"], per=20), min_items=5, seed=1, allow_evaluation_data=True)
+        self.assertEqual(fit["fitted_on"], {"public-suite": 20, "requests": 20})
+        self.assertEqual(fit["evaluation_rows"], 20)
+        self.assertRegex(fit["warning"], "evaluation data")
+        self.assertIn("choice", fit["temperatures"])
+
+    def test_the_flag_must_be_a_real_true(self):
+        for loose in (1, "yes", "False"):
+            with self.assertRaisesRegex(api.ApiError, "public-suite"):
+                api.fit_temperature(self.table(["public-suite"]), min_items=5, allow_evaluation_data=loose)
+
+    def test_a_table_that_does_not_say_where_its_rows_came_from_is_fitted_and_marked_unknown(self):
+        fit = api.fit_temperature(self.table(["none"]), min_items=5, seed=1)
+        self.assertEqual(fit["fitted_on"], {"unknown": 40})
+        self.assertEqual(fit["evaluation_rows"], 0)
 
 
 if __name__ == "__main__":

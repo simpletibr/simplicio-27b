@@ -8,7 +8,9 @@ vendored upstream code, unchanged.
 `DecisionEngine` is what the scoring kit calls: `engine(state, questions) -> (response, raw)`.  With option-order
 TTA it runs the request once per view, maps every view's logits back to the original option order with the exact
 inverse permutation (`tta.py`), and reports the mean over views of softmax(logits / temperature).  The raw logits of
-every view are kept in `raw` so calibration and teacher labels can be computed later without running the model.
+every view are kept in `raw` so calibration and teacher labels can be computed later without running the model.  Both must start
+from those per-view raw logits, never from the probabilities in the response (a mean over views at one temperature): with TTA the
+temperature can change which option wins, and a teacher label at another temperature is `calibrate.reprobabilities(raw["logits"][qid], T)`.
 """
 from __future__ import annotations
 

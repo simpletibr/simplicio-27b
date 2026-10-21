@@ -58,6 +58,7 @@ class Mutation:
 MERGE_TESTS = ("test_contract_65.MergeMathContract",)
 TTA_TESTS = ("test_contract_65.TtaContract", "test_flow_65.EngineFlow")
 CAL_TESTS = ("test_contract_65.CalibrateContract",)
+ORIGIN_TESTS = ("test_contract_65_api.FitTemperatureOriginContract", "test_contract_65_evaluate.OriginContract")
 ENGINE_TESTS = ("test_flow_65.EngineFlow", "test_flow_65_api.EngineExtrasFlow")
 LOADER_TESTS = ("test_flow_65.LoaderFlow",)
 STATE_TESTS = ("test_contract_65.StateContract",)
@@ -146,6 +147,26 @@ MUTATIONS: Tuple[Mutation, ...] = (
     Mutation("calibrate", "small-groups-never-fall-back", C, "if counts[g] >= min_items:", "if counts[g] >= 0:", CAL_TESTS,
              "a group with three rows gets its own temperature"),
     Mutation("calibrate", "k-bucket-boundary", C, '"3-4" if k <= 4', '"3-4" if k < 4', CAL_TESTS, "four options fall in the wrong bucket"),
+    Mutation("calibrate", "fit-on-the-public-suite-allowed", AP, "if evaluation and allow_evaluation_data is not True:",
+             "if False and allow_evaluation_data is not True:", ORIGIN_TESTS, "a temperature is fitted on public-suite rows without anyone asking for it"),
+    Mutation("calibrate", "any-truthy-value-lifts-the-guard", AP, "if evaluation and allow_evaluation_data is not True:",
+             "if evaluation and not allow_evaluation_data:", ORIGIN_TESTS, "allow_evaluation_data='False' lets evaluation rows through"),
+    Mutation("calibrate", "result-forgets-the-evaluation-rows", AP, 'out["evaluation_rows"] = sum(evaluation.values())', 'out["evaluation_rows"] = 0',
+             ORIGIN_TESTS, "a fit on evaluation data does not say so"),
+    Mutation("calibrate", "gt-sample-is-not-evaluation-data", EV, 'EVALUATION_ORIGINS = (ORIGIN_SUITE, "gt-sample")', "EVALUATION_ORIGINS = (ORIGIN_SUITE,)",
+             ORIGIN_TESTS, "the GT sample can be fitted on"),
+    Mutation("calibrate", "suite-row-declares-another-origin", EV, 'meta = {**marker, "origin": ORIGIN_SUITE}', 'meta = {"origin": ORIGIN_SUITE, **marker}',
+             ORIGIN_TESTS, "a suite row whose marker says another origin is no longer a suite row"),
+    Mutation("calibrate", "plain-rows-have-no-origin", EV, 'meta = {"run_id": run_id, "origin": ORIGIN_REQUESTS, **{k: row[k]', 'meta = {"run_id": run_id, **{k: row[k]',
+             ORIGIN_TESTS, "a request row carries no origin into the results"),
+    Mutation("calibrate", "origins-missing-from-environment", EV, '"started_utc": _utc(), "origins": origins}', '"started_utc": _utc()}', ORIGIN_TESTS,
+             "environment.json does not say what the run was made of"),
+    Mutation("calibrate", "origins-missing-from-state", EV, 'state.set_meta(f"{prefix}/origins", origins)', 'state.set_meta(f"{prefix}/origins", {})', ORIGIN_TESTS,
+             "the state store does not say what the run was made of"),
+    Mutation("calibrate", "table-drops-the-origin", EV, 'base = {k: row.get(k) for k in ("run_id", "catalog_id", "group_id", "track", "origin", "status")}',
+             'base = {k: row.get(k) for k in ("run_id", "catalog_id", "group_id", "track", "status")}', ORIGIN_TESTS, "the probability table forgets where its rows came from"),
+    Mutation("calibrate", "no-origin-counts-as-requests", EV, "str(row.get(\"origin\") or ORIGIN_UNKNOWN)", "str(row.get(\"origin\") or ORIGIN_REQUESTS)", ORIGIN_TESTS,
+             "a table that does not say where its rows came from is taken for clean ones"),
 
     # ---- the engine: where the inverse mapping and the temperature are applied
     Mutation("engine", "engine-skips-restoration", E, "rows = [tta.restore_question(view_logits[v][key], plans[v][key]) for v in range(len(plans))]",

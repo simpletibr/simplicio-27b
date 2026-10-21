@@ -407,11 +407,18 @@ def score(results_path: Union[str, Path], *, subset_manifest: Union[str, Path, N
 
 def fit_temperature(results_path: Union[str, Path], *, by: str = "question_type", holdout: float = 0.5, seed: Optional[int] = None,
                     grid: Optional[Sequence[float]] = None, min_items: int = 30, baseline: Optional[float] = None,
-                    cfg: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+                    cfg: Optional[Mapping[str, Any]] = None, allow_evaluation_data: bool = False) -> Dict[str, Any]:
     """One temperature per question group, fitted by NLL on half of the requests and judged on the other half.
 
     Reads the probability table of a run (the `.parquet` file, or its folder): it needs the raw logits and the gold labels.
     `temperatures` in the result can be passed to `load_engine(temperatures=...)`; `holdout` says whether it helped.
+
+    With option-order TTA the temperature can change which option wins (see `calibrate`), so it is a model parameter and not only a
+    probability metric.  ADR 0004 (item 6) keeps the GT sample and the public suite out of anything that is fitted: a table whose rows
+    are marked `public-suite` or `gt-sample` (the mark `run_requests` writes into the table) is refused unless
+    `allow_evaluation_data=True`, for a diagnostic, and then the result says so (`evaluation_rows`, `warning`) and must not be shipped.
+    The mark follows the rows: it guards against a mistake, not against rows that were relabelled.  `fitted_on` counts the fitted
+    questions by origin; a table with no origin column counts as `unknown`.
     """
     if by not in calibrate.GROUPINGS:
         raise ApiError(f"by must be one of {list(calibrate.GROUPINGS)}, got {by!r}")
@@ -427,9 +434,24 @@ def fit_temperature(results_path: Union[str, Path], *, by: str = "question_type"
         raise ApiError(str(exc)) from exc
     if not items:
         raise ApiError(f"{table}: no question has a gold label, so there is nothing to fit on")
+    try:
+        origins = evaluate.table_origins(table)
+    except evaluate.EvaluateError as exc:
+        raise ApiError(str(exc)) from exc
+    evaluation = {name: n for name, n in sorted(origins.items()) if name in evaluate.EVALUATION_ORIGINS}
+    if evaluation and allow_evaluation_data is not True:
+        raise ApiError(f"{table}: {sum(evaluation.values())} of the {len(items)} questions come from evaluation data "
+                       f"({', '.join(f'{n} from {name}' for name, n in evaluation.items())}); ADR 0004 (item 6) keeps the GT sample and the public "
+                       "suite out of anything that is fitted, and a temperature changes the answers when TTA is on. Fit on a dev split of the "
+                       "training corpus, or pass allow_evaluation_data=True for a diagnostic that will not be shipped")
     window = tuple(float(x) for x in (grid if grid is not None else cfg["calibration"].get("grid", calibrate.DEFAULT_GRID)))
     out = calibrate.fit_groups(items, by=by, holdout=holdout, seed=int(cfg["eval"].get("seed", 0)) if seed is None else int(seed),
                                baseline=float(baseline if baseline is not None else (own or 1.0)), grid=window, min_items=min_items)
     out["source"] = str(table)
     out["n_items"] = len(items)
+    out["fitted_on"] = origins
+    out["evaluation_rows"] = sum(evaluation.values())
+    if evaluation:
+        out["warning"] = ("fitted on evaluation data (ADR 0004, item 6): a diagnostic, not a calibration to ship; scores on these "
+                          "rows are no longer clean evidence once the temperature is used")
     return out

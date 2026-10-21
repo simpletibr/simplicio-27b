@@ -674,5 +674,80 @@ class CalibrationItemsContract(HermeticTestCase):
         self.assertEqual(ev.calibration_items(self.dir / "out", rows), [])
 
 
+class OriginContract(HermeticTestCase):
+    """Where the rows of a run come from is written down with the run, so a temperature is not fitted on evaluation data by mistake
+    (ADR 0004, item 6: the GT sample and the public suite are evaluation data, not training data)."""
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+
+    @staticmethod
+    def plain(i, **extra):
+        return {"example_id": f"e{i}", "request": {"state": f"state-{i}", "questions": {"q1": {"type": "choice", "instructions": "pick",
+                "criteria": {"A": "a", "B": "b"}}}}, "gold": {"q1": "A"}, **extra}
+
+    def test_a_row_of_the_public_suite_is_marked_so(self):
+        self.assertEqual(ev.item_from_row(kit_row(0)).origin, "public-suite")
+
+    def test_a_suite_row_cannot_hide_behind_its_own_marker(self):
+        row = kit_row(0)
+        row["_evaluation"]["origin"] = "requests"
+        self.assertEqual(ev.item_from_row(row).origin, "public-suite")
+
+    def test_a_plain_request_row_is_marked_requests(self):
+        self.assertEqual(ev.item_from_row(self.plain(0)).origin, "requests")
+
+    def test_a_row_can_say_it_is_the_gt_sample(self):
+        self.assertEqual(ev.item_from_row(self.plain(0, origin="gt-sample")).origin, "gt-sample")
+
+    def test_an_origin_that_is_not_a_name_is_refused(self):
+        for bad in (5, "", ["gt-sample"]):
+            with self.assertRaisesRegex(ev.EvaluateError, "origin"):
+                ev.item_from_row(self.plain(0, origin=bad))
+
+    def test_evaluation_origins_are_the_ones_the_adr_names(self):
+        self.assertEqual(sorted(ev.EVALUATION_ORIGINS), ["gt-sample", "public-suite"])
+
+    def test_the_origin_goes_to_the_result_rows_the_environment_and_the_state(self):
+        rows = [kit_row(0), kit_row(1), self.plain(2), self.plain(3, origin="gt-sample")]
+        write_jsonl(self.dir / "req.jsonl", rows)
+        state = State(self.dir / "work", MemoryStore())
+        ev.run_requests(StubEngine(), self.dir / "req.jsonl", self.dir / "work" / "run", log=lambda t: None, state=state, table=False)
+        results = [json.loads(line) for line in (self.dir / "work" / "run" / ev.RESULTS_NAME).read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([r["origin"] for r in results], ["public-suite", "public-suite", "requests", "gt-sample"])
+        env = json.loads((self.dir / "work" / "run" / ev.ENVIRONMENT_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(env["origins"], {"public-suite": 2, "requests": 1, "gt-sample": 1})
+        self.assertEqual(state.meta("runs/run/origins"), {"public-suite": 2, "requests": 1, "gt-sample": 1})
+
+    @needs_pyarrow
+    def test_the_probability_table_has_an_origin_column_and_says_how_many_rows_of_each(self):
+        rows = [kit_row(0, gold="B"), kit_row(1, gold="A"), kit_row(2, gold="A", catalog_id=30)]
+        write_jsonl(self.dir / "req.jsonl", rows)
+        ev.run_requests(StubEngine(), self.dir / "req.jsonl", self.dir / "out", log=lambda t: None)
+        self.assertEqual(ev.table_origins(self.dir / "out"), {"public-suite": 3})
+
+    @needs_pyarrow
+    def test_only_the_rows_that_can_be_fitted_on_are_counted(self):
+        rows = [kit_row(0, gold="B"), kit_row(1, gold="Z"), self.plain(2), self.plain(3, origin="gt-sample")]
+        write_jsonl(self.dir / "req.jsonl", rows)
+        ev.run_requests(StubEngine({"state-3": "unsupported"}), self.dir / "req.jsonl", self.dir / "out", log=lambda t: None)
+        # row 1 has a gold that is not an option, row 3 has no answer: neither would be fitted on, neither is counted
+        self.assertEqual(ev.table_origins(self.dir / "out"), {"public-suite": 1, "requests": 1})
+
+    @needs_pyarrow
+    def test_a_table_that_does_not_say_where_its_rows_came_from_is_unknown_not_clean(self):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        table = pa.Table.from_pylist([{"run_id": "r", "question_id": "q", "qtype": "choice", "status": "ok", "option_keys": ["A", "B"],
+                                       "logits": [[1.0, 0.0]], "gold": "A", "temperature": 1.0}])
+        pq.write_table(table, str(self.dir / "t.parquet"))
+        self.assertEqual(ev.table_origins(self.dir / "t.parquet"), {"unknown": 1})
+        self.assertEqual(len(ev.table_items(self.dir / "t.parquet")), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
