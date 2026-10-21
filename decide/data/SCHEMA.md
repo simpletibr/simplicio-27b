@@ -31,13 +31,15 @@ alvos e o treino exigem o manifest (`require_manifest`). `build_corpus` e `decon
 escrevem outro ao terminar e apagam partes, marcadores e rejeitados que a rodada não lista (`removed_stale`):
 **uma pasta `--out` por corpus**, e `--only` gera um corpus parcial.
 
-**Quem escreve só apaga e só sobrescreve o que escreveu.** Os manifests de `build_corpus`, `decontaminate` e do privado
-levam o carimbo `"tool"` (`build_corpus`, `decontaminate`, `proxy_private`; o relatório `decontamination.json` também):
-um `manifest.json` de outra ferramenta, feito à mão ou ilegível não é apagado nem trocado, a rodada falha com
-`ManifestError` e a pasta fica como estava. `decontaminate` recusa `--out` que seja um arquivo, que seja a entrada, que
-esteja dentro dela ou que a contenha (uma entrada de um arquivo só, `--corpus x/c.parquet --out x`, também), e só apaga o
-que as suas próprias marcações `<parte>.done.json` e o manifest da última rodada concluída nomeiam, mais os `.tmp` de
-nomes que ela mesma escreve. Qualquer outro arquivo em `--out` fica onde está (e, fora do manifest, nunca é lido).
+**Quem escreve só apaga e só sobrescreve o que escreveu.** Os manifests de `build_corpus`, `decontaminate`, do privado,
+de `build_targets` e de `seal_directory` levam o carimbo `"tool"` (`build_corpus`, `decontaminate`, `proxy_private`,
+`build_targets`, `seal_directory`; os relatórios `decontamination.json` e `report.json` também): um `manifest.json` de outra
+ferramenta, feito à mão ou ilegível não é apagado nem trocado, a rodada falha com `ManifestError` (`TargetError` em
+`build_targets`) e a pasta fica como estava. `decontaminate` e `build_targets` recusam `--out` que seja um arquivo, que seja
+uma entrada (corpus, rótulos, traços), que esteja dentro dela ou que a contenha (uma entrada de um arquivo só,
+`--corpus x/c.parquet --out x`, também), e só apagam o que as suas próprias marcações `<parte>.done.json` e o manifest da
+última rodada concluída nomeiam, mais os `.tmp` de nomes que elas mesmas escrevem. Qualquer outro arquivo em `--out` fica
+onde está (e, fora do manifest, nunca é lido).
 
 ## 2. Pedido (request)
 

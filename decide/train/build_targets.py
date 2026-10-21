@@ -15,6 +15,11 @@ Like ``build_corpus``, ``--out`` holds exactly the result of the last finished r
 sha256) is removed when a run starts and written when it ends, the trainer reads only the parts it lists, and parts and
 markers a run does not list are deleted (``removed_stale``).  ``--corpus`` must be the finished output of ``build_corpus`` or
 ``decontaminate`` (a folder with a manifest), so a part an earlier build left behind never reaches the targets.
+
+What a run may overwrite and delete is limited to what it can prove it wrote (SCHEMA.md, section 1): ``--out`` is a folder of
+its own that does not overlap any input (``--out`` = the corpus would rewrite its parts as targets, ``--out`` = a label folder
+would delete the labels), the ``manifest.json`` and ``report.json`` it replaces carry its ``tool`` stamp, and the parts it
+removes are the ones its own markers and the manifest of its last finished run name.  Any other file in ``--out`` stays.
 """
 from __future__ import annotations
 
@@ -33,6 +38,7 @@ from .codes import ANSWER_CODES
 from .targets import MISSING_POLICIES, Combiner, TargetError, label_from_row, resolve_combiner
 
 FORMAT_VERSION = 1
+TOOL = "build_targets"      # the `tool` stamp of its manifest.json and report.json: how a later run knows it wrote them
 TARGET_COLUMNS = ("example_id", "source", "split", "lang", "request", "gold", "combined", "teachers", "reasoning")
 _CANONICAL_CODES: Dict[int, Tuple[str, ...]] = {}
 
@@ -155,7 +161,9 @@ def _read_marker(path: Path) -> Optional[Dict[str, Any]]:
         entry = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return entry if isinstance(entry, dict) and {"name", "rows", "sha256", "fingerprint", "stats"} <= set(entry) else None
+    if not (isinstance(entry, dict) and {"name", "rows", "sha256", "fingerprint", "stats"} <= set(entry)):
+        return None
+    return entry if entry["name"] + ".done.json" == path.name else None        # a marker copied under another name is not trusted
 
 
 def _out_name(part: Path, root: Path) -> str:
@@ -174,19 +182,56 @@ def _marker(out_root: Path, name: str) -> Path:
     return out_root / (name + ".done.json")
 
 
-def _prune(out_root: Path, keep: Set[str]) -> List[str]:
-    """Delete what earlier runs left in ``out_root`` that this run does not list: parts, their markers, half-written files."""
+def _check_out(out_root: Path, inputs: Iterable[Path]) -> None:
+    """``--out`` is a folder of its own: not a file, not an input, not inside one and not holding one (a single input file counts as itself)."""
+    if out_root.exists() and not out_root.is_dir():
+        raise TargetError(f"--out {out_root} is a file: the targets need a folder of their own")
+    here = out_root.resolve()
+    for path in inputs:
+        there = path.resolve()
+        if there == here or there.is_relative_to(here) or here.is_relative_to(there):
+            raise TargetError(f"--out {out_root} overlaps the input {path}: the targets go to a folder of their own and never overwrite or sit inside "
+                              "their inputs")
+
+
+def _assert_report_is_ours(out_root: Path) -> None:
+    path = out_root / "report.json"
+    if not path.is_file():
+        return
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        report = None
+    if not isinstance(report, dict) or report.get("tool") != TOOL:
+        raise TargetError(f"{path} was not written by {TOOL}: it will not delete it; use another --out")
+
+
+def _prune(out_root: Path, keep: Set[str], previous: Optional[Dict[str, Any]]) -> List[str]:
+    """Delete what earlier runs of this builder left in ``out_root`` that this run does not list: parts, their markers and half-written files.
+
+    Only what it can prove it wrote is touched: the parts its own markers name and the parts the manifest of its last finished run
+    (``previous``) lists, with the companions it derives from their names.  Anything else in ``out_root`` stays."""
+    owned = {p["name"] for p in (previous or {}).get("parts", []) if isinstance(p, dict) and isinstance(p.get("name"), str)}
+    for marker in sorted(out_root.glob("*.parquet.done.json")):
+        entry = _read_marker(marker)
+        if entry is not None:
+            owned.add(entry["name"])
     removed: List[str] = []
-    for file in sorted(out_root.iterdir()):
-        if not file.is_file():
-            continue
-        name = file.name
-        base = name[: -len(".done.json")] if name.endswith(".parquet.done.json") else None
-        stale = ((name.endswith(".parquet") and name not in keep) or (base is not None and base not in keep)
-                 or name.endswith((".parquet.tmp", ".json.tmp")))
-        if stale:
+
+    def drop(name: str) -> None:
+        file = out_root / name
+        if file.is_file():
             file.unlink()
             removed.append(name)
+
+    for name in sorted(owned - keep):
+        drop(name)
+        drop(name + ".done.json")
+    leftovers = [S.MANIFEST_NAME, "report.json"]
+    for name in sorted(owned | keep):
+        leftovers += [name, name + ".done.json"]
+    for name in leftovers:               # a write that died before it was renamed into place
+        drop(name + ".tmp")
     return removed
 
 
@@ -219,12 +264,18 @@ def build(corpus: "str | Path", labels: Iterable["str | Path"], out: "str | Path
     names = {part: _out_name(part, corpus_root) for part in corpus_parts}
     if len(set(names.values())) != len(names):
         raise TargetError("two corpus parts would produce the same output name")
+    _check_out(out_root, [corpus_root, *(Path(path) for path in labels), *([Path(traces_path)] if traces_path is not None else [])])
+    try:
+        S.assert_manifest_owner(out_root, TOOL)         # refuse a manifest / report that another tool wrote, before anything is deleted
+    except S.ManifestError as exc:
+        raise TargetError(str(exc)) from exc
+    _assert_report_is_ours(out_root)
     out_root.mkdir(parents=True, exist_ok=True)
     # a folder without a manifest is an unfinished build and the trainer refuses it: drop the old manifest and report before
     # touching anything, and write the new ones only at the end
-    (out_root / S.MANIFEST_NAME).unlink(missing_ok=True)
+    previous = S.claim_manifest(out_root, TOOL)
     (out_root / "report.json").unlink(missing_ok=True)
-    removed = _prune(out_root, set(names.values()))
+    removed = _prune(out_root, set(names.values()), previous)
     entries: List[Dict[str, Any]] = []
     index = None
     resumed = 0
@@ -246,7 +297,7 @@ def build(corpus: "str | Path", labels: Iterable["str | Path"], out: "str | Path
         entry = {"name": name, "rows": info["rows"], "sha256": info["sha256"], "fingerprint": fingerprint, "stats": stats}
         S.write_manifest(marker, entry)
         entries.append(entry)
-    manifest: Dict[str, Any] = {"schema_version": S.SCHEMA_VERSION, "kind": "targets", "format_version": FORMAT_VERSION, "columns": list(TARGET_COLUMNS),
+    manifest: Dict[str, Any] = {"schema_version": S.SCHEMA_VERSION, "kind": "targets", "tool": TOOL, "format_version": FORMAT_VERSION, "columns": list(TARGET_COLUMNS),
                                 "rows": sum(entry["rows"] for entry in entries), "parts": entries}
     S.write_manifest(out_root / S.MANIFEST_NAME, manifest)
 
@@ -259,7 +310,7 @@ def build(corpus: "str | Path", labels: Iterable["str | Path"], out: "str | Path
             else:
                 totals[key] += value
     report = {
-        "format_version": FORMAT_VERSION,
+        "format_version": FORMAT_VERSION, "tool": TOOL,
         "rows_in": totals["rows_in"], "rows_out": totals["rows_out"], "dropped_unlabeled": totals["dropped_unlabeled"],
         "teachers_seen": sorted(available), "missing_teacher": dict(sorted(missing_total.items())), "missing_policy": missing,
         "combiner_sha256": combiner.sha256, "parts": len(manifest["parts"]), "parts_resumed": resumed, "removed_stale": removed,
