@@ -666,6 +666,7 @@ class TeacherCoverageContract(unittest.TestCase):
         rows = list(S.read_teacher(part))
         part.unlink()
         S.write_teacher_part(part, rows[::keep_every])
+        S.seal_directory(root / "labels", kind="labels")                       # build_targets reads a labels folder through its manifest
         with contextlib.redirect_stdout(io.StringIO()):
             BT.main(["--corpus", str(root / "corpus"), "--labels", str(root / "labels"), "--out", str(root / "targets-again")])
         out = root / "targets-again"
@@ -1178,6 +1179,16 @@ class GenerateTracesContract(unittest.TestCase):
             self.assertEqual(len(S.corpus_files(out / self.thinker, require_manifest=True)), 1)
             self.assertEqual(report["tokens"], 9 * 17)
 
+    def test_every_trace_carries_the_digest_of_the_request_it_was_written_for(self) -> None:
+        """SCHEMA section 10: build_targets refuses a trace whose request_sha256 is not the corpus request's, so a trace without the right one is useless."""
+        from decide.data import schema as S
+
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus, out = self.corpus(tmp), Path(tmp) / "traces"
+            self.run_step(corpus, out, FakeThinker())
+            wanted = {row["example_id"]: S.request_digest(S.parse_row(row)[0]) for row in S.read_corpus(corpus)}
+            self.assertEqual({r["example_id"]: r["request_sha256"] for r in self.rows(out)}, wanted)
+
     def test_the_budget_of_each_request_is_per_question_up_to_the_cap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             fake = FakeThinker()
@@ -1290,7 +1301,7 @@ class GenerateTracesContract(unittest.TestCase):
             out = Path(tmp) / "traces"
             self.run_step(root / "corpus", out, FakeThinker())
             with contextlib.redirect_stdout(io.StringIO()):
-                BT.main(["--corpus", str(root / "corpus"), "--labels", str(root / "labels"), "--traces", str(out), "--out", str(Path(tmp) / "targets-traces")])
+                BT.main(["--corpus", str(root / "corpus"), "--labels", str(root / "labels"), "--traces", str(out / self.thinker), "--out", str(Path(tmp) / "targets-traces")])
             report = json.loads((Path(tmp) / "targets-traces" / "report.json").read_text(encoding="utf-8"))
             self.assertEqual((report["reasoning_rows"], report["traces_unmatched"], report["thinker"]), (14, 0, self.thinker))
             self.assertEqual(S.corpus_files(Path(tmp) / "targets-traces", require_manifest=True)[0].suffix, ".parquet")
@@ -1804,7 +1815,8 @@ class PlanContract(unittest.TestCase):
         self.assertEqual(plain, [self.py, "-m", "decide.train.build_targets", "--corpus", "/w/day/data/corpus-limpo", "--labels", "/w/day/data/labels/pplx-decider-v1.2",
                                  "--out", "/w/day/targets"])
         traced = self.PL.targets_command(self.paths, thinker="Qwen3.8-27B", python=self.py)
-        self.assertEqual(traced[-6:], ["--traces", "/w/day/traces", "--thinker", "Qwen3.8-27B", "--out", "/w/day/targets-traces"])
+        self.assertEqual(traced[-6:], ["--traces", "/w/day/traces/Qwen3.8-27B", "--thinker", "Qwen3.8-27B", "--out", "/w/day/targets-traces"],
+                         "build_targets reads a traces folder through its manifest.json, and the step writes it in the folder of the thinker")
 
     def test_the_train_command_of_the_economic_profile(self) -> None:
         from decide.rental import profile as PRF
@@ -2179,6 +2191,28 @@ class DatasetInputsContract(unittest.TestCase):
                 IN.verify_dataset(root, name="corpus", manifest_required=True)
             facts = IN.verify_dataset(root, name="labels", manifest_required=False)
             self.assertIn("not checked", facts["warning"])
+
+    def test_a_corpus_that_did_not_come_out_of_decontaminate_is_refused_before_the_day_pays_for_anything(self) -> None:
+        from decide.rental import inputs as IN
+        from decide_b_support import decontaminated
+
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = self.corpus(tmp, "raw")
+            with self.assertRaises(IN.InputsError) as caught:
+                IN.check_corpus_screened(raw)
+            self.assertIn("decontaminate", str(caught.exception))
+            self.assertIn("corpus", str(caught.exception))
+            facts = IN.check_corpus_screened(decontaminated(self.corpus(tmp, "clean")))
+            self.assertEqual(facts["tool"], "decontaminate")
+            self.assertEqual(len(facts["decontamination_sha256"]), 64)
+
+    def test_a_corpus_parquet_file_is_not_a_screened_corpus(self) -> None:
+        from decide.rental import inputs as IN
+
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = self.corpus(tmp, "raw")
+            with self.assertRaises(IN.InputsError):
+                IN.check_corpus_screened(raw / "part-0000.parquet")
 
     def test_a_missing_folder_names_itself(self) -> None:
         from decide.rental import inputs as IN

@@ -116,8 +116,10 @@ class FakeKit:
         return {"rows": count, "total": count, "tokens": 10 * count, "seconds": 1.5, "status": "complete"}
 
 
-def build_world(root: Path, *, label_every=1):
-    """A LocalHub holding the private data repo and the start checkpoint; returns (hub, proxy_requests_file)."""
+def build_world(root: Path, *, label_every=1, screened=True, labels_sealed=True):
+    """A LocalHub holding the private data repo and the start checkpoint; returns (hub, proxy_requests_file).
+
+    ``screened=False`` uploads a corpus sealed by hand (not the output of decontaminate); ``labels_sealed=False`` uploads labels without a manifest."""
     from decide.data import schema as S
     from decide.rental import gates as G
     from decide.rental import hub as H
@@ -129,6 +131,7 @@ def build_world(root: Path, *, label_every=1):
         rows = list(S.read_teacher(part))
         part.unlink()
         S.write_teacher_part(part, rows[::label_every])
+        S.seal_directory(data / "labels", kind="labels")                       # build_targets reads a labels folder through its manifest
     proxy_rows = []
     for source in ("alpha", "beta"):
         for i in range(40):
@@ -141,6 +144,12 @@ def build_world(root: Path, *, label_every=1):
     shutil.copytree(data / "corpus", staging / "corpus-limpo")
     shutil.copytree(data / "labels", staging / "labels" / "pplx-decider-v1.2")
     shutil.copytree(data / "proxy", staging / "proxy")
+    if not screened:
+        (staging / "corpus-limpo" / "decontamination.json").unlink()
+        (staging / "corpus-limpo" / "manifest.json").unlink()
+        S.seal_directory(staging / "corpus-limpo")
+    if not labels_sealed:
+        (staging / "labels" / "pplx-decider-v1.2" / "manifest.json").unlink()
     hub = H.LocalHub(root / "hub")
     hub.ensure_repo("me/data", kind="dataset")
     hub.upload("me/data", staging, kind="dataset")
@@ -405,6 +414,32 @@ class RefusalsBeforeTheMoney(unittest.TestCase):
             self.assertIn("B200", str(caught.exception))
             self.assertEqual(executor.calls, [])
             self.assertFalse((Path(tmp) / "day" / "start").exists())
+
+    def test_a_corpus_that_did_not_come_out_of_decontaminate_stops_the_day_at_the_fetch(self) -> None:
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp), screened=False)
+            executor = InProcessExecutor()
+            with self.assertRaises(R.DayError) as caught:
+                make_day(Path(tmp) / "day", hub, FakeKit(), executor).run()
+            self.assertIn("fetch", str(caught.exception))
+            self.assertIn("decontaminate", str(caught.exception))
+            self.assertEqual(executor.calls, [], "no command ran, so no GPU hour was spent on rows nobody screened")
+            self.assertFalse((Path(tmp) / "day" / "start").exists(), "the 52 GB checkpoint is not downloaded for a day that cannot start")
+
+    def test_labels_without_a_manifest_stop_the_day_at_the_fetch(self) -> None:
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp), labels_sealed=False)
+            executor = InProcessExecutor()
+            with self.assertRaises(R.DayError) as caught:
+                make_day(Path(tmp) / "day", hub, FakeKit(), executor).run()
+            self.assertIn("fetch", str(caught.exception))
+            self.assertIn("labels", str(caught.exception))
+            self.assertIn("seal_directory", str(caught.exception), "the message says how to make the manifest")
+            self.assertEqual(executor.calls, [])
 
     def test_a_dry_run_prints_the_plan_and_touches_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
