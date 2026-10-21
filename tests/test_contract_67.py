@@ -5,7 +5,10 @@ rental-day orchestrator) relies on.  Flows that touch disk are in test_flow_67.p
 """
 from __future__ import annotations
 
+import importlib
 import json
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -257,6 +260,49 @@ class ManifestReadingContract(unittest.TestCase):
         (self.root / "manifest.json").write_text("{not json", encoding="utf-8")
         with self.assertRaises(S.ManifestError):
             S.corpus_files(self.root)
+
+
+class PplxParity(unittest.TestCase):
+    """Optional: DECIDE_PPLX_REFERENCE=<pplx-decider checkout>/src compares the option keys with the real protocol.
+
+    The hand-written expectations in SchemaContract cannot catch a drift of ``option_keys`` from ``options()`` of
+    pplx-decider v1.2 (the review of PR #74 asked for this comparison).  Skipped when the reference is not given
+    or does not import (it needs torch and Pillow)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        reference = os.environ.get("DECIDE_PPLX_REFERENCE")
+        if not reference:
+            raise unittest.SkipTest("set DECIDE_PPLX_REFERENCE=<pplx-decider>/src to compare with the real protocol")
+        sys.path.insert(0, reference)
+        try:
+            cls.protocol = importlib.import_module("pplx_decider.protocol")
+        except ImportError as exc:
+            raise unittest.SkipTest(f"pplx_decider does not import here: {exc}") from exc
+        finally:
+            sys.path.remove(reference)
+
+    def questions(self):
+        yield choice_request(keys=["x", "y", "z"], options=["a", "b", "c"])["questions"]["q1"]
+        yield {"type": "choice", "criteria": {"only": None}}
+        yield {"type": "choice", "criteria": {f"option_{i:03d}": f"text {i}" for i in range(255)}}
+        yield noul_request()["questions"]["q1"]
+        yield {"type": "noul"}
+        yield {"type": "noul", "criteria": None}
+        yield {"type": "noul", "criteria": {"true": "yes"}}
+        yield score_request()["questions"]["q1"]
+        yield score_request(levels=[f"level {i}" for i in range(255)])["questions"]["q1"]
+
+    def test_option_keys_and_texts_follow_pplx_options(self) -> None:
+        for question in self.questions():
+            keys, descriptions = self.protocol.options(question)
+            self.assertEqual(S.option_keys(question), keys)
+            self.assertEqual(len(S.option_texts(question)), len(descriptions))
+
+    def test_the_corpus_validator_accepts_what_the_encoder_can_encode(self) -> None:
+        for question in self.questions():
+            self.assertEqual(S.validate_request({"state": "s", "questions": {"q": question}}), [])
+        self.assertEqual(S.MAX_OPTIONS, self.protocol.MAX_OPTIONS)
 
 
 @needs_yaml
