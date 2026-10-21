@@ -70,5 +70,19 @@
   "reasoning": "Step 0: the card was reissued and the old one blocked.\nStep 1: the card was reissued and the old one blocked.\nStep 2: the card was reissued and the old one blocked.\nStep 3: the card was reissued and the old one blocked.\nStep 4: the card was reissued and the old one blocked.\nStep 5: the card was reissued and the old one blocked.\nStep 6: the card was reissued and the old one blocked.\nStep 7: the card was reissued and the old one blocked.\nStep 8: the card was reissued and the old one blocked.\nStep 9: the card was reissued and the old one blocked.\nStep 10: the card was reissued and the old one blocked.\nStep 11: the card was reissued and the old one blocked.",
   "max_chars": 200,
   "folded_state": "The card is late.\n\nRaciocínio:\n[... 495 caracteres omitidos ...]\nStep 9: the card was reissued and the old one blocked.\nStep 10: the card was reissued and the old one blocked.\nStep 11: the card was reissued and the old one blocked."
+ },
+ {
+  "name": "a cut that leaves the label at the start of the tail",
+  "state": "The card is late.",
+  "reasoning": "x                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        Raciocínio:",
+  "max_chars": 100,
+  "folded_state": "The card is late.\n\nRaciocínio:\n[... 546 caracteres omitidos ...]\n                                                       Raciocínio :"
+ },
+ {
+  "name": "indent on the first line of the reasoning stays",
+  "state": "The card is late.",
+  "reasoning": "\n\n  \tStep 1: indented.\nSo B.\n",
+  "max_chars": null,
+  "folded_state": "The card is late.\n\nRaciocínio:\n  \tStep 1: indented.\nSo B."
  }
 ]

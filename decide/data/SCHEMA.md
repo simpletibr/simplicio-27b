@@ -263,14 +263,19 @@ bloco). O `bloco` é o raciocínio depois de:
 4. três ou mais linhas em branco seguidas viram uma só, e as quebras de linha das pontas saem;
 5. corte em **caracteres**: no máximo 8000 (`REASONING_MAX_CHARS`). Acima disso fica o **fim** do texto (é lá que está a
    conclusão), a partir de uma quebra de linha quando há uma, atrás de uma linha `[... N caracteres omitidos ...]`.
-   Um texto que já cabe (um já cortado, por exemplo) não é cortado de novo.
+   Um texto que já cabe (um já cortado, por exemplo) não é cortado de novo;
+6. depois do corte, as regras 2 a 4 valem de novo sobre o resultado: um corte no meio de uma linha pode deixar o rótulo sozinho
+   no começo da cauda (`"x"` + 600 espaços + `Raciocínio:`), e essa linha também vira `Raciocínio :`, para que o estado dobrado
+   tenha **uma só** linha de rótulo. Quando isso acontece o bloco fica um caractere acima de `max_chars` (o espaço do rótulo
+   neutralizado).
 
 Um estado que já tem uma linha de rótulo é recusado (`RequestError`), nunca sobrescrito; `build_targets` não anexa o traço a
 uma linha assim (`reasoning_state_has_block` no relatório) e o treino e a avaliação a usam sem raciocínio. `messages()` monta o
 prompt a partir do pedido dobrado, então as duas formas geram o mesmo prompt **por construção**. O lado do pensador
 (`decide/think/trace.py`) implementa a mesma função; o contrato entre os dois lados é o arquivo dourado
-`tests/fold_reasoning_cases.json` (10 casos: estado com espaço no fim, rótulo dentro do raciocínio, CRLF, três ou mais
-linhas em branco, estado vazio, estado como objeto, corte), que os dois lados têm de reproduzir. **Isto tem de estar resolvido
+`tests/fold_reasoning_cases.json` (12 casos: estado com espaço no fim, rótulo dentro do raciocínio, CRLF, três ou mais
+linhas em branco, estado vazio, estado como objeto, corte, corte que deixa o rótulo no começo da cauda, recuo da primeira linha
+do raciocínio), que os dois lados têm de reproduzir. **Isto tem de estar resolvido
 antes de qualquer treino com `--reasoning`:** o `Encoder` do pplx-decider v1.2 ignora a chave `reasoning` em silêncio, então
 um motor que só conhece `state` (o `api.run_requests` do kit) chama `fold_reasoning` antes de mandar o pedido, ou recusa a
 chave. O pedido também recusa `images` (`RequestError`): o protocolo é só texto e o v1.2 leria o pedido como texto sem avisar.
