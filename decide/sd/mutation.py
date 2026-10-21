@@ -58,6 +58,8 @@ class Mutation:
 MERGE_TESTS = ("test_contract_65.MergeMathContract",)
 TTA_TESTS = ("test_contract_65.TtaContract", "test_flow_65.EngineFlow")
 CAL_TESTS = ("test_contract_65.CalibrateContract",)
+REASONING_TESTS = ("test_contract_65_evaluate.ReasoningContract",
+                   "test_flow_65_api.ApiFlow.test_a_flat_row_with_reasoning_is_refused_by_the_engine_not_answered_without_it")
 RESUME_TESTS = ("test_contract_65_evaluate.RunRequestsContract",)
 ORIGIN_TESTS = ("test_contract_65_api.FitTemperatureOriginContract", "test_contract_65_evaluate.OriginContract")
 ENGINE_TESTS = ("test_flow_65.EngineFlow", "test_flow_65_api.EngineExtrasFlow")
@@ -377,6 +379,8 @@ MUTATIONS: Tuple[Mutation, ...] = (
     Mutation("remote", "redirect-without-location-followed", R, "if not where:", "if False:", REMOTE_TESTS, "a redirect with no Location is followed to nowhere"),
     Mutation("remote", "relative-location-not-resolved", R, "target = urllib.parse.urljoin(url, where)", "target = where", REMOTE_TESTS,
              "a relative redirect is refused instead of followed"),
+    Mutation("budget", "rows-drop-reasoning-on-the-way-to-the-engine", EV, 'REQUEST_KEYS = ("state", "questions", "images", "reasoning")',
+             'REQUEST_KEYS = ("state", "questions", "images")', REASONING_TESTS, "a suite row or a flat row with reasoning is answered without it"),
     Mutation("state", "state-written-in-place", S, 'tmp = self.path.with_name(STATE_NAME + ".tmp")', "tmp = self.path", STATE_TESTS,
              "a disk that fills halfway through leaves a torn state.json instead of the previous one"),
     Mutation("state", "absolute-local-path-allowed", S, "if pure.is_absolute():", "if False:", STATE_TESTS,

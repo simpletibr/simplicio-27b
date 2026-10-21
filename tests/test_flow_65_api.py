@@ -377,6 +377,14 @@ class ApiFlow(HermeticTestCase):
         self.assertEqual(len(route["logits"]), 2)
         self.assertIsNotNone(route["gold"])
 
+    def test_a_flat_row_with_reasoning_is_refused_by_the_engine_not_answered_without_it(self):
+        row = self.dev_rows(2)[0]
+        row = {"example_id": row["example_id"], **row["request"], "reasoning": "step 1: ...", "gold": row["gold"]}      # the flat shape
+        out = api.run_requests(self.engine("anchor"), self.write_requests([row]), self.dir / "run", log=None, table=False)
+        self.assertEqual(out["counts"], {"unsupported": 1})
+        result = json.loads((self.dir / "run" / self.ev.RESULTS_NAME).read_text(encoding="utf-8").splitlines()[0])
+        self.assertIn("reasoning", result["error"])
+
     @needs_pyarrow
     def test_a_second_call_resumes_and_does_no_work(self):
         rows = self.gold_rows(6)

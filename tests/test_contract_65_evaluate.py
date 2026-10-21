@@ -746,6 +746,48 @@ class SpecSourcesContract(HermeticTestCase):
             self.assertFalse(set(self.HOSTILE) & set(row), sorted(set(self.HOSTILE) & set(row)))
 
 
+class ReasoningContract(HermeticTestCase):
+    """A request that carries `reasoning` reaches the engine with it, whatever shape its row has: the engine decides (it refuses, today),
+    the row builder does not drop it on the way."""
+
+    TEXT = "step 1: the user asked twice"
+
+    def forms(self):
+        suite = kit_row(0)
+        suite["reasoning"] = self.TEXT
+        flat = {"example_id": "e1", "state": "state-1", "questions": {"q1": {"type": "choice", "instructions": "pick", "criteria": {"A": "a", "B": "b"}}},
+                "reasoning": self.TEXT, "gold": {"q1": "A"}}
+        nested = {"example_id": "e2", "request": {"state": "state-2", "reasoning": self.TEXT, "questions": flat["questions"]}, "gold": {"q1": "A"}}
+        as_json = {"example_id": "e3", "request": json.dumps(nested["request"]), "gold": {"q1": "A"}}
+        return {"suite row": suite, "flat row": flat, "request object": nested, "request as JSON text": as_json}
+
+    def test_every_shape_of_row_keeps_reasoning_in_the_request(self):
+        for name, row in self.forms().items():
+            with self.subTest(name):
+                self.assertEqual(ev.item_from_row(row).inputs.get("reasoning"), self.TEXT)
+
+    def test_rows_without_reasoning_do_not_gain_the_key(self):
+        row = kit_row(0)
+        self.assertNotIn("reasoning", ev.item_from_row(row).inputs)
+
+    def test_the_engine_gets_it_and_its_refusal_becomes_a_final_unsupported_row(self):
+        class Refuses(StubEngine):
+            def _answer(self, request):
+                if request.get("reasoning") is not None:
+                    return Unsupported("this engine does not render 'reasoning'")
+                return super()._answer(request)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = list(self.forms().values())[:2]
+            write_jsonl(Path(tmp) / "req.jsonl", rows)
+            engine = Refuses()
+            out = ev.run_requests(engine, Path(tmp) / "req.jsonl", Path(tmp) / "run", log=lambda t: None, table=False)
+            self.assertEqual(out["counts"], {"unsupported": 2})
+            again = Refuses()
+            self.assertEqual(ev.run_requests(again, Path(tmp) / "req.jsonl", Path(tmp) / "run", log=lambda t: None, table=False)["rows"], 0)
+            self.assertEqual(again.seen, [])                                 # unsupported is final: a resume does not ask again
+
+
 class OriginContract(HermeticTestCase):
     """Where the rows of a run come from is written down with the run, so a temperature is not fitted on evaluation data by mistake
     (ADR 0004, item 6: the GT sample and the public suite are evaluation data, not training data)."""

@@ -46,6 +46,7 @@ PLAN_NAME = "plan.json"
 SUBSET_DIR = "subset"
 JSONL_SUFFIXES = (".jsonl", ".jsonl.gz", ".ndjson", ".ndjson.gz")
 META_KEYS = ("example_id", "source", "license", "split", "lang", "catalog_id", "group_id", "track", "proxy_tokens", "dataset", "origin")
+REQUEST_KEYS = ("state", "questions", "images", "reasoning")      # what a row of the suite or a flat row hands to the engine as its request
 ORIGIN_SUITE, ORIGIN_REQUESTS, ORIGIN_UNKNOWN = "public-suite", "requests", "unknown"
 EVALUATION_ORIGINS = (ORIGIN_SUITE, "gt-sample")                 # ADR 0004, item 6: evaluation data, never training or fitting data
 TERMINAL_ERRORS = ("FloatingPointError",)                        # the same request gives the same non-finite logits: an error row that is final
@@ -119,13 +120,13 @@ def item_from_row(row: Any, where: str = "row") -> Item:
     if isinstance(marker, Mapping):                              # a row of the Decision Index suite
         meta = {**marker, "origin": ORIGIN_SUITE}                # a suite row says so itself: its marker cannot declare another origin
         run_id = meta.get("run_id")
-        request = {k: row[k] for k in ("state", "questions", "images") if k in row}
+        request = {k: row[k] for k in REQUEST_KEYS if k in row}
         gold = row.get("expected")
     else:                                                        # {run_id | example_id, request | state + questions, gold}
         run_id = row.get("run_id", row.get("example_id"))
         request = row.get("request")
         if request is None:
-            request = {k: row[k] for k in ("state", "questions", "images") if k in row}
+            request = {k: row[k] for k in REQUEST_KEYS if k in row}
             if "questions" in request:
                 request["questions"] = _json_field(request["questions"], where, "questions")
         else:
