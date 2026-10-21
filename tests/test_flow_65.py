@@ -146,6 +146,14 @@ class RemoteFlow(HermeticTestCase):
         with self.assertRaisesRegex(remote.RemoteError, "401"):
             r2.shard("model.safetensors")
 
+    def test_a_token_is_never_sent_over_plain_http_to_another_machine(self):
+        for endpoint in ("http://example.com", "http://huggingface.co", "ftp://example.com", "https://"):
+            with self.subTest(endpoint), self.assertRaisesRegex(remote.RemoteError, "endpoint"):
+                remote.HubRepo("org/model", endpoint=endpoint, token="tok")
+        for endpoint in ("https://huggingface.co", "http://127.0.0.1:1", "http://localhost:8080", "http://[::1]:9"):
+            remote.HubRepo("org/model", endpoint=endpoint, token="tok")
+        remote.HubRepo("org/model", endpoint="http://example.com")                      # nothing secret to leak without a token
+
     def test_missing_file_and_unknown_tensor(self):
         r = self.repo()
         with self.assertRaisesRegex(remote.RemoteError, "404"):

@@ -203,6 +203,25 @@ MUTATIONS: Tuple[Mutation, ...] = (
     Mutation("budget", "first-chunk-not-priced", EV, "cost = sum(i.tokens() for i in piece) / tokens_per_second if tokens_per_second else 0.0",
              "cost = 0.0", BUDGET_TESTS, "the plan's measured throughput is ignored and the first chunk is always free"),
 
+    # ---- the config says what will run, or it says no
+    Mutation("config", "config-ignores-unknown-keys", CF, "for message in _unknown_keys(schema, raw[section], section):", "for message in []:", CONFIG_TESTS,
+             "tta.rotatons, merge.max_candidate and the like run with the default and say nothing"),
+    Mutation("config", "config-accepts-unknown-sections", CF, "if key not in SCHEMA and key not in set(foreign):", "if False and key not in SCHEMA and key not in set(foreign):",
+             CONFIG_TESTS, "a section 'mergee' is read by nobody and accepted"),
+    Mutation("config", "overlay-may-bring-any-section", CF, 'foreign.append(extra.name.split(".")[1])', "foreign.extend(yaml.safe_load(extra.read_text()) or {})",
+             CONFIG_TESTS, "an overlay file can smuggle in a misspelled section of ours"),
+    Mutation("config", "lora-weight-grid-allows-zero", CF, "all(_number(x) and x > 0 for x in weights)", "all(_number(x) and x >= 0 for x in weights)", CONFIG_TESTS,
+             "a LoRA weight of zero runs the plain anchor under the name of a LoRA candidate"),
+    Mutation("config", "session-longer-than-twelve-hours", CF, '0 < b.get("session_hours", 0) <= SESSION_HOURS_MAX,', '0 < b.get("session_hours", 0),', CONFIG_TESTS,
+             "a plan for a 14 h Kaggle session passes"),
+    Mutation("config", "calibration-grid-unordered", CF, "0 < window[0] < window[1]", "0 < window[0]", CONFIG_TESTS, "a search window [4, 0.5] only fails at the fit"),
+    Mutation("config", "text-passes-as-a-number", CF, 'return isinstance(x, (int, float)) and not isinstance(x, bool) and x == x and x not in (float("inf"), float("-inf"))',
+             "return True", CONFIG_TESTS, "a weight written as '0.5' ends in a TypeError instead of a config error"),
+    Mutation("config", "plain-http-endpoint-accepted", CF, "need(problem is None,", "need(True or problem is None,", CONFIG_TESTS,
+             "an http:// endpoint on another machine passes the config"),
+    Mutation("remote", "token-over-plain-http", R, "            if problem:", "            if False and problem:", REMOTE_TESTS,
+             "the reader builds a client that would send the token unencrypted to another machine"),
+
     # ---- the loader: which tensors are merged with which weights
     Mutation("loader", "donor-weights-misaligned", L, "[weights[i] for i in plan.donors]", "[weights[i] for i in reversed(plan.donors)]",
              ("test_flow_65.LoaderFlow",), "donor i is merged with the weight of donor j"),

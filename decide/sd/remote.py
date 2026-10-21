@@ -14,6 +14,7 @@ import re
 import struct
 import threading
 import time
+import urllib.parse
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Sequence, Tuple
@@ -36,12 +37,25 @@ def torch_dtype(name: str):
     return getattr(torch, _TORCH_NAMES[name])
 
 
+LOOPBACK = ("localhost", "127.0.0.1", "::1")
 RETRY_STATUS = {408, 425, 429, 500, 502, 503, 504}
 MAX_HEADER = 256 << 20
 
 
 class RemoteError(RuntimeError):
     pass
+
+
+def endpoint_problem(endpoint: Any) -> Optional[str]:
+    """Why `endpoint` cannot carry a token, or None: https anywhere, plain http only to this machine."""
+    if not isinstance(endpoint, str):
+        return "must be text"
+    parts = urllib.parse.urlsplit(endpoint)
+    if not parts.hostname:
+        return f"has no host: {endpoint!r}"
+    if parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in LOOPBACK):
+        return None
+    return f"{endpoint!r} would send the token without encryption: use https (plain http is accepted only for {', '.join(LOOPBACK)})"
 
 
 class TensorInfo(NamedTuple):
@@ -399,6 +413,10 @@ class HubRepo:
 
     def __init__(self, repo_id: str, revision: Optional[str] = None, token: Optional[str] = None,
                  endpoint: str = "https://huggingface.co", transport=None, probe: int = 1 << 18, **transport_kw) -> None:
+        if token:
+            problem = endpoint_problem(endpoint)
+            if problem:
+                raise RemoteError(f"the Hub endpoint {problem}")
         self.probe = probe
         self.repo_id = repo_id
         self.revision = revision or "main"

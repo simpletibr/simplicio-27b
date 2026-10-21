@@ -207,6 +207,89 @@ class ConfigContract(HermeticTestCase):
                     with self.assertRaisesRegex(C.ConfigError, "revision"):
                         C.validate(r)
 
+    def test_an_unknown_or_misspelled_key_is_an_error_that_names_the_key_and_the_likely_one(self):
+        cases = [
+            ("tta.rotatons", lambda r: r["tta"].update(rotatons=2), "rotations"),
+            ("merge.max_candidate", lambda r: r["merge"].update(max_candidate=3), "max_candidates"),
+            ("eval.per_benchmarks", lambda r: r["eval"].update(per_benchmarks=3), "per_benchmark"),
+            ("a section mergee", lambda r: r.update(mergee={"method": "ties"}), "merge"),
+            ("models.anchor.revison", lambda r: r["models"]["anchor"].update(revison="x"), "revision"),
+            ("a donor's wieght", lambda r: r["models"]["donors"][0].update(wieght=1), "weight"),
+            ("fidelity.published.d3.datasets", lambda r: r["fidelity"]["published"]["d3"].update(datasets="x"), "dataset"),
+            ("modal.gpus", lambda r: r["modal"].update(gpus="B200"), "gpu"),
+            ("the dead key eval.double_quant", lambda r: r["eval"].update(double_quant=True), "double_quant"),
+        ]
+        for label, mutate, hint in cases:
+            with self.subTest(label):
+                r = self.raw()
+                mutate(r)
+                with self.assertRaisesRegex(C.ConfigError, rf"unknown key.*{hint}|{hint}.*unknown key|section.*{hint}"):
+                    C.validate(r)
+
+    def test_the_shipped_config_has_no_dead_key(self):
+        self.assertNotIn("double_quant", self.raw()["eval"])
+
+    def test_a_section_an_overlay_file_brings_is_allowed_only_under_the_name_of_the_file(self):
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "config.yaml"
+            base.write_text(C.DEFAULT_PATH.read_text())
+            (Path(tmp) / "config.rental.yaml").write_text(yaml.safe_dump({"rental": {"hours": 3}}))
+            self.assertEqual(C.load_config(base, overlays=True).rental.hours, 3)
+            (Path(tmp) / "config.rental.yaml").write_text(yaml.safe_dump({"rentl": {"hours": 3}}))
+            with self.assertRaisesRegex(C.ConfigError, "rentl"):
+                C.load_config(base, overlays=True)
+            (Path(tmp) / "config.rental.yaml").write_text(yaml.safe_dump({"tta": {"rotatons": 3}}))      # an overlay may override our sections, not misspell them
+            with self.assertRaisesRegex(C.ConfigError, "rotatons"):
+                C.load_config(base, overlays=True)
+            (Path(tmp) / "config.rental.yaml").write_text(yaml.safe_dump({"tta": {"rotations": 3}}))
+            self.assertEqual(C.load_config(base, overlays=True).tta.rotations, 3)
+        with self.assertRaisesRegex(C.ConfigError, "rentl"):
+            C.load_config(overrides={"rentl": {"hours": 3}})
+
+    def test_values_that_would_run_something_other_than_what_was_written_are_refused(self):
+        cases = {
+            "lora weight_grid with a negative": lambda r: r["models"]["lora"].update(weight_grid=[-0.1]),
+            "lora weight_grid with zero": lambda r: r["models"]["lora"].update(weight_grid=[0]),
+            "lora weight_grid not a list": lambda r: r["models"]["lora"].update(weight_grid=0.1),
+            "lambda_grid with zero": lambda r: r["merge"].update(lambda_grid=[0, 0.5]),
+            "lambda_grid with text": lambda r: r["merge"].update(lambda_grid=["0.5"]),
+            "calibration grid reversed": lambda r: r["calibration"].update(grid=[4, 0.5]),
+            "calibration grid from zero": lambda r: r["calibration"].update(grid=[0, 4]),
+            "calibration grid of one": lambda r: r["calibration"].update(grid=[1]),
+            "calibration grid of text": lambda r: r["calibration"].update(grid=["a", "b"]),
+            "session longer than Kaggle allows": lambda r: r["budget"].update(session_hours=14),
+            "donor weight as text": lambda r: r["models"]["donors"][0].update(weight="0.5"),
+            "lora weight as text": lambda r: r["models"]["lora"].update(weight="0.1"),
+            "density as text": lambda r: r["merge"]["ties"].update(density="half"),
+            "holdout as text": lambda r: r["calibration"].update(holdout="0.5"),
+            "per_benchmark as text": lambda r: r["eval"].update(per_benchmark="16"),
+            "rotations as a fraction": lambda r: r["tta"].update(rotations=1.5),
+            "a boolean where a number goes": lambda r: r["models"]["donors"][0].update(weight=True),
+            "endpoint over plain http": lambda r: r["hub"].update(endpoint="http://huggingface.co"),
+            "endpoint of another scheme": lambda r: r["hub"].update(endpoint="ftp://huggingface.co"),
+            "endpoint without a host": lambda r: r["hub"].update(endpoint="https://"),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label):
+                r = self.raw()
+                mutate(r)
+                with self.assertRaises(C.ConfigError):
+                    C.validate(r)
+        for ok in (12, 12.0, 0.5):
+            r = self.raw()
+            r["budget"].update(session_hours=ok, reserve_minutes=1)
+            C.validate(r)
+        for endpoint in ("http://127.0.0.1:8080", "http://localhost", "http://[::1]:9", "https://huggingface.co", "https://hf-mirror.example/"):
+            with self.subTest(endpoint):
+                r = self.raw()
+                r["hub"]["endpoint"] = endpoint
+                C.validate(r)
+
     def test_license_and_readout_exclusions_cannot_be_enabled(self):
         for name, repo in (("lychee", "someone/Lychee-27B"), ("amos", "mukaddamzaid/amos-1-large")):
             with self.subTest(name):
