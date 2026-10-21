@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from decide_b_support import ROOT, needs_pyarrow, needs_yaml
+from decide_b_support import ROOT, needs_pyarrow, needs_yaml, use_the_kit
 
 from decide.rental import estimate as E
 from decide.rental import hardware as HW
@@ -1942,24 +1942,6 @@ class HfHubContract(unittest.TestCase):
         self.assertTrue(issubclass(H.HubError, Exception))
 
 
-def use_the_kit():
-    """Make decide.sd importable (the kit is Squad A's and may not be in this checkout); skip when it is not."""
-    try:
-        import decide.sd.api  # noqa: F401
-        return
-    except ImportError:
-        pass
-    path = os.environ.get("DECIDE_KIT_DIR")
-    if path and (Path(path) / "decide" / "sd").is_dir():
-        sys.path.append(path)
-        try:
-            import decide.sd.api  # noqa: F401
-            return
-        except ImportError as exc:
-            raise unittest.SkipTest(f"the kit is there but cannot be imported here: {exc}")
-    raise unittest.SkipTest("decide/sd (the kit) is not in this checkout; set DECIDE_KIT_DIR to a checkout that has it")
-
-
 class ModelRefContract(unittest.TestCase):
     def test_exactly_one_of_a_folder_or_a_repo(self) -> None:
         from decide.rental import kit as K
@@ -2021,16 +2003,40 @@ class SdKitContract(unittest.TestCase):
         self.assertTrue(run[4]["resume"])
         self.assertEqual((info["rows"], info["tokens"], info["status"]), (3, 120, "complete"))
 
-    def test_a_local_checkpoint_is_served_to_the_kit_without_the_network_and_with_its_own_temperatures(self) -> None:
+    def test_a_local_checkpoint_is_named_to_the_kit_as_a_dir_anchor_without_a_revision_and_with_its_own_temperatures(self) -> None:
         from decide.rental import kit as K
 
         with tempfile.TemporaryDirectory() as tmp:
             api = self.Api()
-            self.kit(api).run(K.ModelRef(name="new", path=self.checkpoint(tmp, 1.2, {"choice": 1.1, "noul": 1.3})), "req.jsonl", "out")
+            root = self.checkpoint(tmp, 1.2, {"choice": 1.1, "noul": 1.3})
+            self.kit(api).run(K.ModelRef(name="new", path=root), "req.jsonl", "out")
             load = api.calls[0]
             self.assertEqual(load[2]["temperatures"], {"choice": 1.1, "noul": 1.3, "default": 1.2})
-            self.assertEqual(set(load[2]["factories"]), {"repo", "processor"})
-            self.assertEqual(load[1]["anchor"], K.LOCAL_REPO)
+            self.assertEqual(load[1], {"anchor": f"dir:{root.resolve()}", "name": "new"})          # no anchor_revision: a folder has no commit
+            self.assertNotIn("factories", load[2])                                                  # the day sets no test hook of the kit
+
+    def test_a_relative_checkpoint_path_is_made_absolute_for_the_kit(self) -> None:
+        from decide.rental import kit as K
+
+        with tempfile.TemporaryDirectory() as tmp:
+            api = self.Api()
+            root = self.checkpoint(tmp)
+            before = os.getcwd()
+            os.chdir(tmp)
+            try:
+                self.kit(api).run(K.ModelRef(name="new", path=Path("ckpt")), "req.jsonl", "out")
+            finally:
+                os.chdir(before)
+            self.assertEqual(api.calls[0][1]["anchor"], f"dir:{root.resolve()}")
+
+    def test_the_kits_test_hooks_are_passed_through_only_when_given(self) -> None:
+        from decide.rental import kit as K
+
+        with tempfile.TemporaryDirectory() as tmp:
+            api = self.Api()
+            hook = lambda *a, **k: None                                                              # noqa: E731
+            self.kit(api, factories={"processor": hook}).run(K.ModelRef(name="new", path=self.checkpoint(tmp)), "req.jsonl", "out")
+            self.assertEqual(api.calls[0][2]["factories"], {"processor": hook})
 
     def test_a_local_checkpoint_without_by_type_temperatures_uses_the_one_it_carries(self) -> None:
         from decide.rental import kit as K
@@ -2078,8 +2084,12 @@ class SdKitContract(unittest.TestCase):
         self.assertIn("decide/sd", str(caught.exception))
 
 
-class LocalRepoParity(unittest.TestCase):
-    """The kit's own HubRepo, reading a checkpoint folder through the transport of ``kit.local_repo``."""
+class RealKitOnADirectory(unittest.TestCase):
+    """The REAL ``decide.sd`` (no substitute): what the day hands it for a checkpoint folder is accepted, read and run, on a CPU, with a tiny model.
+
+    Squad A's contract for a folder on this machine: ``{"anchor": "dir:PATH", "name": ...}`` with no revision (a Hub repo still needs 40 hex).
+    A change of that contract in the kit breaks these tests, not a rented day.
+    """
 
     def setUp(self) -> None:
         use_the_kit()
@@ -2091,11 +2101,26 @@ class LocalRepoParity(unittest.TestCase):
             self.skipTest("torch + transformers are not installed")
         return make_tiny_checkpoint(Path(tmp) / "ckpt", FakeTokenizer())
 
-    def test_the_kit_reads_the_layout_of_the_checkpoint(self) -> None:
-        from decide.rental import kit as K
+    def spec(self, path):
+        return {"anchor": f"dir:{Path(path).resolve()}", "name": "new"}
+
+    def test_the_kit_accepts_the_spec_the_day_builds_and_refuses_a_revision_on_a_folder(self) -> None:
+        from decide.sd import api
 
         with tempfile.TemporaryDirectory() as tmp:
-            repo = K.local_repo(self.make(tmp))
+            spec = api.normalize_spec(self.spec(self.make(tmp)))
+            self.assertTrue(spec["anchor"].startswith("dir:"))
+            self.assertIsNone(spec["anchor_revision"])
+            with self.assertRaises(api.ApiError):
+                api.normalize_spec({**self.spec(self.make(Path(tmp) / "again")), "anchor_revision": "c" * 40})
+            with self.assertRaises(api.ApiError):
+                api.normalize_spec({"anchor": str(Path(tmp) / "ckpt"), "name": "new"})                  # a bare path is a Hub id, and needs its commit
+
+    def test_the_kit_reads_the_layout_of_the_checkpoint_folder(self) -> None:
+        from decide.sd import remote
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = remote.HubRepo(self.spec(self.make(tmp))["anchor"], None)
             self.assertEqual(repo.read_json("decision_config.json")["format_version"], 2)
             self.assertTrue(repo.exists("readout.safetensors"))
             self.assertFalse(repo.exists("not-there.json"))
@@ -2103,16 +2128,50 @@ class LocalRepoParity(unittest.TestCase):
             self.assertTrue(names)
             tensor = repo.read_tensor(names[0])
             self.assertEqual(tuple(tensor.shape), tuple(repo.info(names[0]).shape))
-            head = repo.shard("readout.safetensors").read_tensor("weight")
-            self.assertEqual(tuple(head.shape), (255, 64))
+            self.assertEqual(tuple(repo.shard("readout.safetensors").read_tensor("weight").shape), (255, 64))
 
-    def test_a_path_outside_the_checkpoint_is_not_served(self) -> None:
+    def test_a_path_outside_the_checkpoint_folder_is_refused_by_the_kit(self) -> None:
+        from decide.sd import remote
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = remote.HubRepo(self.spec(self.make(tmp))["anchor"], None)
+            (Path(tmp) / "secret.txt").write_text("nope", encoding="utf-8")
+            for name in ("../secret.txt", "/etc/passwd"):
+                with self.assertRaises(remote.RemoteError, msg=name):
+                    repo.exists(name)
+                with self.assertRaises(remote.RemoteError, msg=name):
+                    repo.read_json(name)
+
+    def test_the_days_adapter_runs_the_real_kit_on_a_checkpoint_folder_and_the_results_are_the_requests(self) -> None:
+        from decide_b_support import real_kit
         from decide.rental import kit as K
 
         with tempfile.TemporaryDirectory() as tmp:
-            repo = K.local_repo(self.make(tmp))
-            (Path(tmp) / "secret.txt").write_text("nope", encoding="utf-8")
-            self.assertFalse(repo.exists("../secret.txt"))
+            root = self.make(tmp)
+            requests = Path(tmp) / "requests.jsonl"
+            rows = [{"example_id": f"alpha:{i}", "request": {"state": f"case {i}", "questions": {"q1": {
+                "type": "choice", "instructions": "pick", "criteria": {k: k.lower() for k in "ABCD"}}}}} for i in range(6)]
+            requests.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            info = real_kit().run(K.ModelRef(name="new", path=root), requests, Path(tmp) / "out")
+            self.assertEqual((info["status"], info["rows"], info["total"]), ("complete", 6, 6))
+            done = [json.loads(line) for line in (Path(tmp) / "out" / "results.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(sorted(row["example_id"] for row in done), sorted(row["example_id"] for row in rows))
+            self.assertTrue(all(row["status"] == "ok" for row in done))
+
+    def test_a_second_call_resumes_and_does_no_new_work(self) -> None:
+        from decide_b_support import real_kit
+        from decide.rental import kit as K
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.make(tmp)
+            requests = Path(tmp) / "requests.jsonl"
+            requests.write_text(json.dumps({"example_id": "alpha:0", "request": {"state": "case", "questions": {"q1": {
+                "type": "choice", "instructions": "pick", "criteria": {k: k.lower() for k in "ABCD"}}}}}) + "\n", encoding="utf-8")
+            kit = real_kit()
+            first = kit.run(K.ModelRef(name="new", path=root), requests, Path(tmp) / "out")
+            again = kit.run(K.ModelRef(name="new", path=root), requests, Path(tmp) / "out")
+            self.assertEqual((first["status"], again["status"]), ("complete", "complete"))
+            self.assertEqual(len((Path(tmp) / "out" / "results.jsonl").read_text(encoding="utf-8").splitlines()), 1)
 
 
 # --------------------------------------------------------------------------- the plan of the day: paths and commands

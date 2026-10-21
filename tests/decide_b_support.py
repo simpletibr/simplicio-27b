@@ -9,6 +9,7 @@ from __future__ import annotations
 import gzip
 import importlib.util
 import json
+import os
 import random
 import sys
 import unittest
@@ -206,6 +207,53 @@ class FakeTokenizer:
 # --------------------------------------------------------------------------- tiny model + targets for the training flow tests
 
 TINY_VOCAB = 600
+
+
+def use_the_kit() -> None:
+    """Make decide.sd importable (the kit is Squad A's and may not be in this checkout); skip when it is not."""
+    try:
+        import decide.sd.api  # noqa: F401
+        return
+    except ImportError:
+        pass
+    path = os.environ.get("DECIDE_KIT_DIR")
+    if path and (Path(path) / "decide" / "sd").is_dir():
+        sys.path.append(path)
+        try:
+            import decide.sd.api  # noqa: F401
+            return
+        except ImportError as exc:
+            raise unittest.SkipTest(f"the kit is there but cannot be imported here: {exc}")
+    raise unittest.SkipTest("decide/sd (the kit) is not in this checkout; set DECIDE_KIT_DIR to a checkout that has it")
+
+
+class TinyProcessor:
+    """What ``AutoProcessor.from_pretrained`` gives the kit, with the tiny tokenizer (the checkpoint folder has no processor files).
+
+    It is the kit's own test hook (``factories["processor"]``): everything else of the real kit (spec check, ``dir:`` reading, weights
+    loading, the engine, the requests/results files) runs as it does on the rented machine.
+    """
+
+    def __init__(self) -> None:
+        self.tokenizer = FakeTokenizer()
+
+    def apply_chat_template(self, *args: Any, **kwargs: Any) -> Any:
+        return self.tokenizer.apply_chat_template(*args, **kwargs)
+
+    def __call__(self, text: Any, images: Any = None, return_tensors: str = "pt", **_: Any) -> Dict[str, Any]:
+        import torch
+
+        return {"input_ids": torch.tensor([self.tokenizer.encode(t) for t in text])}
+
+
+def real_kit(**kw: Any) -> Any:
+    """The day's own adapter (``decide.rental.kit.SdKit``) over the REAL ``decide.sd.api``, on a CPU, with the tiny processor."""
+    from decide.rental import kit as K
+
+    use_the_kit()
+    options: Dict[str, Any] = {"device": "cpu", "quant": "none", "factories": {"processor": lambda *args, **kwargs: TinyProcessor()}}
+    options.update(kw)
+    return K.SdKit(**options)
 
 
 def make_tiny_checkpoint(directory: Path, tokenizer: "FakeTokenizer", seed: int = 0, temperature: float = 1.0) -> Path:

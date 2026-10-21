@@ -1240,5 +1240,51 @@ class OneOrchestratorPerWorkdir(unittest.TestCase):
             self.assertEqual(result.phases["fetch"], "done")
 
 
+class RealKitDay(unittest.TestCase):
+    """The day over the REAL ``decide.sd`` (no substitute for the kit): up to G4, on a CPU, with the tiny random checkpoint.
+
+    Everything the other classes run through ``FakeKit`` runs here through the kit that the rented machine will use: the spec check, the reading of
+    the checkpoint folder (``dir:``), the weights, the engine, the requests and results files.  The model is random, so the verdict is not the
+    point: that both models were really run over every question, and that G4 read them, is.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from decide_b_support import real_kit, use_the_kit
+
+        use_the_kit()
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.tmp.cleanup)
+        saved = os.environ.get("HF_TOKEN")
+        os.environ["HF_TOKEN"] = TOKEN
+        cls.addClassCleanup(lambda: os.environ.pop("HF_TOKEN", None) if saved is None else os.environ.__setitem__("HF_TOKEN", saved))
+        root = Path(cls.tmp.name)
+        cls.hub, cls.requests = build_world(root)
+        cls.workdir = root / "day"
+        cls.result = make_day(cls.workdir, cls.hub, real_kit(), InProcessExecutor()).run(until="g4")
+        cls.verdict = json.loads((cls.workdir / "g4" / "verdict.json").read_text(encoding="utf-8"))
+
+    def test_the_day_reaches_g4_and_g4_read_every_question_of_both_models(self) -> None:
+        for phase in ("preflight", "fetch", "targets", "train", "calibrate"):
+            self.assertEqual(self.result.phases[phase], "done", self.result.phases)
+        self.assertIn(self.result.phases["g4"], ("done", "stopped"))                           # a random model may or may not pass the gate
+        for who in ("baseline", "new"):
+            self.assertEqual((self.verdict[who]["n"], self.verdict[who]["bad"], self.verdict[who]["missing"]), (80, 0, 0), who)
+            status = json.loads((self.workdir / "g4" / who / "status.json").read_text(encoding="utf-8"))
+            self.assertEqual((status["event"], status["total"]), ("complete", 80))
+        self.assertEqual(self.verdict["expected_rows"], 80)
+
+    def test_the_two_models_that_the_kit_ran_are_two_different_checkpoints(self) -> None:
+        self.assertNotEqual(self.verdict["baseline"]["nll"], self.verdict["new"]["nll"])
+
+    def test_g4_recorded_the_bytes_it_measured_and_they_are_the_final_checkpoint_on_the_disk(self) -> None:
+        from decide.rental import state as ST
+
+        measured = self.verdict["measured"]
+        self.assertEqual(measured["final_digest"], ST.digest_tree(self.workdir / "final"))
+        self.assertRegex(measured["final_digest"], r"^[0-9a-f]{64}$")
+        self.assertRegex(measured["start_fingerprint"], r"^[0-9a-f]{64}$")
+
+
 if __name__ == "__main__":
     unittest.main()
