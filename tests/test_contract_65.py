@@ -138,6 +138,8 @@ class ConfigContract(HermeticTestCase):
             "missing tta": lambda r: r.pop("tta"),
             "bad tta mode": lambda r: r["tta"].update(mode="shuffle"),
             "bad head": lambda r: r["merge"].update(head="average"),
+            "empty sweep sample": lambda r: r["eval"].update(sweep_per_benchmark=0),
+            "no candidates allowed": lambda r: r["merge"].update(max_candidates=0),
         }
         for label, mutate in mutations.items():
             with self.subTest(label):
@@ -168,7 +170,7 @@ class ConfigContract(HermeticTestCase):
         self.assertEqual(cands[0].name, "anchor")
         self.assertTrue(cands[0].is_anchor)
         ta = [c for c in cands if c.method == "task_arithmetic"]
-        self.assertEqual([c.name for c in ta], ["ta_l0.25", "ta_l0.5", "ta_l0.75"])
+        self.assertEqual([c.name for c in ta], ["ta_l0.25", "ta_l0.5"])
         d = dict(ta[0].donors)
         self.assertEqual(set(d), {"d3", "t"})
         self.assertAlmostEqual(d["d3"], 0.25 * 0.75)
@@ -179,7 +181,27 @@ class ConfigContract(HermeticTestCase):
     def test_ties_candidate_names_carry_density(self):
         cfg = C.load_config(overrides={"merge": {"method": "ties"}})
         names = [c.name for c in C.enumerate_candidates(cfg, include_lora=False)]
-        self.assertEqual(names, ["anchor", "ties_l0.25_d0.5", "ties_l0.5_d0.5", "ties_l0.75_d0.5"])
+        self.assertEqual(names, ["anchor", "ties_l0.25_d0.5", "ties_l0.5_d0.5"])
+
+    def test_the_merge_sweep_is_cheap_by_default(self):
+        """Fase 0A: averaging top models did not beat the best member, so F5 is a low-prior experiment."""
+        cfg = C.load_config()
+        self.assertEqual(list(cfg.merge.lambda_grid), [0.25, 0.5])
+        self.assertLessEqual(len(C.enumerate_candidates(cfg)), cfg.merge.max_candidates)
+        self.assertLess(cfg.eval.sweep_per_benchmark, cfg.eval.per_benchmark)
+        self.assertLessEqual(cfg.merge.max_candidates, 6)
+
+    def test_the_sweep_sample_never_exceeds_the_final_sample(self):
+        self.assertEqual(C.sweep_per_benchmark(C.load_config()), 8)
+        small = C.load_config(overrides={"eval": {"per_benchmark": 3}})
+        self.assertEqual(C.sweep_per_benchmark(small), 3)
+
+    def test_a_big_grid_is_refused_instead_of_silently_running_for_days(self):
+        cfg = C.load_config(overrides={"merge": {"lambda_grid": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]}})
+        with self.assertRaisesRegex(C.ConfigError, "max_candidates"):
+            C.enumerate_candidates(cfg)
+        ok = C.load_config(overrides={"merge": {"lambda_grid": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], "max_candidates": 20}})
+        self.assertEqual(len(C.enumerate_candidates(ok)), 1 + 8 + 2)
 
     def test_cfg_attribute_access(self):
         cfg = C.load_config()

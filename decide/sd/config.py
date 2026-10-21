@@ -108,6 +108,8 @@ def validate(raw: Mapping) -> None:
     need(e.get("quant") in QUANTS, f"eval.quant must be one of {QUANTS}")
     need(e.get("compute_dtype") in ("float16", "bfloat16", "float32"), "eval.compute_dtype invalid")
     need(int(e.get("per_benchmark", 0)) >= 1, "eval.per_benchmark must be >= 1")
+    need(int(e.get("sweep_per_benchmark", e.get("per_benchmark", 0))) >= 1, "eval.sweep_per_benchmark must be >= 1")
+    need(int(m.get("max_candidates", 6)) >= 1, "merge.max_candidates must be >= 1")
     b = raw["budget"]
     need(b.get("session_hours", 0) > 0 and b.get("reserve_minutes", 0) >= 0, "budget values invalid")
     need(b["reserve_minutes"] < b["session_hours"] * 60, "budget.reserve_minutes >= session")
@@ -164,7 +166,16 @@ def enumerate_candidates(cfg: Mapping, include_lora: bool = True) -> list:
     names = [c.name for c in out]
     if len(names) != len(set(names)):
         raise ConfigError("candidate names collide: " + ", ".join(names))
+    cap = int(cfg["merge"].get("max_candidates", 6))
+    if len(out) > cap:
+        raise ConfigError(f"{len(out)} candidates exceed merge.max_candidates={cap}; shrink merge.lambda_grid or raise the cap on purpose")
     return out
+
+
+def sweep_per_benchmark(cfg: Mapping) -> int:
+    """Groups per benchmark for the merge sweep: never more than the final sample has."""
+    e = cfg["eval"]
+    return min(int(e.get("sweep_per_benchmark", e["per_benchmark"])), int(e["per_benchmark"]))
 
 
 def with_lora(candidate: Candidate, weight: float) -> Candidate:

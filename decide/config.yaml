@@ -49,7 +49,10 @@ models:
 merge:
   method: task_arithmetic          # task_arithmetic | ties
   reference: anchor                # anchor (economiza ~55 GB de leitura por candidato) | base
-  lambda_grid: [0.25, 0.5, 0.75]   # escala dos task vectors dos doadores
+  # F5 (#70) e um experimento de baixo prior (fase 0A: a media de modelos de topo NAO superou o melhor
+  # membro isolado); por isso a grade e pequena, a amostra da varredura e menor e ha teto de candidatos.
+  lambda_grid: [0.25, 0.5]         # escala dos task vectors dos doadores
+  max_candidates: 6                # ancora + grade + variantes com LoRA; acima disso o kit recusa
   ties:
     density: 0.5                   # fracao de entradas mantidas (por magnitude)
   head: anchor                     # anchor | refit (a cabeca nunca e media)
@@ -57,7 +60,8 @@ merge:
   chunk_mb: 256                    # janela de leitura Range
 
 eval:
-  per_benchmark: 16                # grupos por benchmark na amostra
+  per_benchmark: 16                # grupos por benchmark na amostra final
+  sweep_per_benchmark: 8           # grupos por benchmark na varredura de merge (prefixo da amostra final)
   seed: 20261021
   edition: "0.3"
   max_proxy_tokens: 6000           # linhas maiores ficam fora da amostra (T4 16 GB); contadas no manifest
