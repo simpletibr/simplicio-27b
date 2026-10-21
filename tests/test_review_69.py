@@ -54,7 +54,8 @@ class FoldReasoningContract(unittest.TestCase):
     def test_the_golden_cases_are_the_ones_the_review_found(self) -> None:
         names = {case["name"] for case in self.cases}
         for wanted in ("state with trailing whitespace", "reasoning that holds the label line", "reasoning with CRLF and CR",
-                       "reasoning with three or more blank lines"):
+                       "reasoning with three or more blank lines", "a cut that leaves the label at the start of the tail",
+                       "indent on the first line of the reasoning stays"):
             self.assertIn(wanted, names)
 
     def test_every_golden_case_folds_to_the_expected_state(self) -> None:
@@ -83,6 +84,47 @@ class FoldReasoningContract(unittest.TestCase):
         again = self.PR.fold_reasoning({**self.request(case), "reasoning": block}, max_chars=case["max_chars"])["state"]
         self.assertEqual(again, once, "a reasoning that was already clipped is not clipped again")
 
+    def test_a_cut_that_leaves_the_label_at_the_start_of_the_tail_is_neutralized_too(self) -> None:
+        # Squad C's review of the thinker side (PR 90): "x" + spaces + the label, cut after the spaces, left the label alone on a line of
+        # the tail, so the folded state had two label lines.  SCHEMA.md section 10 promises one: the label rule applies after the cut too.
+        text = "x" + " " * 600 + "Racioc\u00ednio:"
+        for budget in (64, 100, 300):
+            with self.subTest(max_chars=budget):
+                state = self.PR.fold_reasoning({"state": "s", "reasoning": text, "questions": choice_request()["questions"]}, max_chars=budget)["state"]
+                labels = [line for line in state.split("\n") if self.PR.has_reasoning_block(line)]
+                self.assertEqual(len(labels), 1, state[-80:])
+                self.assertTrue(state.endswith("Racioc\u00ednio :"), state[-40:])
+                self.assertTrue(state.startswith("s\n\nRacioc\u00ednio:\n[... "))
+
+    def test_the_folded_state_has_exactly_one_label_line_whatever_the_reasoning_and_the_cut(self) -> None:
+        import random
+
+        rng = random.Random(20261021)
+        label = "Racioc\u00ednio:"
+        pieces = ["a", "bb ", "  ", "\t", label, "\n", " " + label + " ", "Racioc\u00ednio :", "\r\n", "word " * 12]
+        samples = 0
+        for _ in range(300):
+            filler = "".join(rng.choice(["ab ", "cd", "e "]) for _ in range(rng.randint(40, 120)))
+            gap = rng.choice([" ", "\t", "  \t "]) * rng.randint(30, 90)
+            tail = rng.choice(["", "\nlast line", "\n\n" + label, "\n" + label + "\nmore"])
+            texts = [filler + gap + label + tail, "".join(rng.choice(pieces) for _ in range(rng.randint(3, 60)))]
+            for text in texts:
+                if not text.strip():
+                    continue
+                for budget in range(64, 150, 3):
+                    state = self.PR.fold_reasoning({"state": "s", "reasoning": text, "questions": choice_request()["questions"]},
+                                                   max_chars=budget)["state"]
+                    self.assertEqual(sum(self.PR.has_reasoning_block(line) for line in state.split("\n")), 1, (text, budget, state))
+                    samples += 1
+        self.assertGreater(samples, 10000)
+
+    def test_the_indent_of_the_first_line_of_the_reasoning_stays(self) -> None:
+        # Review of #87, R3: the rule takes the line breaks at the ends of the reasoning, not the spaces and tabs that start its first line.
+        def fold(reasoning):
+            return self.PR.fold_reasoning({"state": "s", "reasoning": reasoning, "questions": choice_request()["questions"]})["state"]
+        self.assertEqual(fold("  indented\nx"), "s\n\nRacioc\u00ednio:\n  indented\nx")
+        self.assertEqual(fold("\n\n\tindented\n"), "s\n\nRacioc\u00ednio:\n\tindented")
+
     def test_the_default_budget_is_the_one_of_the_thinker_side(self) -> None:
         self.assertEqual(self.PR.REASONING_MAX_CHARS, 8000)
         long = "x" * 20000
@@ -101,7 +143,7 @@ class FoldReasoningContract(unittest.TestCase):
     def test_schema_md_defines_the_normalization(self) -> None:
         text = (ROOT / "decide" / "data" / "SCHEMA.md").read_text(encoding="utf-8")
         section = text.split("## 10.", 1)[1].split("## 11.", 1)[0]
-        for word in ("rstrip", "CRLF", "três ou mais linhas em branco", "fold_reasoning", "8000", "fold_reasoning_cases.json"):
+        for word in ("rstrip", "CRLF", "três ou mais linhas em branco", "fold_reasoning", "8000", "fold_reasoning_cases.json", "depois do corte"):
             self.assertIn(word, section)
 
 
