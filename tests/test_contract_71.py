@@ -1634,5 +1634,324 @@ class LocalRepoParity(unittest.TestCase):
             self.assertFalse(repo.exists("../secret.txt"))
 
 
+# --------------------------------------------------------------------------- the plan of the day: paths and commands
+
+def rental_cfg():
+    import yaml
+
+    return yaml.safe_load((ROOT / "decide" / "config.rental.yaml").read_text(encoding="utf-8"))["rental"]
+
+
+@needs_yaml
+class PlanContract(unittest.TestCase):
+    py = "python3"
+
+    def setUp(self) -> None:
+        from decide.rental import plan as PL
+
+        self.PL = PL
+        self.cfg = rental_cfg()
+        self.paths = PL.layout(Path("/w/day"), self.cfg)
+
+    def test_the_layout_keeps_the_hub_names_under_data_and_one_folder_per_product(self) -> None:
+        paths = self.paths
+        self.assertEqual(paths.corpus, Path("/w/day/data/corpus-limpo"))
+        self.assertEqual(paths.labels, Path("/w/day/data/labels/pplx-decider-v1.2"))
+        self.assertEqual(paths.proxy, Path("/w/day/data/proxy"))
+        self.assertEqual((paths.start, paths.targets, paths.targets_traces, paths.traces), (Path("/w/day/start"), Path("/w/day/targets"), Path("/w/day/targets-traces"), Path("/w/day/traces")))
+        self.assertEqual((paths.soup, paths.final, paths.g4, paths.public, paths.state, paths.report), tuple(Path("/w/day") / n for n in ("soup", "final", "g4", "public", "state", "report")))
+        self.assertEqual(paths.seed_dir(2), Path("/w/day/runs/seed2"))
+
+    def test_seeds_are_consecutive_from_the_trainers_default(self) -> None:
+        from decide.rental import profile as PRF
+
+        econ, full = PRF.load_profile("econ_b200"), PRF.load_profile("full_8xh100")
+        self.assertEqual(self.PL.seeds(econ), [20261021])
+        self.assertEqual(self.PL.seeds(full), [20261021, 20261022])
+
+    def test_targets_command_reads_the_corpus_and_the_labels_and_optionally_the_traces(self) -> None:
+        plain = self.PL.targets_command(self.paths, python=self.py)
+        self.assertEqual(plain, [self.py, "-m", "decide.train.build_targets", "--corpus", "/w/day/data/corpus-limpo", "--labels", "/w/day/data/labels/pplx-decider-v1.2",
+                                 "--out", "/w/day/targets"])
+        traced = self.PL.targets_command(self.paths, thinker="Qwen3.8-27B", python=self.py)
+        self.assertEqual(traced[-6:], ["--traces", "/w/day/traces", "--thinker", "Qwen3.8-27B", "--out", "/w/day/targets-traces"])
+
+    def test_the_train_command_of_the_economic_profile(self) -> None:
+        from decide.rental import profile as PRF
+
+        argv = self.PL.train_command(PRF.load_profile("econ_b200"), self.paths, 1, with_traces=False, resume=False, python=self.py)
+        self.assertEqual(argv[:3], [self.py, "-m", "decide.train.train"])
+        flags = dict(zip(argv[3::2], argv[4::2])) if len(argv) % 2 == 1 else None
+        self.assertEqual(flags["--targets"], "/w/day/targets")
+        self.assertEqual(flags["--checkpoint"], "/w/day/start")
+        self.assertEqual(flags["--out"], "/w/day/runs/seed1")
+        self.assertEqual(flags["--seed"], "20261021")
+        self.assertEqual((flags["--mode"], flags["--lora-rank"], flags["--reasoning"]), ("lora", "128", "off"))
+        self.assertNotIn("--resume", argv)
+
+    def test_with_traces_the_profile_shows_the_reasoning_and_reads_the_targets_with_traces(self) -> None:
+        from decide.rental import profile as PRF
+
+        argv = self.PL.train_command(PRF.load_profile("econ_b200"), self.paths, 1, with_traces=True, resume=False, python=self.py)
+        self.assertEqual(argv[argv.index("--reasoning") + 1], "mixed")
+        self.assertEqual(argv[argv.index("--reasoning-fraction") + 1], "0.5")
+        self.assertEqual(argv[argv.index("--targets") + 1], "/w/day/targets-traces")
+
+    def test_resume_and_the_second_seed(self) -> None:
+        from decide.rental import profile as PRF
+
+        argv = self.PL.train_command(PRF.load_profile("full_8xh100"), self.paths, 2, with_traces=False, resume=True, python=self.py)
+        self.assertIn("--resume", argv)
+        self.assertEqual(argv[argv.index("--seed") + 1], "20261022")
+        self.assertEqual(argv[argv.index("--out") + 1], "/w/day/runs/seed2")
+
+    def test_more_than_one_gpu_goes_through_torch_distributed_run(self) -> None:
+        from decide.rental import profile as PRF
+
+        argv = self.PL.train_command(PRF.load_profile("full_8xh100"), self.paths, 1, with_traces=False, resume=False, python=self.py)
+        self.assertEqual(argv[:7], [self.py, "-m", "torch.distributed.run", "--standalone", "--nproc-per-node", "8", "-m"])
+        self.assertEqual(argv[7], "decide.train.train")
+
+    def test_the_train_command_is_accepted_by_the_real_parser(self) -> None:
+        from decide.rental import profile as PRF
+
+        try:
+            from decide.train import train as TRAIN
+        except ImportError as exc:
+            self.skipTest(f"decide.train.train needs torch: {exc}")
+        for name in PRF.profile_names():
+            for traced in (False, True):
+                argv = self.PL.train_command(PRF.load_profile(name), self.paths, 1, with_traces=traced, resume=True, python=self.py)
+                start = argv.index("decide.train.train") + 1
+                args = TRAIN.build_parser().parse_args(argv[start:])
+                self.assertEqual(args.targets, "/w/day/targets-traces" if traced else "/w/day/targets")
+
+    def test_the_soup_and_the_temperature_commands(self) -> None:
+        self.assertEqual(self.PL.soup_command(self.paths, 2, python=self.py), [self.py, "-m", "decide.train.soup", "--inputs", "/w/day/runs/seed1/final",
+                                                                                "/w/day/runs/seed2/final", "--out", "/w/day/soup"])
+        argv = self.PL.temperature_command(self.paths, targets=self.paths.targets, python=self.py)
+        self.assertEqual(argv, [self.py, "-m", "decide.train.temperature", "--checkpoint", "/w/day/final", "--targets", "/w/day/targets", "--write",
+                                "--report", "/w/day/calibrate/report.json"])
+
+    def test_the_candidate_is_the_soup_for_several_seeds_and_the_only_run_for_one(self) -> None:
+        self.assertEqual(self.PL.candidate(self.paths, 1), Path("/w/day/runs/seed1/final"))
+        self.assertEqual(self.PL.candidate(self.paths, 2), Path("/w/day/soup"))
+
+    def test_describe_lists_every_command_in_the_order_of_the_day(self) -> None:
+        from decide.rental import profile as PRF
+
+        lines = self.PL.describe(PRF.load_profile("econ_b200"), self.cfg, self.paths, thinker="Qwen3.8-27B", python=self.py)
+        text = "\n".join(lines)
+        order = [text.index(word) for word in ("build_targets", "traces", "decide.train.train", "decide.train.temperature", "g4", "public_round", "publish")]
+        self.assertEqual(order, sorted(order))
+        self.assertNotRegex(text, r"hf_[A-Za-z0-9]{10,}")
+
+
+@needs_yaml
+class StageContract(unittest.TestCase):
+    def test_a_checkpoint_is_staged_by_linking_the_weights_and_copying_the_configs(self) -> None:
+        from decide.rental import plan as PL
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = Path(tmp) / "src", Path(tmp) / "final"
+            src.mkdir()
+            (src / "model-00001.safetensors").write_bytes(b"weights")
+            (src / "readout.safetensors").write_bytes(b"head")
+            (src / "decision_config.json").write_text('{"temperature": 1.0}', encoding="utf-8")
+            (src / "tokenizer.json").write_text("{}", encoding="utf-8")
+            PL.stage(src, dst)
+            self.assertEqual(sorted(p.name for p in dst.iterdir()), sorted(p.name for p in src.iterdir()) + [PL.STAGED_MARK])
+            self.assertTrue(os.path.samefile(src / "model-00001.safetensors", dst / "model-00001.safetensors"), "weights are linked, not copied")
+            (dst / "decision_config.json").write_text('{"temperature": 2.0}', encoding="utf-8")
+            self.assertEqual(json.loads((src / "decision_config.json").read_text(encoding="utf-8"))["temperature"], 1.0, "a config is a copy: fitting the staged one leaves the source alone")
+
+    def test_staging_again_replaces_only_what_it_staged(self) -> None:
+        from decide.rental import plan as PL
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = Path(tmp) / "src", Path(tmp) / "final"
+            src.mkdir()
+            (src / "decision_config.json").write_text("{}", encoding="utf-8")
+            PL.stage(src, dst)
+            (dst / "decision_config.json").write_text('{"x": 1}', encoding="utf-8")
+            PL.stage(src, dst)
+            self.assertEqual((dst / "decision_config.json").read_text(encoding="utf-8"), "{}")
+            other = Path(tmp) / "mine"
+            other.mkdir()
+            (other / "keep.txt").write_text("mine", encoding="utf-8")
+            with self.assertRaises(FileExistsError):
+                PL.stage(src, other)
+            self.assertEqual((other / "keep.txt").read_text(encoding="utf-8"), "mine")
+
+
+# --------------------------------------------------------------------------- preflight
+
+@needs_yaml
+class PreflightContract(unittest.TestCase):
+    def check(self, profile="econ_b200", *, gpus=(("NVIDIA B200", 183.0),), free=900.0, ram=256.0, cfg=None, tmp="/w/day", **kw):
+        from decide.rental import preflight as PF
+        from decide.rental import profile as PRF
+
+        probes = PF.Probes(gpus=lambda: list(gpus), free_gb=lambda path: free, ram_gb=lambda: ram)
+        return PF.preflight(PRF.load_profile(profile), cfg or rental_cfg(), Path(tmp), probes=probes, **kw)
+
+    def test_the_right_machine_passes(self) -> None:
+        got = self.check()
+        self.assertTrue(got["ok"], got)
+        self.assertEqual(got["problems"], [])
+        self.assertEqual(got["facts"]["gpus"], [["NVIDIA B200", 183.0]])
+
+    def test_too_few_gpus_or_the_wrong_model_are_problems(self) -> None:
+        self.assertFalse(self.check(gpus=())["ok"])
+        got = self.check("full_8xh100", gpus=(("NVIDIA H100 80GB HBM3", 80.0),) * 4, ignore_warnings=("ddp_does_not_fit",))
+        self.assertFalse(got["ok"])
+        self.assertIn("8", " ".join(got["problems"]))
+        got = self.check(gpus=(("NVIDIA A100-SXM4-80GB", 80.0),))
+        self.assertFalse(got["ok"])
+        self.assertIn("B200", " ".join(got["problems"]))
+
+    def test_without_a_gpu_the_cpu_flag_turns_the_problem_into_a_warning(self) -> None:
+        got = self.check(gpus=(), allow_cpu=True)
+        self.assertTrue(got["ok"], got)
+        self.assertIn("cpu", " ".join(got["warnings"]).lower())
+
+    def test_not_enough_disk_or_ram(self) -> None:
+        self.assertIn("disk", " ".join(self.check(free=100.0)["problems"]))
+        self.assertIn("RAM", " ".join(self.check(ram=64.0)["problems"]))
+
+    def test_a_profile_that_cannot_fit_is_refused_unless_the_owner_says_so_by_name(self) -> None:
+        from decide.rental import preflight as PF
+
+        h100 = (("NVIDIA H100 80GB HBM3", 80.0),) * 8
+        got = self.check("full_8xh100", gpus=h100, ram=1024.0)
+        self.assertFalse(got["ok"])
+        self.assertIn("ddp_does_not_fit", " ".join(got["problems"]))
+        ignored = self.check("full_8xh100", gpus=h100, ram=1024.0, ignore_warnings=("ddp_does_not_fit",))
+        self.assertTrue(ignored["ok"], ignored)
+        self.assertIn("ddp_does_not_fit", " ".join(ignored["warnings"]))
+        self.assertEqual(PF.BLOCKING, ("ddp_does_not_fit", "profile_host_ram_too_small"))
+
+    def test_an_unknown_warning_name_is_an_error(self) -> None:
+        with self.assertRaises(ValueError):
+            self.check(ignore_warnings=("no_such_warning",))
+
+    def test_public_uploads_and_unpinned_models_are_problems(self) -> None:
+        cfg = rental_cfg()
+        cfg["hub"]["private"] = False
+        self.assertIn("private", " ".join(self.check(cfg=cfg)["problems"]))
+        cfg = rental_cfg()
+        cfg["start"]["revision"] = "main"
+        self.assertIn("revision", " ".join(self.check(cfg=cfg)["problems"]))
+        cfg = rental_cfg()
+        cfg["gates"]["baseline"]["revision"] = "abc"
+        self.assertIn("revision", " ".join(self.check(cfg=cfg)["problems"]))
+
+    def test_a_public_requests_file_that_is_not_there_is_a_problem(self) -> None:
+        self.assertIn("public", " ".join(self.check(public_requests=Path("/nonexistent/requests.jsonl"))["problems"]))
+
+    def test_the_real_probes_return_numbers(self) -> None:
+        from decide.rental import preflight as PF
+
+        probes = PF.system_probes()
+        self.assertGreater(probes.ram_gb(), 0)
+        self.assertGreater(probes.free_gb(Path(tempfile.gettempdir())), 0)
+        self.assertIsInstance(probes.gpus(), list)
+
+
+# --------------------------------------------------------------------------- executor and report
+
+class ExecutorContract(unittest.TestCase):
+    def test_the_child_environment_has_no_token(self) -> None:
+        from decide.rental import run as R
+
+        cfg = {"hub": {"token_env": "HF_TOKEN"}, "thinker": {"api_key_env": "THINKER_API_KEY"}}
+        env = R.child_env(cfg, {"HF_TOKEN": "hf_secret", "THINKER_API_KEY": "sk-1", "PATH": "/bin", "HOME": "/root"})
+        self.assertNotIn("HF_TOKEN", env)
+        self.assertNotIn("THINKER_API_KEY", env)
+        self.assertEqual((env["PATH"], env["PYTHONUNBUFFERED"]), ("/bin", "1"))
+        self.assertTrue(env["PYTHONPATH"].split(os.pathsep)[0].endswith(str(ROOT)) or str(ROOT) in env["PYTHONPATH"])
+
+    def test_a_command_runs_in_the_repo_and_its_output_goes_to_the_log(self) -> None:
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            seen = []
+            code = R.SubprocessExecutor(log=seen.append).run([sys.executable, "-c", "import os,sys;print('out');print('err',file=sys.stderr);print(os.getcwd())"],
+                                                              log_path=Path(tmp) / "logs" / "step.log", env=dict(os.environ))
+            self.assertEqual(code, 0)
+            text = (Path(tmp) / "logs" / "step.log").read_text(encoding="utf-8")
+            self.assertIn("out", text)
+            self.assertIn("err", text)
+            self.assertIn(str(ROOT), text)
+            self.assertTrue(any("out" in line for line in seen))
+
+    def test_a_failing_command_returns_its_code_and_a_missing_program_is_a_failure_not_a_crash(self) -> None:
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            executor = R.SubprocessExecutor(log=lambda line: None)
+            self.assertEqual(executor.run([sys.executable, "-c", "raise SystemExit(3)"], log_path=Path(tmp) / "a.log", env=dict(os.environ)), 3)
+            self.assertNotEqual(executor.run(["/nonexistent/program"], log_path=Path(tmp) / "b.log", env=dict(os.environ)), 0)
+
+    def test_the_token_is_not_visible_to_the_child(self) -> None:
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {"hub": {"token_env": "HF_TOKEN"}, "thinker": {"api_key_env": "THINKER_API_KEY"}}
+            env = R.child_env(cfg, dict(os.environ, HF_TOKEN="hf_secret_value"))
+            R.SubprocessExecutor(log=lambda line: None).run([sys.executable, "-c", "import os;print('visible' if 'HF_TOKEN' in os.environ else 'hidden')"],
+                                                             log_path=Path(tmp) / "c.log", env=env)
+            self.assertIn("hidden", (Path(tmp) / "c.log").read_text(encoding="utf-8"))
+
+
+@needs_yaml
+class DayReportContract(unittest.TestCase):
+    def build(self, tmp):
+        from decide.rental import profile as PRF
+        from decide.rental import report as RP
+        from decide.rental import state as ST
+        from decide.rental import estimate as E
+
+        ticks = iter([0.0, 3600.0, 3600.0, 3600.0 + 7200.0])
+        day = ST.DayState(Path(tmp) / "state", identity={"profile": "p", "config": "c"}, clock=lambda: next(ticks))
+        day.begin("fetch")
+        day.done("fetch", outputs={})
+        day.begin("train")
+        day.done("train", outputs={}, detail={"seeds": 1})
+        day.stop("g4", "delta 0.4 < 1.5")
+        profile = PRF.load_profile("econ_b200")
+        return RP.day_report(day, E.estimate(profile), profile=profile, gates={"g4": {"status": "FAIL", "delta_points": 0.4}}), RP
+
+    def test_measured_seconds_sit_beside_the_estimate_and_the_estimate_says_unverified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report, RP = self.build(tmp)
+            self.assertEqual(report["phases"]["fetch"]["seconds_measured"], 3600.0)
+            self.assertEqual(report["phases"]["train"]["seconds_measured"], 7200.0)
+            self.assertEqual(report["phases"]["train"]["status"], "done")
+            self.assertEqual(report["phases"]["train"]["estimate"]["status"], "UNVERIFIED")
+            self.assertGreater(report["phases"]["train"]["estimate"]["seconds"], 0)
+            self.assertEqual(report["phases"]["publish"]["status"], "pending")
+            self.assertIsNone(report["phases"]["publish"]["seconds_measured"])
+
+    def test_the_measured_cost_is_seconds_times_gpus_times_the_list_price(self) -> None:
+        from decide.rental import hardware as HW
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report, _ = self.build(tmp)
+            self.assertAlmostEqual(report["measured"]["usd"], (3600.0 + 7200.0) * 1 * HW.GPUS["B200"].usd_per_second, places=6)
+            self.assertIn("list price", report["measured"]["basis"])
+
+    def test_it_carries_the_gates_and_stays_plain_json_without_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report, RP = self.build(tmp)
+            self.assertEqual(report["gates"]["g4"]["status"], "FAIL")
+            text = json.dumps(report)
+            self.assertNotRegex(text, r"(?i)hf_[a-z0-9]{10,}|api[_-]?key\W+\w{8,}|bearer")
+            rendered = RP.render(report)
+            self.assertIn("UNVERIFIED", rendered)
+            self.assertIn("g4", rendered)
+            self.assertIn("stopped", rendered)
+
+
 if __name__ == "__main__":
     unittest.main()
