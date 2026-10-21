@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from decide_b_support import ROOT, needs_yaml
+from decide_b_support import ROOT, needs_pyarrow, needs_yaml
 
 from decide.rental import estimate as E
 from decide.rental import hardware as HW
@@ -409,6 +409,447 @@ class ConfigOverlayContract(unittest.TestCase):
         rental = self.load()["rental"]
         self.assertEqual(base["models"]["anchor"]["repo"], rental["start"]["repo"])
         self.assertEqual(base["hub"]["winner_repo"], rental["hub"]["weights_repo"])
+
+
+# --------------------------------------------------------------------------- the day's state
+
+class DayStateContract(unittest.TestCase):
+    identity = {"profile": "p" * 64, "config": "c" * 64}
+
+    def open(self, directory, **identity):
+        from decide.rental import state as ST
+
+        return ST.DayState(Path(directory), identity=identity or self.identity)
+
+    def test_the_phases_are_the_order_of_the_day(self) -> None:
+        from decide.rental import state as ST
+
+        self.assertEqual(ST.PHASES, ("preflight", "fetch", "targets", "traces", "targets_traces", "train", "soup", "calibrate", "g4",
+                                     "public_round", "publish"))
+
+    def test_a_new_state_has_every_phase_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            day = self.open(tmp)
+            from decide.rental import state as ST
+
+            self.assertEqual({phase: day.status(phase) for phase in ST.PHASES}, {phase: "pending" for phase in ST.PHASES})
+
+    def test_done_keeps_the_seconds_the_outputs_and_the_detail_across_a_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "targets"
+            out.mkdir()
+            (out / "manifest.json").write_text("{}", encoding="utf-8")
+            clock = iter([100.0, 160.5])
+            from decide.rental import state as ST
+
+            day = ST.DayState(Path(tmp) / "state", identity=self.identity, clock=lambda: next(clock))
+            day.begin("targets")
+            self.assertEqual(day.status("targets"), "running")
+            day.done("targets", outputs={"targets": out}, detail={"rows_out": 96})
+            again = self.open(Path(tmp) / "state")
+            self.assertEqual(again.status("targets"), "done")
+            self.assertEqual(again.record("targets")["seconds"], 60.5)
+            self.assertEqual(again.record("targets")["detail"], {"rows_out": 96})
+            self.assertTrue(again.reusable("targets"))
+
+    def test_a_phase_whose_output_changed_is_not_reusable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "targets"
+            out.mkdir()
+            (out / "a.parquet").write_bytes(b"one")
+            day = self.open(Path(tmp) / "state")
+            day.begin("targets")
+            day.done("targets", outputs={"targets": out})
+            self.assertTrue(day.reusable("targets"))
+            (out / "a.parquet").write_bytes(b"two")
+            self.assertFalse(day.reusable("targets"))
+            self.assertIn("targets", day.why_not_reusable("targets"))
+            (out / "a.parquet").write_bytes(b"one")
+            (out / "b.parquet").write_bytes(b"new file")
+            self.assertFalse(day.reusable("targets"), "a file that was added is a change too")
+
+    def test_a_phase_with_a_missing_output_is_not_reusable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "runs"
+            out.mkdir()
+            day = self.open(Path(tmp) / "state")
+            day.begin("train")
+            day.done("train", outputs={"runs": out})
+            out.rmdir()
+            self.assertFalse(day.reusable("train"))
+
+    def test_a_phase_that_was_running_when_the_process_died_is_not_done(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            day = self.open(Path(tmp) / "state")
+            day.begin("train")
+            again = self.open(Path(tmp) / "state")
+            self.assertEqual(again.status("train"), "running")
+            self.assertFalse(again.reusable("train"))
+            self.assertTrue(again.record("train")["interrupted"] if "interrupted" in again.record("train") else True)
+
+    def test_failed_and_stopped_phases_keep_their_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            day = self.open(Path(tmp) / "state")
+            day.begin("targets")
+            day.fail("targets", "coverage 0.90 < 0.95")
+            day.begin("g4")
+            day.stop("g4", "delta 0.4 < 1.5")
+            again = self.open(Path(tmp) / "state")
+            self.assertEqual((again.status("targets"), again.record("targets")["reason"]), ("failed", "coverage 0.90 < 0.95"))
+            self.assertEqual((again.status("g4"), again.record("g4")["reason"]), ("stopped", "delta 0.4 < 1.5"))
+            self.assertFalse(again.reusable("g4"), "a stopped gate is asked again, never skipped")
+
+    def test_a_phase_can_be_skipped_with_a_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            day = self.open(Path(tmp) / "state")
+            day.skip("traces", "thinker disabled: no GT report")
+            self.assertEqual(day.status("traces"), "skipped")
+            self.assertTrue(day.reusable("traces"))
+
+    def test_a_state_of_another_profile_is_refused_and_left_alone(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "state"
+            day = self.open(directory)
+            day.begin("fetch")
+            day.done("fetch", outputs={})
+            before = (directory / "day.json").read_bytes()
+            with self.assertRaises(ST.StateError) as caught:
+                self.open(directory, profile="x" * 64, config="c" * 64)
+            self.assertIn("another", str(caught.exception))
+            self.assertEqual((directory / "day.json").read_bytes(), before)
+
+    def test_an_unknown_phase_is_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            day = self.open(Path(tmp) / "state")
+            for call in (lambda: day.begin("lunch"), lambda: day.status("lunch"), lambda: day.reusable("lunch")):
+                with self.assertRaises(KeyError):
+                    call()
+
+    def test_the_file_is_replaced_atomically_and_is_plain_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "state"
+            day = self.open(directory)
+            day.begin("fetch")
+            self.assertEqual(sorted(path.name for path in directory.iterdir()), ["day.json"])
+            data = json.loads((directory / "day.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["identity"], self.identity)
+            self.assertEqual(data["phases"]["fetch"]["status"], "running")
+
+    def test_a_corrupt_state_file_is_refused_not_overwritten(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "state"
+            directory.mkdir()
+            (directory / "day.json").write_text("{not json", encoding="utf-8")
+            with self.assertRaises(ST.StateError):
+                self.open(directory)
+            self.assertEqual((directory / "day.json").read_text(encoding="utf-8"), "{not json")
+
+    def test_the_fingerprint_sees_a_change_an_addition_and_a_removal(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "ckpt"
+            root.mkdir()
+            (root / "a.bin").write_bytes(b"aaaa")
+            (root / "sub").mkdir()
+            (root / "sub" / "b.bin").write_bytes(b"bbbb")
+            first = ST.fingerprint(root)
+            self.assertEqual(ST.fingerprint(root), first)
+            (root / "sub" / "b.bin").write_bytes(b"bbbc")
+            changed = ST.fingerprint(root)
+            self.assertNotEqual(changed, first)
+            (root / "c.bin").write_bytes(b"")
+            added = ST.fingerprint(root)
+            self.assertNotEqual(added, changed)
+            (root / "c.bin").unlink()
+            self.assertEqual(ST.fingerprint(root), changed)
+
+    def test_the_fingerprint_ignores_unfinished_tmp_files(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "x"
+            root.mkdir()
+            (root / "a.bin").write_bytes(b"a")
+            before = ST.fingerprint(root)
+            (root / "a.bin.tmp").write_bytes(b"half")
+            self.assertEqual(ST.fingerprint(root), before)
+
+    def test_big_files_are_fingerprinted_by_size_head_and_tail(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "big.safetensors"
+            body = bytearray(b"x" * 300)
+            path.write_bytes(bytes(body))
+            base = ST.fingerprint(path, full_limit=100, edge=10)
+            body[-1] = ord("y")
+            path.write_bytes(bytes(body))
+            self.assertNotEqual(ST.fingerprint(path, full_limit=100, edge=10), base, "the tail is read")
+            body[-1] = ord("x")
+            body[0] = ord("y")
+            path.write_bytes(bytes(body))
+            self.assertNotEqual(ST.fingerprint(path, full_limit=100, edge=10), base, "the head is read")
+            path.write_bytes(b"x" * 301)
+            self.assertNotEqual(ST.fingerprint(path, full_limit=100, edge=10), base, "the size is read")
+            body = bytearray(b"x" * 300)
+            body[150] = ord("y")
+            path.write_bytes(bytes(body))
+            self.assertEqual(ST.fingerprint(path, full_limit=100, edge=10), base, "documented: the middle of a big file is not read")
+            self.assertNotEqual(ST.fingerprint(path, full_limit=1000), base, "a small file is read whole")
+
+
+# --------------------------------------------------------------------------- gates
+
+def gt_report(status="PASS", complete=True, model="Qwen/Qwen3.8-27B", revision="1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0", thinking=True,
+              format="think-gt-report/1", delta=11.2, ci=(2.1, 20.0)):
+    """A think-gt-report/1 reduced to the fields the day reads (decide/think/compare.py, Squad C, PR #78)."""
+    return {"format": format,
+            "thinker": {"config": {"model": model, "revision": revision, "chat_template_kwargs": {"enable_thinking": thinking}, "backend": "openai"},
+                        "config_fingerprint": "f" * 16},
+            "coverage": {"rows_in_pack": 400, "rows_scored": 400 if complete else 300, "complete": complete, "missing": 0 if complete else 100, "errors": 0},
+            "verdict": {"status": status, "reasons": [] if status == "PASS" else ["delta_below_min"], "delta_pts": delta, "ci": list(ci), "min_delta_pts": 10.0}}
+
+
+class LabelCoverageContract(unittest.TestCase):
+    def test_the_share_of_the_corpus_that_got_a_label(self) -> None:
+        from decide.rental import gates as G
+
+        got = G.label_coverage({"rows_in": 100, "rows_out": 96, "dropped_unlabeled": 4}, minimum=0.95)
+        self.assertEqual((got["coverage"], got["passed"]), (0.96, True))
+
+    def test_exactly_the_minimum_passes_and_one_row_less_does_not(self) -> None:
+        from decide.rental import gates as G
+
+        self.assertTrue(G.label_coverage({"rows_in": 100, "rows_out": 95}, minimum=0.95)["passed"])
+        self.assertFalse(G.label_coverage({"rows_in": 100, "rows_out": 94}, minimum=0.95)["passed"])
+
+    def test_an_empty_corpus_does_not_pass(self) -> None:
+        from decide.rental import gates as G
+
+        got = G.label_coverage({"rows_in": 0, "rows_out": 0}, minimum=0.95)
+        self.assertFalse(got["passed"])
+        self.assertIn("no rows", got["reason"])
+
+    def test_the_minimum_must_be_a_share(self) -> None:
+        from decide.rental import gates as G
+
+        for bad in (0, -0.1, 1.01, "0.95", None, True):
+            with self.assertRaises(ValueError):
+                G.label_coverage({"rows_in": 10, "rows_out": 10}, minimum=bad)
+
+    def test_a_report_that_is_missing_fields_is_refused(self) -> None:
+        from decide.rental import gates as G
+
+        with self.assertRaises(ValueError):
+            G.label_coverage({"rows_in": 10}, minimum=0.95)
+
+
+class GtEvidenceContract(unittest.TestCase):
+    cfg = {"enabled": "auto", "model": "Qwen/Qwen3.8-27B", "revision": None, "thinking": True}
+
+    def evidence(self, report, cfg=None, name="report.json"):
+        from decide.rental import gates as G
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = None
+            if report is not None:
+                path = Path(tmp) / name
+                path.write_text(report if isinstance(report, str) else json.dumps(report), encoding="utf-8")
+            return G.gt_evidence(path, thinker=cfg or self.cfg)
+
+    def test_a_passing_complete_report_of_the_same_model_enables_the_thinker(self) -> None:
+        got = self.evidence(gt_report())
+        self.assertTrue(got["enabled"], got)
+        self.assertEqual((got["model"], got["revision"]), ("Qwen/Qwen3.8-27B", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"))
+        self.assertEqual(got["delta_pts"], 11.2)
+        self.assertRegex(got["report_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_the_fp8_build_of_the_same_model_counts(self) -> None:
+        got = self.evidence(gt_report(model="Qwen/Qwen3.8-27B-FP8", revision="017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"))
+        self.assertTrue(got["enabled"], got)
+        self.assertEqual(got["model"], "Qwen/Qwen3.8-27B-FP8")
+
+    def test_anything_but_a_complete_pass_keeps_the_thinker_off(self) -> None:
+        for report, reason in ((gt_report(status="FAIL"), "verdict"), (gt_report(status="PARTIAL"), "verdict"), (gt_report(status="INCONCLUSIVE"), "verdict"),
+                               (gt_report(complete=False), "complete"), (gt_report(format="think-gt-report/2"), "format"),
+                               (gt_report(thinking=False), "thinking"), (gt_report(model="Qwen/Qwen3-8B"), "model")):
+            got = self.evidence(report)
+            self.assertFalse(got["enabled"], reason)
+            self.assertIn(reason, " ".join(got["reasons"]))
+
+    def test_a_pinned_revision_in_the_config_must_match_the_report(self) -> None:
+        cfg = dict(self.cfg, revision="1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0")
+        self.assertTrue(self.evidence(gt_report(), cfg)["enabled"])
+        self.assertFalse(self.evidence(gt_report(revision="0" * 40), cfg)["enabled"])
+
+    def test_a_report_without_a_revision_cannot_pin_the_traces(self) -> None:
+        got = self.evidence(gt_report(revision=None))
+        self.assertFalse(got["enabled"])
+        self.assertIn("revision", " ".join(got["reasons"]))
+
+    def test_no_report_unreadable_report_or_off_keeps_it_off_without_raising(self) -> None:
+        self.assertFalse(self.evidence(None)["enabled"])
+        self.assertIn("no GT report", " ".join(self.evidence(None)["reasons"]))
+        self.assertFalse(self.evidence("{not json")["enabled"])
+        self.assertFalse(self.evidence("[]")["enabled"])
+        off = dict(self.cfg, enabled="off")
+        got = self.evidence(gt_report(), off)
+        self.assertFalse(got["enabled"])
+        self.assertIn("off", " ".join(got["reasons"]))
+
+    def test_only_auto_and_off_are_known(self) -> None:
+        with self.assertRaises(ValueError):
+            self.evidence(gt_report(), dict(self.cfg, enabled="on"))
+        with self.assertRaises(ValueError):
+            self.evidence(gt_report(), dict(self.cfg, enabled=True))
+
+
+@needs_pyarrow
+class G4Contract(unittest.TestCase):
+    keys = ["A", "B", "C", "D"]
+
+    def fixture(self, per_source, new_right, base_right, sources=("alpha", "beta")):
+        """Requests (one 4-option question each, gold A) and two result tables: the first ``*_right`` examples of each source are right."""
+        requests, new, base = [], [], []
+        for source in sources:
+            for i in range(per_source):
+                eid = f"{source}:{i}"
+                request = {"state": f"case {i}", "questions": {"q1": {"type": "choice", "instructions": "pick", "criteria": {k: k.lower() for k in self.keys}}}}
+                requests.append((eid, request, {"q1": "A"}, source))
+                for rows, right in ((new, new_right), (base, base_right)):
+                    probs = [0.7, 0.1, 0.1, 0.1] if i < right else [0.1, 0.7, 0.1, 0.1]
+                    rows.append({"run_id": eid, "question_id": "q1", "probs": probs, "status": "ok"})
+        return requests, new, base
+
+    def verdict(self, requests, new, base, **kw):
+        from decide.rental import gates as G
+
+        kw.setdefault("margin_points", 1.5)
+        kw.setdefault("resamples", 200)
+        return G.g4_verdict(requests, new, base, **kw)
+
+    def test_the_point_estimates_are_the_ones_of_the_home_private_scorer(self) -> None:
+        from decide.data import proxy_private as PP
+
+        requests, new, base = self.fixture(40, 30, 24)
+        got = self.verdict(requests, new, base)
+        self.assertEqual(got["new"]["proxy_points"], 100 * PP.score_rows(requests, new)["proxy"])
+        self.assertEqual(got["baseline"]["proxy_points"], 100 * PP.score_rows(requests, base)["proxy"])
+        self.assertAlmostEqual(got["delta_points"], got["new"]["proxy_points"] - got["baseline"]["proxy_points"], places=9)
+        self.assertAlmostEqual(got["delta_points"], 20.0, places=6)          # accuracy .75 vs .60 at chance .25: (.15 / .75) x 100
+
+    def test_a_gain_over_the_margin_passes(self) -> None:
+        requests, new, base = self.fixture(200, 103, 100)                    # +1.5 accuracy points x (1 / .75) = +2.0
+        got = self.verdict(requests, new, base)
+        self.assertEqual(got["status"], "PASS", got)
+        self.assertAlmostEqual(got["delta_points"], 2.0, places=6)
+
+    def test_a_gain_under_the_margin_fails_with_the_reason(self) -> None:
+        requests, new, base = self.fixture(200, 102, 100)                    # +1.33 points
+        got = self.verdict(requests, new, base)
+        self.assertEqual(got["status"], "FAIL")
+        self.assertEqual(got["reasons"], ["delta_below_margin"])
+
+    def test_exactly_the_margin_passes(self) -> None:
+        requests, new, base = self.fixture(800, 409, 400)                    # 9 / 800 / .75 x 100 = 1.5
+        got = self.verdict(requests, new, base, resamples=50)
+        self.assertEqual(got["status"], "PASS", got)
+
+    def test_a_loss_fails(self) -> None:
+        requests, new, base = self.fixture(100, 40, 60)
+        got = self.verdict(requests, new, base)
+        self.assertEqual(got["status"], "FAIL")
+        self.assertLess(got["delta_points"], 0)
+
+    def test_the_margin_is_a_parameter_and_there_is_no_way_to_skip_the_gate(self) -> None:
+        import inspect
+
+        from decide.rental import gates as G
+
+        names = set(inspect.signature(G.g4_verdict).parameters)
+        self.assertFalse({"skip", "force", "ignore", "override", "dry_run"} & names, names)
+        requests, new, base = self.fixture(200, 103, 100)
+        self.assertEqual(self.verdict(requests, new, base, margin_points=3.0)["status"], "FAIL")
+
+    def test_missing_rows_make_the_verdict_invalid_not_a_fail_or_a_pass(self) -> None:
+        requests, new, base = self.fixture(50, 40, 20)
+        got = self.verdict(requests, new[:-3], base)
+        self.assertEqual(got["status"], "INVALID")
+        self.assertIn("new_missing_rows", got["reasons"])
+        got = self.verdict(requests, new, base[:-1])
+        self.assertIn("baseline_missing_rows", got["reasons"])
+
+    def test_malformed_probabilities_make_it_invalid(self) -> None:
+        requests, new, base = self.fixture(50, 40, 20)
+        new[0] = dict(new[0], probs=[0.5, 0.5])
+        got = self.verdict(requests, new, base)
+        self.assertEqual(got["status"], "INVALID")
+        self.assertIn("new_bad_rows", got["reasons"])
+
+    def test_nothing_to_score_is_invalid(self) -> None:
+        got = self.verdict([], [], [])
+        self.assertEqual(got["status"], "INVALID")
+        self.assertIn("no_scored_questions", got["reasons"])
+
+    def test_the_interval_is_a_paired_bootstrap_that_is_the_same_every_time(self) -> None:
+        requests, new, base = self.fixture(100, 70, 50)
+        one = self.verdict(requests, new, base, seed=7)
+        two = self.verdict(requests, new, base, seed=7)
+        other = self.verdict(requests, new, base, seed=8)
+        self.assertEqual(one["ci95"], two["ci95"])
+        self.assertNotEqual(one["ci95"], other["ci95"])
+        low, high = one["ci95"]
+        self.assertLessEqual(low, one["delta_points"])
+        self.assertGreaterEqual(high, one["delta_points"])
+        self.assertTrue(one["ci_above_zero"])
+        self.assertEqual(one["resamples"], 200)
+
+    def test_a_gain_that_noise_can_explain_is_flagged_even_when_it_passes(self) -> None:
+        requests, new, base = self.fixture(40, 22, 19, sources=("alpha",))
+        got = self.verdict(requests, new, base)
+        self.assertEqual(got["status"], "PASS", got)
+        self.assertFalse(got["ci_above_zero"])
+        self.assertIn("ci_includes_zero", got["notes"])
+
+    def test_the_rows_each_side_scored_and_the_scale_are_reported(self) -> None:
+        requests, new, base = self.fixture(30, 20, 10)
+        got = self.verdict(requests, new, base)
+        self.assertEqual((got["questions"], got["scale"], got["margin_points"]), (60, 100, 1.5))
+        self.assertEqual(got["new"]["n"], 60)
+        self.assertEqual(set(got["new"]["per_source"]), {"alpha", "beta"})
+
+    def test_it_says_the_number_is_the_home_proxy_and_not_the_board(self) -> None:
+        requests, new, base = self.fixture(30, 20, 10)
+        got = self.verdict(requests, new, base)
+        self.assertIn("home private proxy", got["scope"])
+        self.assertIn("not the board", got["scope"])
+
+    def test_the_proxy_becomes_a_request_file_the_kit_reads(self) -> None:
+        from decide.data import schema as S
+        from decide.rental import gates as G
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [S.corpus_row(example_id=f"p:{i}", source="alpha", license="mit", split="dev", lang="en",
+                                 request={"state": f"s{i}", "questions": {"q1": {"type": "choice", "instructions": "pick", "criteria": {"A": "a", "B": "b"}}}},
+                                 gold={"q1": "A"}) for i in range(5)]
+            S.write_corpus_part(Path(tmp) / "proxy" / "proxy.parquet", rows)
+            S.seal_directory(Path(tmp) / "proxy", kind="proxy")
+            out = Path(tmp) / "g4" / "requests.jsonl"
+            count = G.proxy_to_requests(Path(tmp) / "proxy", out)
+            self.assertEqual(count, 5)
+            lines = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([line["example_id"] for line in lines], [f"p:{i}" for i in range(5)])
+            self.assertEqual(set(lines[0]), {"example_id", "request", "gold", "source"})
+            self.assertEqual(lines[0]["gold"], {"q1": "A"})
+            self.assertNotIn("reasoning", lines[0]["request"])
+            tuples = G.proxy_requests(Path(tmp) / "proxy")
+            self.assertEqual([(t[0], t[3]) for t in tuples], [(f"p:{i}", "alpha") for i in range(5)])
+            self.assertEqual(sorted(path.name for path in out.parent.iterdir()), ["requests.jsonl"], "no .tmp is left behind")
 
 
 if __name__ == "__main__":
