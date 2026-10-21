@@ -161,6 +161,8 @@ class SchemaContract(unittest.TestCase):
             S.write_corpus_part(root / "part-0.parquet", rows[:3])
             S.write_corpus_part(root / "part-1.parquet", rows[3:])
             self.assertEqual([p.name for p in S.corpus_files(root)], ["part-0.parquet", "part-1.parquet"])
+            S.write_manifest(root / "manifest.json", {"kind": "corpus", "parts": [
+                {"name": name, "sha256": S.sha256_file(root / name)} for name in ("part-0.parquet", "part-1.parquet")]})
             self.assertEqual(list(S.read_corpus(root)), rows)
             self.assertEqual(list(S.read_corpus(root / "part-0.parquet")), rows[:3])
             S.write_teacher_part(root / "t.parquet", [TEACHER_OK])
@@ -238,6 +240,33 @@ class ManifestReadingContract(unittest.TestCase):
         with self.assertRaises(S.ManifestError) as caught:
             S.corpus_files(self.root, require_manifest=True)
         self.assertIn("manifest.json", str(caught.exception))
+
+    def test_read_corpus_never_globs_a_directory(self) -> None:
+        # second review of PR #74: a decontaminate run that is interrupted leaves a directory without manifest, and the
+        # default reader then globbed every part in it, unapproved ones included.  A directory is read through its
+        # manifest or not at all; a parquet file the caller names is the one thing that needs no manifest.
+        self.part("a-0000.parquet", "a")
+        (self.root / "nested").mkdir()
+        S.write_corpus_part(self.root / "nested" / "b-0000.parquet", [])
+        with self.assertRaises(S.ManifestError) as caught:
+            list(S.read_corpus(self.root))
+        self.assertIn("manifest.json", str(caught.exception))
+        self.assertEqual({r["source"] for r in S.read_corpus(self.root / "a-0000.parquet")}, {"a"})
+
+    def test_a_manifest_that_is_not_valid_never_falls_back_to_the_glob(self) -> None:
+        self.part("a-0000.parquet", "a")
+        (self.root / "manifest.json").write_text("{not json", encoding="utf-8")
+        with self.assertRaises(S.ManifestError):
+            list(S.read_corpus(self.root))
+        S.write_manifest(self.root / "manifest.json", {"kind": "corpus"})          # valid JSON, but it lists nothing
+        with self.assertRaises(S.ManifestError):
+            list(S.read_corpus(self.root))
+
+    def test_labels_put_in_a_folder_by_hand_are_still_read_without_a_manifest(self) -> None:
+        # labels are not a corpus: a rental box or Modal writes the parts next to each other and nobody seals them
+        S.write_teacher_part(self.root / "t1.parquet", [TEACHER_OK])
+        S.write_teacher_part(self.root / "t2.parquet", [TEACHER_OK])
+        self.assertEqual(len(list(S.read_teacher(self.root))), 2)
 
     def test_an_empty_part_list_is_an_empty_dataset(self) -> None:
         self.part("stale-0000.parquet", "stale")

@@ -227,6 +227,40 @@ class BuildFlow(unittest.TestCase):
         with self.assertRaises(S.ManifestError):
             self.clean_run(out, self.root / "clean")
 
+    def test_a_tool_never_replaces_the_manifest_of_another_one(self) -> None:
+        # the same rule for the three tools that write a manifest.json: it says what the folder is, so a folder of
+        # another tool is not an --out (replacing its manifest would leave its parts unlisted, so unreadable)
+        corpus, clean, proxy = self.root / "corpus", self.root / "clean", self.root / "proxy"
+        self.run_build()
+        self.clean_run(corpus, clean)
+        sources, reader = SRC.load_sources(self.sources_yaml), R.LocalReader(self.raw)
+        P.build_proxy(proxy, sources=sources, reader=reader, per_source=5, skip_leak_check=True)
+        folders = {"corpus": corpus, "clean": clean, "proxy": proxy}
+
+        def state() -> dict:
+            return {name: {f.name: S.sha256_file(f) for f in sorted(d.iterdir()) if f.is_file()} for name, d in folders.items()}
+
+        before = state()
+        index = D.build_index([self.root / "suite"])
+        attempts = {
+            "build_corpus": lambda out: B.build_corpus(out, sources=sources, reader=reader),
+            "decontaminate": lambda out: D.decontaminate_corpus(clean if out != clean else corpus, out, index),
+            "proxy": lambda out: P.build_proxy(out, sources=sources, reader=reader, per_source=5, skip_leak_check=True),
+        }
+        own = {"build_corpus": "corpus", "decontaminate": "clean", "proxy": "proxy"}
+        for tool, attempt in attempts.items():
+            for name, folder in folders.items():
+                if name == own[tool]:
+                    continue
+                with self.assertRaises(S.ManifestError, msg=f"{tool} into the folder of {name}"):
+                    attempt(folder)
+                self.assertEqual(state(), before, f"{tool} must leave the folder of {name} as it was")
+        # and each one still reruns on its own folder
+        attempts["build_corpus"](corpus)
+        attempts["decontaminate"](clean)
+        attempts["proxy"](proxy)
+        self.assertEqual({r["source"] for r in S.read_corpus(clean)}, {"toy_cls", "toy_mcq"})
+
     FAKE_PROVIDER = (
         "import json, re, sys\n"
         "prompt = sys.stdin.read()\n"
@@ -425,6 +459,157 @@ class DecontaminationFlow(unittest.TestCase):
         with self.assertRaises(ValueError):
             D.decontaminate_corpus(self.root / "corpus", self.root / "corpus", D.build_index([self.root / "suite"]))
         self.assertEqual(len(list((self.root / "corpus").glob("*.parquet"))), 2)
+
+    # ---- second review of PR #74: what a run may read, overwrite and delete
+
+    def foreign_files(self, directory: Path) -> dict:
+        """Files this tool did not write, some named like its own outputs on purpose.  Returns name -> sha256."""
+        directory.mkdir(parents=True, exist_ok=True)
+        S.write_corpus_part(directory / "notes.parquet", [self.stale_row()])
+        (directory / "notes.parquet.tmp").write_bytes(b"not ours")
+        (directory / "toy-9999.parquet").write_bytes(b"looks like a part of this corpus, is not one")
+        (directory / "other.done.json").write_text('{"made": "by hand"}', encoding="utf-8")
+        (directory / "other.rejected.jsonl").write_text("{}\n", encoding="utf-8")
+        (directory / "readme.txt").write_text("keep me", encoding="utf-8")
+        return self.fingerprints(directory)
+
+    @staticmethod
+    def fingerprints(directory: Path) -> dict:
+        return {f.name: S.sha256_file(f) for f in sorted(directory.iterdir()) if f.is_file()}
+
+    def test_an_interrupted_rerun_leaves_a_directory_that_nobody_globs(self) -> None:
+        # a run starts by removing its manifest; if it dies, the old parts stay next to the markers.  The default
+        # reader used to glob them all (the second review of PR #74 got both toy parts back from `clean/`)
+        self.run_decon()
+        clean = self.root / "clean"
+        real_screen = D._screen
+        seen = []
+
+        def machine_goes_away(row, index):
+            seen.append(row["example_id"])
+            if len(seen) > 3:                    # the first part (3 rows) is done, the second dies
+                raise RuntimeError("the machine went away")
+            return real_screen(row, index)
+
+        with mock.patch.object(D, "_screen", machine_goes_away), contextlib.redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError):
+            D.main(["--corpus", str(self.root / "corpus"), "--out", str(clean), "--reference", str(self.root / "suite"), "--no-resume"])
+        self.assertFalse((clean / "manifest.json").exists())
+        self.assertTrue(list(clean.glob("*.parquet")), "the parts of the finished run are still there: that is what a glob would have read")
+        with self.assertRaises(S.ManifestError):
+            list(S.read_corpus(clean))
+        with self.assertRaises(S.ManifestError):
+            S.corpus_files(clean, require_manifest=True)
+        # the next run that finishes makes the directory readable again, and still cleans up what left the corpus meanwhile
+        (self.root / "corpus" / "toy-0001.parquet").unlink()
+        seal(self.root / "corpus")
+        self.run_decon()
+        self.assertEqual({r["example_id"] for r in S.read_corpus(clean)}, {"clean:1", "clean:2"})
+        self.assertEqual(sorted(p.name for p in clean.glob("toy-0001*")), [])
+
+    def test_a_single_file_input_is_never_overwritten_by_its_own_out(self) -> None:
+        # `--corpus x/c.parquet --out x` exited 0, replaced c.parquet by its clean version and deleted every other
+        # parquet file in x (the second review of PR #74 lost a notes.parquet that way)
+        corpus = self.root / "corpus"
+        S.write_corpus_part(corpus / "notes.parquet", [self.stale_row()])
+        before = self.fingerprints(corpus)
+        index = D.build_index([self.root / "suite"])
+        with self.assertRaises(ValueError) as caught:
+            D.decontaminate_corpus(corpus / "toy-0000.parquet", corpus, index)
+        self.assertIn("--out", str(caught.exception))
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(ValueError):
+            D.main(["--corpus", str(corpus / "toy-0000.parquet"), "--out", str(corpus), "--reference", str(self.root / "suite")])
+        self.assertEqual(self.fingerprints(corpus), before)
+
+    def test_out_cannot_be_a_file(self) -> None:
+        target = self.root / "clean"
+        target.write_text("precious", encoding="utf-8")
+        with self.assertRaises(ValueError) as caught:
+            D.decontaminate_corpus(self.root / "corpus", target, D.build_index([self.root / "suite"]))
+        self.assertIn("--out", str(caught.exception))
+        self.assertEqual(target.read_text(encoding="utf-8"), "precious")
+
+    def test_out_and_the_input_never_overlap(self) -> None:
+        corpus = self.root / "corpus"
+        before = self.fingerprints(corpus)
+        index = D.build_index([self.root / "suite"])
+        for out in (corpus, corpus / "clean", self.root):            # the input itself, a folder inside it, a folder that holds it
+            with self.assertRaises(ValueError, msg=str(out)):
+                D.decontaminate_corpus(corpus, out, index)
+        for out in (corpus / "clean", self.root):
+            with self.assertRaises(ValueError, msg=f"{out} with a single file as input"):
+                D.decontaminate_corpus(corpus / "toy-0000.parquet", out, index)
+        self.assertEqual(self.fingerprints(corpus), before)
+        self.assertFalse((corpus / "clean").exists())
+
+    def test_files_the_tool_did_not_write_are_never_deleted(self) -> None:
+        clean = self.root / "clean"
+        foreign = self.foreign_files(clean)
+        report = self.run_decon()
+        after = self.fingerprints(clean)
+        self.assertEqual({name: after.get(name) for name in foreign}, foreign)
+        self.assertEqual(report["removed_stale"], [])
+        manifest = json.loads((clean / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual([p["name"] for p in manifest["parts"]], ["toy-0000.parquet"], "a parquet file the tool did not write is not data either")
+        self.assertEqual({r["example_id"] for r in S.read_corpus(clean)}, {"clean:1", "clean:2"})
+        self.run_decon()                                              # and again, on the directory it now owns
+        self.assertEqual({name: self.fingerprints(clean).get(name) for name in foreign}, foreign)
+
+    def test_what_the_previous_manifest_lists_is_removed_when_the_part_leaves_the_corpus(self) -> None:
+        # a marker can be lost (a copy that skipped dot-files, a cleanup): the manifest the tool wrote still names the part
+        extra = S.corpus_row(example_id="clean:3", source="toy", license="mit", split="train", lang="en",
+                             request=choice_request(instructions="Third.", options=["p", "q"], state=lorem(3, 30)), gold={"q1": "A"})
+        S.write_corpus_part(self.root / "corpus" / "toy-0002.parquet", [extra])
+        seal(self.root / "corpus")
+        self.run_decon()
+        clean = self.root / "clean"
+        self.assertIn("toy-0002.parquet", {p["name"] for p in json.loads((clean / "manifest.json").read_text(encoding="utf-8"))["parts"]})
+        (clean / "toy-0002.parquet.done.json").unlink()
+        (self.root / "corpus" / "toy-0002.parquet").unlink()
+        seal(self.root / "corpus")
+        report = self.run_decon()
+        self.assertIn("toy-0002.parquet", report["removed_stale"])
+        self.assertFalse((clean / "toy-0002.parquet").exists())
+        self.assertEqual({r["example_id"] for r in S.read_corpus(clean)}, {"clean:1", "clean:2"})
+
+    def test_half_written_files_are_removed_only_when_they_are_this_tools(self) -> None:
+        extra = S.corpus_row(example_id="clean:3", source="toy", license="mit", split="train", lang="en",
+                             request=choice_request(instructions="Third.", options=["p", "q"], state=lorem(3, 30)), gold={"q1": "A"})
+        S.write_corpus_part(self.root / "corpus" / "toy-0002.parquet", [extra])
+        seal(self.root / "corpus")
+        self.run_decon()
+        clean = self.root / "clean"
+        # toy-0002 leaves the corpus; a run died while it was rewriting things, and somebody left a .tmp of their own
+        (self.root / "corpus" / "toy-0002.parquet").unlink()
+        seal(self.root / "corpus")
+        for name in ("toy-0002.parquet.tmp", "manifest.json.tmp", "decontamination.json.tmp"):
+            (clean / name).write_bytes(b"half")
+        (clean / "notes.parquet.tmp").write_bytes(b"somebody else's")
+        report = self.run_decon()
+        self.assertEqual(sorted(report["removed_stale"]), ["decontamination.json.tmp", "manifest.json.tmp", "toy-0002.parquet", "toy-0002.parquet.done.json",
+                                                           "toy-0002.parquet.rejected.jsonl", "toy-0002.parquet.tmp"])
+        self.assertEqual(sorted(p.name for p in clean.glob("*.tmp")), ["notes.parquet.tmp"])
+
+    def test_a_manifest_or_report_that_another_tool_wrote_is_not_deleted(self) -> None:
+        clean = self.root / "clean"
+        clean.mkdir()
+        proxy_manifest = {"schema_version": S.SCHEMA_VERSION, "kind": "proxy", "file": {"name": "proxy.parquet", "rows": 1, "sha256": "0" * 64}}
+        S.write_manifest(clean / "manifest.json", proxy_manifest)
+        before = self.fingerprints(clean)
+        with self.assertRaises(S.ManifestError) as caught:
+            self.run_decon()
+        self.assertIn("manifest.json", str(caught.exception))
+        self.assertEqual(self.fingerprints(clean), before)
+        (clean / "manifest.json").write_text("{not json", encoding="utf-8")        # unreadable: also not provably ours
+        before = self.fingerprints(clean)
+        with self.assertRaises(S.ManifestError):
+            self.run_decon()
+        self.assertEqual(self.fingerprints(clean), before)
+        (clean / "manifest.json").unlink()
+        (clean / "decontamination.json").write_text('{"somebody": "else"}', encoding="utf-8")
+        before = self.fingerprints(clean)
+        with self.assertRaises(S.ManifestError):
+            self.run_decon()
+        self.assertEqual(self.fingerprints(clean), before)
 
     def test_a_canary_split_over_lines_is_rejected(self) -> None:
         split = S.corpus_row(example_id="leak:canary-lines", source="toy", license="mit", split="train", lang="en",
