@@ -605,13 +605,90 @@ class DayStateContract(unittest.TestCase):
 # --------------------------------------------------------------------------- gates
 
 def gt_report(status="PASS", complete=True, model="Qwen/Qwen3.8-27B", revision="1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0", thinking=True,
-              format="think-gt-report/1", delta=11.2, ci=(2.1, 20.0)):
-    """A think-gt-report/1 reduced to the fields the day reads (decide/think/compare.py, Squad C, PR #78)."""
+              format="think-gt-report/2", delta=11.2, ci=(2.1, 20.0)):
+    """A think-gt-report/2 reduced to the fields the day reads (decide/think/compare.py, Squad C, PR #78; RealGtReportContract builds the real one)."""
     return {"format": format,
             "thinker": {"config": {"model": model, "revision": revision, "chat_template_kwargs": {"enable_thinking": thinking}, "backend": "openai"},
                         "config_fingerprint": "f" * 16},
             "coverage": {"rows_in_pack": 400, "rows_scored": 400 if complete else 300, "complete": complete, "missing": 0 if complete else 100, "errors": 0},
             "verdict": {"status": status, "reasons": [] if status == "PASS" else ["delta_below_min"], "delta_pts": delta, "ci": list(ci), "min_delta_pts": 10.0}}
+
+
+def real_gt_report(*, thinker_hits: int = 36, model_hits: int = 20, rows: int = 40, drop: int = 0, **config_over):
+    """The report.json that ``decide.think.compare.build_report`` writes (the real function, Squad C), for one benchmark of ``rows`` rows:
+    the thinker is right on ``thinker_hits`` of them and the best decision model on ``model_hits``; the header is that of a registered run."""
+    from decide.think import common as C
+    from decide.think import compare as K
+
+    keys = ("A", "B", "C", "D")
+    pack, records = [], []
+    for i in range(rows):
+        pick = "A" if i < model_hits else "B"
+        rest = [k for k in keys if k != pick]
+        decisions = {"m1": {"q": {"choice": pick, "probs": {k: (0.7 if k == pick else 0.3 / len(rest)) for k in keys}}}}
+        row = {"id": f"25:{i}", "benchmark": 25, "track": "t", "group": f"25-{i}", "payload_sha256": f"h25-{i}", "state": "s",
+               "questions": {"q": {"type": "choice", "instructions": "i", "criteria": {k: k.lower() for k in keys}}},
+               "gold": {"q": ["A"]}, "decisions": decisions}
+        pack.append(row)
+        records.append({"kind": "row", "id": row["id"], "benchmark": 25, "status": "ok", "answers": {"q": "A" if i < thinker_hits else "B"},
+                        "tokens": {"completion": 10}, "seconds": 1.0, "thought": True})
+    config = {"backend": "fake", "model": C.QWEN_MODEL, "revision": C.QWEN_REVISION, "prompt_version": C.PROMPT_VERSION, "sampling": dict(C.THINKING_SAMPLING),
+              "chat_template_kwargs": {"enable_thinking": True}, "reasoning_effort": None, "extra_body": {}, "quantization": None, "dtype": None,
+              "max_tokens": 1000, "seed": None, "endpoint": None}
+    config.update(config_over)
+    header = {"kind": "header", "format": C.RESULT_FORMAT, "config": config, "config_fingerprint": "f"}
+    return K.build_report(pack, records[:len(records) - drop], header=header, B=C.BOOTSTRAP_B, seed=C.SEED)
+
+
+class RealGtReportContract(unittest.TestCase):
+    """The day reads the report.json of ``decide.think.compare`` as it is on main, not a lookalike: its format name, ``verdict.status``,
+    ``verdict.delta_pts``, ``verdict.ci``, ``coverage.complete`` and ``thinker.config``.  If Squad C renames one, this fails here."""
+
+    thinker = {"enabled": "auto", "model": "Qwen/Qwen3.8-27B", "revision": None}
+
+    def evidence(self, report):
+        from decide.rental import gates as G
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            path.write_text(json.dumps(report), encoding="utf-8")
+            return G.gt_evidence(path, thinker=self.thinker)
+
+    def test_the_format_the_day_reads_is_the_one_compare_writes(self) -> None:
+        from decide.rental import gates as G
+        from decide.think import compare as K
+
+        self.assertEqual(G.GT_REPORT_FORMAT, K.REPORT_FORMAT)
+
+    def test_a_real_passing_report_turns_the_thinker_on_with_the_model_the_gate_measured(self) -> None:
+        from decide.think import common as C
+
+        report = real_gt_report()
+        self.assertEqual(report["verdict"]["status"], "PASS", "the fixture must be a registered, complete, winning run")
+        got = self.evidence(report)
+        self.assertTrue(got["enabled"], got)
+        self.assertEqual((got["model"], got["revision"]), (C.QWEN_MODEL, C.QWEN_REVISION))
+        self.assertAlmostEqual(got["delta_pts"], report["verdict"]["delta_pts"])
+        self.assertEqual(got["ci"], report["verdict"]["ci"])
+
+    def test_a_real_failing_report_keeps_it_off(self) -> None:
+        report = real_gt_report(thinker_hits=22)
+        self.assertEqual(report["verdict"]["status"], "FAIL")
+        got = self.evidence(report)
+        self.assertFalse(got["enabled"])
+        self.assertIn("FAIL", " ".join(got["reasons"]))
+
+    def test_a_real_probe_with_rows_missing_keeps_it_off(self) -> None:
+        report = real_gt_report(drop=3)
+        self.assertEqual(report["verdict"]["status"], "PARTIAL")
+        got = self.evidence(report)
+        self.assertFalse(got["enabled"])
+        self.assertIn("coverage is not complete", " ".join(got["reasons"]))
+
+    def test_a_real_run_with_thinking_off_keeps_it_off(self) -> None:
+        got = self.evidence(real_gt_report(chat_template_kwargs={"enable_thinking": False}))
+        self.assertFalse(got["enabled"])
+        self.assertIn("thinking", " ".join(got["reasons"]))
 
 
 class LabelCoverageContract(unittest.TestCase):
@@ -729,7 +806,7 @@ class GtEvidenceContract(unittest.TestCase):
 
     def test_anything_but_a_complete_pass_keeps_the_thinker_off(self) -> None:
         for report, reason in ((gt_report(status="FAIL"), "verdict"), (gt_report(status="PARTIAL"), "verdict"), (gt_report(status="INCONCLUSIVE"), "verdict"),
-                               (gt_report(complete=False), "complete"), (gt_report(format="think-gt-report/2"), "format"),
+                               (gt_report(complete=False), "complete"), (gt_report(format="think-gt-report/1"), "format"), (gt_report(format="think-gt-report/3"), "format"),
                                (gt_report(thinking=False), "thinking"), (gt_report(model="Qwen/Qwen3-8B"), "model")):
             got = self.evidence(report)
             self.assertFalse(got["enabled"], reason)
