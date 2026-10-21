@@ -432,7 +432,33 @@ class ProxyFlow(unittest.TestCase):
         self.reader = R.LocalReader(self.raw)
 
     def build(self, **kw) -> dict:
+        if "corpus_manifest" not in kw and "corpus" not in kw:
+            kw.setdefault("skip_leak_check", True)          # explicit, as the CLI wants it
         return P.build_proxy(self.root / "proxy", sources=self.sources, reader=self.reader, per_source=10, **kw)
+
+    def test_building_without_any_leak_check_must_be_explicit(self) -> None:
+        # review of PR #74: without --corpus-manifest/--corpus nothing was checked, although SCHEMA 7 says it fails the build
+        with self.assertRaises(ValueError) as caught:
+            P.build_proxy(self.root / "proxy", sources=self.sources, reader=self.reader, per_source=10)
+        self.assertIn("skip_leak_check", str(caught.exception))
+        self.assertEqual(self.build()["corpus_leak_check"], {"checked": False, "skipped": True})
+        only_sources = self.build(corpus_manifest={"sources": {"toy_mcq": {}}})
+        self.assertEqual(only_sources["corpus_leak_check"], {"checked": False, "sources_only": True})
+
+    def test_the_cli_requires_a_leak_check_or_an_explicit_skip(self) -> None:
+        base = ["build", "--out", str(self.root / "cli-proxy"), "--reader", f"local:{self.raw}", "--sources", str(self.sources_yaml), "--per-source", "5"]
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            P.main(base)
+        self.assertEqual(caught.exception.code, 2)
+        self.assertFalse((self.root / "cli-proxy" / "manifest.json").exists())
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(P.main(base + ["--skip-leak-check"]), 0)
+            self.assertEqual(P.main(base + ["--corpus-manifest", str(self.write_corpus_manifest())]), 0)
+
+    def write_corpus_manifest(self) -> Path:
+        path = self.root / "corpus-manifest.json"
+        path.write_text(json.dumps({"sources": {"toy_mcq": {}}}), encoding="utf-8")
+        return path
 
     def test_proxy_uses_only_heldout_sources(self) -> None:
         manifest = self.build()
@@ -456,7 +482,7 @@ class ProxyFlow(unittest.TestCase):
         S.write_corpus_part(corpus / "c.parquet", [leak])
         with self.assertRaises(P.LeakError):
             self.build(corpus=corpus)
-        self.assertEqual(first["corpus_leak_check"], {"checked": False})
+        self.assertEqual(first["corpus_leak_check"], {"checked": False, "skipped": True})
 
     def test_score_and_validate_flow(self) -> None:
         self.build()

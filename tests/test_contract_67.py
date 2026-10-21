@@ -66,6 +66,46 @@ class SchemaContract(unittest.TestCase):
         for name, req in cases.items():
             self.assertTrue(S.validate_request(req), name)
 
+    def test_types_follow_pplx_decider(self) -> None:
+        # types.py of pplx-decider v1.2: Content = str | dict | list; noul criteria = {"true"|"false": Content | None} | None.
+        # The review of PR #74 found a noul with a list of criteria that validated, then crashed the decontamination
+        q = {"type": "noul", "instructions": "ok?"}
+        cases = {
+            "state is a number": {"state": 5, "questions": {"q": q}},
+            "state is null": {"state": None, "questions": {"q": q}},
+            "state is a boolean": {"state": True, "questions": {"q": q}},
+            "instructions is a number": {"state": "s", "questions": {"q": {"type": "noul", "instructions": 7}}},
+            "noul criteria is a list": {"state": "s", "questions": {"q": {"type": "noul", "criteria": ["yes", "no"]}}},
+            "noul criteria is text": {"state": "s", "questions": {"q": {"type": "noul", "criteria": "yes or no"}}},
+            "noul criteria has other keys": {"state": "s", "questions": {"q": {"type": "noul", "criteria": {"yes": "y", "no": "n"}}}},
+            "noul description is a number": {"state": "s", "questions": {"q": {"type": "noul", "criteria": {"true": 1}}}},
+            "choice description is a number": {"state": "s", "questions": {"q": {"type": "choice", "criteria": {"A": 3, "B": "b"}}}},
+            "score level is null": {"state": "s", "questions": {"q": {"type": "score", "criteria": ["low", None]}}},
+            "score level is a number": {"state": "s", "questions": {"q": {"type": "score", "criteria": ["low", 2]}}},
+        }
+        for name, req in cases.items():
+            self.assertTrue(S.validate_request(req), name)
+        valid = {
+            "empty state": {"state": "", "questions": {"q": q}},
+            "list state": {"state": ["a", {"b": 1}], "questions": {"q": q}},
+            "null instructions": {"state": {}, "questions": {"q": {"type": "noul", "instructions": None}}},
+            "noul criteria null": {"state": {}, "questions": {"q": {"type": "noul", "criteria": None}}},
+            "noul one outcome": {"state": {}, "questions": {"q": {"type": "noul", "criteria": {"true": "yes", "false": None}}}},
+            "choice null description": {"state": {}, "questions": {"q": {"type": "choice", "criteria": {"A": None, "B": {"k": [1, 2]}}}}},
+            "score structured levels": {"state": {}, "questions": {"q": {"type": "score", "criteria": [{"n": 0}, ["x"], "z"]}}},
+        }
+        for name, req in valid.items():
+            self.assertEqual(S.validate_request(req), [], name)
+
+    def test_a_request_that_validates_never_breaks_the_text_helpers(self) -> None:
+        for req in (choice_request(), noul_request(), score_request(), multi_request(),
+                    {"state": {}, "questions": {"q": {"type": "noul", "criteria": None}}},
+                    {"state": [], "questions": {"q": {"type": "choice", "criteria": {"A": None}}}}):
+            self.assertEqual(S.validate_request(req), [])
+            T.question_texts(req)
+            T.request_lines(req)
+            S.option_texts(req["questions"]["q" if "q" in req["questions"] else "q1"])
+
     def test_gold(self) -> None:
         req = multi_request()
         self.assertEqual(S.validate_gold(req, {"q1": "B", "q2": "true", "q3": "2"}), [])
@@ -799,6 +839,14 @@ class GeneratorAndLoopContract(unittest.TestCase):
         self.assertTrue(items[0]["source"].startswith("gen:echo:support"))
         again, _ = G.generate_items(spec, G.EchoProvider(reply), n=3, seed=1, enabled=True)
         self.assertEqual(items, again)
+
+    def test_the_openai_compatible_provider_sends_its_key_only_over_https(self) -> None:
+        # review of PR #74: an http:// base_url would carry the bearer key in clear text
+        for url in ("http://api.example.com/v1", "ftp://api.example.com/v1", "api.example.com/v1", "http://localhost.evil.example/v1"):
+            with self.assertRaises(ValueError, msg=url):
+                G.OpenAICompatibleProvider(url, "m")
+        for url in ("https://api.example.com/v1", "http://localhost:8000/v1", "http://127.0.0.1:8000/v1", "http://[::1]:8000/v1"):
+            self.assertEqual(G.OpenAICompatibleProvider(url, "m").model, "m", url)
 
     def test_provider_garbage_is_counted_not_raised(self) -> None:
         spec = G.TaskSpec(domain="support", lang="en", qtype="noul", description="x")
