@@ -72,6 +72,11 @@ def _number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _same_repo(first: Any, second: Any) -> bool:
+    """Two repo ids that the Hub takes for one repo: it answers ``ORG/Repo`` with a redirect to ``org/repo``, so the case does not tell them apart."""
+    return isinstance(first, str) and isinstance(second, str) and bool(first) and first.lower() == second.lower()
+
+
 def config_problems(cfg: Mapping[str, Any]) -> List[str]:
     """What in the rental config would make a gate meaningless or leak the proxy; each one names the key to change."""
     problems: List[str] = []
@@ -88,9 +93,9 @@ def config_problems(cfg: Mapping[str, Any]) -> List[str]:
     hub = cfg.get("hub") or {}
     for index, first in enumerate(REPO_ROLES):
         for second in REPO_ROLES[index + 1:]:
-            if hub.get(first) and hub.get(first) == hub.get(second):
-                problems.append(f"hub.{first} and hub.{second} are the same repo ({hub[first]}): the backup of the day holds the private proxy with its gold, "
-                                "so the roles need repos of their own")
+            if _same_repo(hub.get(first), hub.get(second)):
+                problems.append(f"hub.{first} and hub.{second} are the same repo ({hub[first]} and {hub[second]}; the Hub does not tell Org/Repo from org/repo): "
+                                "the backup of the day holds the private proxy with its gold, so the roles need repos of their own")
     return problems
 
 

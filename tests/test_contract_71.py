@@ -2357,6 +2357,19 @@ class PreflightContract(unittest.TestCase):
                 self.assertIn(f"hub.{first}", " ".join(got["problems"]))
                 self.assertIn(f"hub.{second}", " ".join(got["problems"]))
 
+    def test_the_hub_does_not_tell_org_repo_from_ORG_Repo_so_neither_does_the_check(self) -> None:
+        """The public API answers 307 from PERPLEXITY-AI/PPLX-Decider-V1.2 to perplexity-ai/pplx-decider-v1.2: it is one repo, however it is spelled."""
+        for first, second in (("work_repo", "weights_repo"), ("work_repo", "data_repo"), ("data_repo", "weights_repo")):
+            for respell in (str.upper, str.swapcase, str.title):
+                with self.subTest(first=first, second=second, respell=respell.__name__):
+                    cfg = rental_cfg()
+                    cfg["hub"][second] = respell(cfg["hub"][first])
+                    self.assertNotEqual(cfg["hub"][second], cfg["hub"][first])
+                    got = self.check(cfg=cfg)
+                    self.assertFalse(got["ok"], got)
+                    self.assertIn(f"hub.{first}", " ".join(got["problems"]))
+                    self.assertIn(f"hub.{second}", " ".join(got["problems"]))
+
     def test_a_public_requests_file_that_is_not_there_is_a_problem(self) -> None:
         self.assertIn("public", " ".join(self.check(public_requests=Path("/nonexistent/requests.jsonl"))["problems"]))
 
