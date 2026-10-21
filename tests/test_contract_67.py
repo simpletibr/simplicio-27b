@@ -254,7 +254,6 @@ class TextAndDecontaminationContract(unittest.TestCase):
     def test_normalization(self) -> None:
         self.assertEqual(T.words("Hello, WORLD!  It's 3.5%"), ["hello", "world", "it", "s", "3", "5"])
         self.assertEqual(T.words("ＦＵＬＬ　ｗｉｄｔｈ"), ["full", "width"])
-        self.assertEqual(T.normalize("  A\n\tB  "), "a b")
 
     def test_ngram_hashes(self) -> None:
         toks = [f"w{i}" for i in range(20)]
@@ -318,6 +317,28 @@ class TextAndDecontaminationContract(unittest.TestCase):
         short.add(choice_request(instructions="Is it blue?", options=["a", "b"]), ref_id="s")
         short.freeze()
         self.assertIsNone(short.check(choice_request(instructions="Please tell me.\nIs it blue?", options=["c", "d"])))
+
+    def test_line_minimum_is_exactly_min_line_words(self) -> None:
+        # found by a mutation check: `>=` turned into `>` survived the first version of these tests
+        idx = D.ReferenceIndex(min_line_words=5)
+        idx.add(choice_request(instructions="Is the sky blue today?", options=["a", "b"]), ref_id="five")
+        idx.add(choice_request(instructions="Is the sky blue?", options=["a", "b"]), ref_id="four")
+        idx.freeze()
+        five = idx.check(choice_request(instructions="Another text.\nIs the sky blue today?", options=["c", "d"]))
+        self.assertEqual(five.reason if five else None, "line")
+        self.assertIsNone(idx.check(choice_request(instructions="Another text.\nIs the sky blue?", options=["c", "d"])))
+
+    def test_document_frequency_cap_keeps_units_at_exactly_max_df(self) -> None:
+        # found by a mutation check: `<=` turned into `<` survived
+        shared = "this particular sentence is shared by several reference requests"
+        probe = choice_request(instructions=f"{shared}\n{lorem(777, 20)}", options=["c", "d"])
+        for refs, expect in ((3, "line"), (4, None)):
+            idx = D.ReferenceIndex(max_df=3)
+            for i in range(refs):
+                idx.add(choice_request(instructions=f"{shared}\n{lorem(200 + i, 20)}", options=["a", "b"]), ref_id=str(i))
+            idx.freeze()
+            hit = idx.check(probe)
+            self.assertEqual(hit.reason if hit else None, expect, refs)
 
     def test_boilerplate_is_ignored_by_document_frequency(self) -> None:
         boiler = "You will read the following passage carefully and then decide which of the listed options is the best answer for it"

@@ -10,16 +10,10 @@ from typing import Any, Dict, List, Mapping, Sequence
 from .schema import option_texts
 
 _WORD = re.compile(r"\w+", re.UNICODE)
-_SPACE = re.compile(r"\s+")
 MASK = (1 << 64) - 1
 _MULT = 0x9E3779B97F4A7C15
 _CANARY_GUID = re.compile(r"canary\s+guid\s*[:=]?\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 _CANARY_PHRASE = re.compile(r"should\s+never\s+appear\s+in\s+training\s+corpora", re.I)
-
-
-def normalize(text: str) -> str:
-    """NFKC, case-folded, whitespace collapsed."""
-    return _SPACE.sub(" ", unicodedata.normalize("NFKC", text).casefold()).strip()
 
 
 def words(text: str) -> List[str]:
