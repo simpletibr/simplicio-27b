@@ -18,8 +18,10 @@ from decide_b_support import (
 from decide.data import adapters as A
 from decide.data import decontaminate as D
 from decide.data import generate as G
+from decide.data import ingest as ING
 from decide.data import loop_traces as L
 from decide.data import proxy_private as P
+from decide.data import readers as R
 from decide.data import schema as S
 from decide.data import sources as SRC
 from decide.data import text as T
@@ -248,6 +250,52 @@ class AdapterContract(unittest.TestCase):
 
     def test_registry_is_complete(self) -> None:
         self.assertEqual(set(A.ADAPTERS), {"mcq", "classification", "nli", "binary", "gsm8k"})
+
+
+class IngestContract(unittest.TestCase):
+    """convert_source: example ids are unique, whatever the source calls its ids (found by the review of PR #74)."""
+
+    def source(self, **args) -> SRC.Source:
+        base = {"question": "question", "choices": "choices", "answer": "answer", "answer_kind": "index", "id": "pid"}
+        return SRC.Source(key="t", hf_id="o/d", license="mit", decision="allow", evidence="fixture", adapter="mcq", args=dict(base, **args))
+
+    def rows(self, ids):
+        return [{"pid": pid, "question": f"Question {i}: {lorem(i, 8)}", "choices": ["a", "b"], "answer": 0} for i, pid in enumerate(ids)]
+
+    def test_unique_native_ids_become_example_ids(self) -> None:
+        out, stats = ING.convert_source(self.source(), R.ListDataset(self.rows(["x", "y", "z"])), seed=1)
+        self.assertEqual([r["example_id"] for r in out], ["t:x", "t:y", "t:z"])
+        self.assertEqual(stats["converted"], 3)
+
+    def test_a_native_id_shared_by_different_requests_fails_loudly(self) -> None:
+        # WANLI's `pairID` is shared by different pairs (30,049 of 40,000 sampled rows): the build must not accept that
+        with self.assertRaises(ING.AdapterError) as caught:
+            ING.convert_source(self.source(), R.ListDataset(self.rows(["x", "y", "x"])), seed=1)
+        message = str(caught.exception)
+        for needle in ("t", "'x'", "id"):
+            self.assertIn(needle, message)
+
+    def test_a_native_id_shared_by_an_identical_request_is_a_plain_duplicate(self) -> None:
+        rows = self.rows(["x", "y"])
+        rows.append(dict(rows[0]))
+        out, stats = ING.convert_source(self.source(), R.ListDataset(rows), seed=1)
+        self.assertEqual((len(out), stats["duplicates"]), (2, 1))
+
+    def test_ids_that_collide_only_after_formatting_are_caught(self) -> None:
+        # int 7 and the string "7" are the same native id once written as <source>:<id>
+        with self.assertRaises(ING.AdapterError):
+            ING.convert_source(self.source(), R.ListDataset(self.rows([7, "7"])), seed=1)
+
+    def test_rows_without_a_native_id_use_their_index(self) -> None:
+        rows = self.rows(["x", "y"])
+        for r in rows:
+            del r["pid"]
+        out, _ = ING.convert_source(self.source(), R.ListDataset(rows), seed=1)
+        self.assertEqual([r["example_id"] for r in out], ["t:0", "t:1"])
+
+    def test_the_duplicate_id_check_sees_rows_the_cap_drops(self) -> None:
+        with self.assertRaises(ING.AdapterError):
+            ING.convert_source(self.source(), R.ListDataset(self.rows(["x", "y", "z", "x"])), seed=1, cap=2)
 
 
 class TextAndDecontaminationContract(unittest.TestCase):

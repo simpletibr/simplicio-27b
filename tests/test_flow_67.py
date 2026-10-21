@@ -172,6 +172,24 @@ class BuildFlow(unittest.TestCase):
         self.assertIn("converted:", buf.getvalue())
         self.assertIn("fields:", buf.getvalue())
 
+    def test_repeated_native_ids_fail_the_build(self) -> None:
+        write_jsonl(self.raw / "toy_mcq.jsonl", [{"id": "same", "question": f"Pergunta {i}: {lorem(i, 12)}", "choices": ["a", "b", "c"], "answer": i % 3}
+                                                 for i in range(60)])
+        with self.assertRaises(Exception) as ctx:
+            self.run_build(out="dup")
+        self.assertIn("toy_mcq", str(ctx.exception))
+        self.assertIn("same", str(ctx.exception))
+        self.assertFalse((self.root / "dup" / "manifest.json").exists(), "a failed build must not leave a manifest")
+
+    def test_example_ids_are_unique_across_sources_and_extras(self) -> None:
+        sources = SRC.load_sources(self.sources_yaml)
+        clash = {"example_id": "toy_cls:0", "source": "loop", "license": "owner", "lang": "pt",
+                 "request": choice_request(instructions=lorem(77, 9)), "gold": {"q1": "A"}}
+        with self.assertRaises(S.SchemaError) as ctx:
+            B.build_corpus(self.root / "clash", sources=sources, reader=R.LocalReader(self.raw), extra_rows={"loop": [clash]})
+        self.assertIn("toy_cls:0", str(ctx.exception))
+        self.assertFalse((self.root / "clash" / "manifest.json").exists())
+
     def test_wrong_field_names_fail_loudly(self) -> None:
         bad = TOY_SOURCES.replace("{question: question, choices: choices, answer: answer, answer_kind: index, id: id}",
                                   "{question: pergunta, choices: choices, answer: answer, answer_kind: index}")
@@ -452,6 +470,11 @@ class RegistryQuality(unittest.TestCase):
                 continue
             self.assertRegex(src.evidence, r"20\d\d-\d\d-\d\d", f"{key}: evidence must say when the license was checked")
             self.assertTrue(src.fields_verified, f"{key}: run `python -m decide.data.build_corpus --inspect {key} --reader hub` and set fields_verified")
+
+    def test_wanli_uses_the_unique_id_column(self) -> None:
+        # measured on the real parquet (WANLI 397c41b3 train, 102,885 rows): `id` has 102,885 distinct values,
+        # `pairID` only 56,572
+        self.assertEqual(self.registry["wanli"].args["id"], "id")
 
     def test_policy_holds_for_the_shipped_registry(self) -> None:
         SRC.check_policy(self.registry)
