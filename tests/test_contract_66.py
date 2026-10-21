@@ -8,6 +8,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import random
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 from decide_support import FakeHub, HermeticTestCase, needs_requests
 
 from decide.sd import config as sd_config
+from decide.sd import evaluate
 from decide.sd import fidelity as fid
 
 PIN = "a1b2c3d4" * 5                                            # a full commit hash: the only revision the kit reads a dataset at
@@ -66,6 +68,51 @@ class CompareContract(unittest.TestCase):
         out = fid.compare(ours, pub, replicates=10)
         self.assertEqual((out["fields"], out["agree_fields"]), (3, 1))
         self.assertAlmostEqual(out["prob"]["max_abs"], 0.3)
+
+    def test_noul_at_exactly_one_half_is_the_true_side_on_both_sides(self):
+        ours = {"a": row("a", {"q": noul(0.5)}), "b": row("b", {"q": noul(0.5)})}
+        pub = {"a": row("a", {"q": noul(0.51)}), "b": row("b", {"q": noul(0.49)})}
+        out = fid.compare(ours, pub, replicates=5)
+        self.assertEqual((out["fields"], out["agree_fields"]), (2, 1))
+        self.assertEqual(out["disagreements"][0]["run_id"], "b")
+        self.assertEqual((out["disagreements"][0]["ours"], out["disagreements"][0]["published"]), ("true", "false"))
+
+    def test_a_noul_flip_is_a_near_tie_only_when_the_published_p_is_within_the_margin_of_one_half(self):
+        for published, near, clear in ((0.505, 1, 0), (0.515, 0, 1), (0.495, 1, 0), (0.485, 0, 1), (0.45, 0, 1)):
+            with self.subTest(published=published):
+                ours = {"r": row("r", {"q": noul(0.9 if published < 0.5 else 0.3)})}
+                out = fid.compare(ours, {"r": row("r", {"q": noul(published)})}, near_tie=0.02, replicates=5)
+                self.assertEqual((out["agree_fields"], out["disagree_near_tie"], out["disagree_clear"]), (0, near, clear))
+
+    def test_the_margin_of_a_three_way_question_is_the_gap_to_the_runner_up_not_to_the_last(self):
+        ours, pub = self.pair([0.2, 0.5, 0.3], [0.45, 0.43, 0.12])
+        out = fid.compare(ours, pub, near_tie=0.05, replicates=5)
+        self.assertEqual((out["disagree_near_tie"], out["disagree_clear"]), (1, 0))
+        self.assertAlmostEqual(out["disagreements"][0]["published_margin"], 0.02)
+
+    def test_a_published_row_that_is_not_ok_is_not_compared_even_when_ours_is(self):
+        ours = {"a": row("a", {"q": noul(0.9)}), "b": row("b", {"q": noul(0.9)})}
+        pub = {"a": row("a", {"q": noul(0.9)}), "b": row("b", None, status="error")}
+        out = fid.compare(ours, pub, replicates=5)
+        self.assertEqual((out["rows"], out["not_ok"]), (1, 1))
+
+    def test_the_interval_is_the_95_percent_of_a_seeded_cluster_bootstrap_and_the_level_changes_it(self):
+        ours, pub, tallies = {}, {}, []
+        for i in range(40):
+            flip = i % 2 == 0                                     # half of the 40 groups flip: a wide interval
+            ours[f"r{i}"] = row(f"r{i}", {"q": choice(["A", "B"], [0.1, 0.9] if flip else [0.9, 0.1])}, group=f"g{i}")
+            pub[f"r{i}"] = row(f"r{i}", {"q": choice(["A", "B"], [0.9, 0.1])}, group=f"g{i}")
+            tallies.append([0 if flip else 1, 1])
+        for level in (0.95, 0.9):
+            rng, values = random.Random(11), []
+            for _ in range(300):
+                picks = [tallies[rng.randrange(len(tallies))] for _g in tallies]
+                values.append(sum(p[0] for p in picks) / sum(p[1] for p in picks))
+            tail = (1.0 - level) / 2.0
+            with self.subTest(level=level):
+                out = fid.compare(ours, pub, replicates=300, seed=11, level=level)
+                self.assertEqual(out["ci"], [evaluate.percentile(values, tail), evaluate.percentile(values, 1.0 - tail)])
+                self.assertEqual(out["ci_level"], level)
 
     def test_probability_differences_are_measured_per_option(self):
         ours, pub = self.pair([0.5, 0.3, 0.2], [0.4, 0.4, 0.2])
@@ -130,6 +177,21 @@ class CompareContract(unittest.TestCase):
         out = fid.compare(ours, pub, replicates=5, examples=7)
         self.assertEqual(len(out["disagreements"]), 7)
         self.assertEqual(out["fields"] - out["agree_fields"], 30)
+
+
+class PercentileContract(unittest.TestCase):
+    """`evaluate.percentile` is what both bootstraps (the fidelity interval and the run comparison) take their ends from."""
+
+    def test_linear_between_the_ranks_whatever_the_order_of_the_input(self):
+        values = [30.0, 0.0, 40.0, 10.0, 20.0]
+        for q, want in ((0.0, 0.0), (1.0, 40.0), (0.5, 20.0), (0.1, 4.0), (0.875, 35.0), (0.025, 1.0)):
+            with self.subTest(q=q):
+                self.assertAlmostEqual(evaluate.percentile(values, q), want)
+        self.assertEqual(evaluate.percentile([3.0], 0.9), 3.0)
+
+    def test_no_replicates_is_an_error_not_a_number(self):
+        with self.assertRaises(evaluate.EvaluateError):
+            evaluate.percentile([], 0.5)
 
 
 class GateContract(unittest.TestCase):
@@ -208,6 +270,18 @@ class PublishedContract(HermeticTestCase):
                 fetch(self.dir / "dl2")
             self.assertFalse((self.dir / "dl2" / "results.jsonl.gz").exists())                     # a bad file is not left behind
 
+    @needs_requests
+    def test_a_copy_on_disk_that_does_not_match_the_checksums_is_downloaded_again(self):
+        with FakeHub() as hub:
+            digest = hashlib.sha256(self.blob).hexdigest()
+            hub.files["org/pub/runs/mini/results.jsonl.gz"] = self.blob
+            hub.files["org/pub/runs/mini/SHA256SUMS"] = f"{digest}  results.jsonl.gz\n".encode()
+            (self.dir / "dl").mkdir()
+            (self.dir / "dl" / "results.jsonl.gz").write_bytes(b"an old or damaged copy")
+            path = fid.fetch_published("org/pub", "mini", self.dir / "dl", endpoint=hub.base_url, revision=PIN, sleep=lambda s: None)
+            self.assertEqual(path.read_bytes(), self.blob)
+            self.assertEqual(hub.requested, {("org/pub", PIN)})
+
     def test_fetch_resolves_datasets_not_models(self):
         with FakeHub() as hub:
             self.assertIn(f"/datasets/org/pub/resolve/{PIN}/runs/mini/results.jsonl.gz", fid.published_url("org/pub", "mini", endpoint=hub.base_url, revision=PIN))
@@ -279,6 +353,18 @@ class ConfiguredContract(HermeticTestCase):
             fid.published_entry({"fidelity": {"published": {"x": {"run": "mini", "revision": PIN}}}}, "x")
         with self.assertRaisesRegex(fid.FidelityError, "run"):
             fid.published_entry({"fidelity": {"published": {"x": {"dataset": "org/pub", "revision": PIN}}}}, "x")
+
+    @needs_requests
+    def test_the_endpoint_comes_from_the_config_unless_one_is_given(self):
+        blob = gzip.compress(b'{"run_id": "r0", "status": "ok"}\n')
+        digest = hashlib.sha256(blob).hexdigest()
+        with FakeHub() as hub:
+            hub.files["org/pub/runs/mini/results.jsonl.gz"] = blob
+            hub.files["org/pub/runs/mini/SHA256SUMS"] = f"{digest}  results.jsonl.gz\n".encode()
+            cfg = {"fidelity": {"published": {"mini": {"dataset": "org/pub", "run": "mini", "revision": PIN}}}, "hub": {"endpoint": hub.base_url}}
+            path = fid.fetch_configured(cfg, "mini", self.dir / "dl", sleep=lambda s: None)
+            self.assertEqual(path.read_bytes(), blob)
+            self.assertEqual(hub.requested, {("org/pub", PIN)})
 
     @needs_requests
     def test_fetch_configured_reads_the_commit_the_config_names(self):

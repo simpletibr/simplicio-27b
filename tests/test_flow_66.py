@@ -303,5 +303,14 @@ class FidelityFlow(HermeticTestCase):
         self.assertNotIn("29:T:T:3", ids)
         self.assertNotIn("29:T:T:2", ids)                           # the other row of the same group: a group is all or nothing
 
+    def test_common_sample_drops_a_group_whose_published_row_was_not_ok(self):
+        published = self.fid.load_published(self.publish(change=lambda r: {**r, "status": "error"} if r["run_id"].endswith(":5") else r))
+        selection = self.fid.common_sample(self.rows, published, per_benchmark=10, seed=1, edition="0.3")
+        ids = {r["_evaluation"]["run_id"] for r in selection.rows}
+        self.assertEqual(len(ids), 8)
+        self.assertNotIn("29:T:T:5", ids)
+        self.assertNotIn("29:T:T:4", ids)
+
+
 if __name__ == "__main__":
     unittest.main()
