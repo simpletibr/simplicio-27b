@@ -22,11 +22,20 @@ renomeia; quem retoma pula as partes que o manifest já lista.
 **Quem lê só lê o que o manifest lista.** `schema.corpus_files`/`read_corpus` (e, por eles, a descontaminação, o treino
 e o privado) devolvem exatamente as partes de `parts` (ou o `file` do privado), na ordem do manifest, cada uma conferida
 pelo sha256; parte listada que falta, mudou ou sai da pasta é `ManifestError`. Um `*.parquet` ao lado que o manifest não
-lista (uma rodada antiga com `--include-review`, shards que um cap menor deixou) **não é dado** e é ignorado. Uma pasta
-sem manifest só é lida por glob quando é feita à mão (rótulos de professor); a descontaminação exige o manifest
-(`require_manifest`), porque pasta sem manifest é build interrompido. `build_corpus` e `decontaminate` apagam o manifest ao
-começar, escrevem outro ao terminar e apagam partes, marcadores e rejeitados que a rodada não lista (`removed_stale`):
-**uma pasta `--out` por corpus**, e `--only` gera um corpus parcial.
+lista (uma rodada antiga com `--include-review`, shards que um cap menor deixou) **não é dado** e é ignorado.
+**`read_corpus` nunca faz glob:** pasta sem manifest é build interrompido (ou pasta montada à mão) e dá `ManifestError`;
+o que se pode passar sem manifest é um arquivo `*.parquet` que o chamador nomeia. Só os rótulos de professor feitos à mão
+(`read_teacher`, uma pasta onde o aluguel ou o Modal despejou as partes) ainda são lidos por glob. `build_corpus` e
+`decontaminate` apagam o manifest ao começar, escrevem outro ao terminar e apagam partes, marcadores e rejeitados que a
+rodada não lista (`removed_stale`): **uma pasta `--out` por corpus**, e `--only` gera um corpus parcial.
+
+**Quem escreve só apaga e só sobrescreve o que escreveu.** Os manifests de `build_corpus`, `decontaminate` e do privado
+levam o carimbo `"tool"` (`build_corpus`, `decontaminate`, `proxy_private`; o relatório `decontamination.json` também):
+um `manifest.json` de outra ferramenta, feito à mão ou ilegível não é apagado nem trocado, a rodada falha com
+`ManifestError` e a pasta fica como estava. `decontaminate` recusa `--out` que seja um arquivo, que seja a entrada, que
+esteja dentro dela ou que a contenha (uma entrada de um arquivo só, `--corpus x/c.parquet --out x`, também), e só apaga o
+que as suas próprias marcações `<parte>.done.json` e o manifest da última rodada concluída nomeiam, mais os `.tmp` de
+nomes que ela mesma escreve. Qualquer outro arquivo em `--out` fica onde está (e, fora do manifest, nunca é lido).
 
 ## 2. Pedido (request)
 

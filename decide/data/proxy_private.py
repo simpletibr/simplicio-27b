@@ -26,6 +26,7 @@ from . import sources as SRC
 from .ingest import convert_source
 
 DEFAULT_PER_SOURCE = 300
+TOOL = "proxy_private"      # the `tool` stamp of its manifest.json: how a later run knows it wrote it
 DEFAULT_MIN_MODELS = 6
 DEFAULT_MIN_RHO = 0.8
 EXACT_PERMUTATION_MAX_N = 8
@@ -301,6 +302,7 @@ def build_proxy(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: Any
         raise ValueError("nothing to check the proxy against: pass corpus_manifest (sources must not overlap) and/or corpus "
                          "(no request may overlap), or skip_leak_check=True to build it without a check")
     out = Path(out_dir)
+    S.assert_manifest_owner(out, TOOL)         # a folder of another tool (the clean corpus, say) is not an --out: nothing is written into it
     out.mkdir(parents=True, exist_ok=True)
     chosen = [s for _, s in sorted(sources.items()) if SRC.usable(s, include_review=include_review, role="heldout")]
     if not chosen and not extra_rows:
@@ -312,6 +314,8 @@ def build_proxy(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: Any
             raise ValueError("the corpus manifest lists no `sources`, so it cannot show that the proxy shares none with the corpus "
                              "(use the manifest.json written by build_corpus or decontaminate)")
         assert_disjoint(corpus_sources, [s.key for s in chosen])
+    # the corpus to check requests against: a finished build (its manifest, sha256 checked) or one parquet file; refused before anything is written
+    corpus_parts = S.corpus_files(corpus, require_manifest=True) if corpus is not None else []
     rows: List[Dict[str, Any]] = []
     stats: Dict[str, Any] = {}
     for source in chosen:
@@ -327,6 +331,7 @@ def build_proxy(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: Any
     if len(set(ids)) != len(ids):
         repeated = sorted({i for i in ids if ids.count(i) > 1})
         raise S.SchemaError(f"example_id values repeat in the proxy (SCHEMA.md section 3 requires unique ids), e.g. {repeated[:5]}")
+    S.claim_manifest(out, TOOL)                # the manifest of the earlier proxy describes a proxy.parquet that is about to be replaced
     info = S.write_corpus_part(out / "proxy.parquet", built)
     leaks: Dict[str, Any] = {"checked": False}
     if corpus is None:
@@ -337,14 +342,15 @@ def build_proxy(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: Any
             index.add(S.parse_row(r)[0], r["example_id"])
         index.freeze()
         hits = []
-        for row in S.read_corpus(corpus):
-            m = index.check(S.parse_row(row)[0])
-            if m:
-                hits.append({"example_id": row["example_id"], "reason": m.reason})
+        for part in corpus_parts:
+            for row in S.read_corpus(part):
+                m = index.check(S.parse_row(row)[0])
+                if m:
+                    hits.append({"example_id": row["example_id"], "reason": m.reason})
         leaks = {"checked": True, "leaks": len(hits), "examples": hits[:20]}
         if hits:
             raise LeakError(f"{len(hits)} corpus examples overlap the proxy, e.g. {hits[:3]}")
-    result = {"schema_version": S.SCHEMA_VERSION, "kind": "proxy", "seed": seed, "per_source": per_source, "rows": len(built),
+    result = {"schema_version": S.SCHEMA_VERSION, "kind": "proxy", "tool": TOOL, "seed": seed, "per_source": per_source, "rows": len(built),
               "file": info, "sources": stats, "corpus_leak_check": leaks}
     S.write_manifest(out / "manifest.json", result)
     return result

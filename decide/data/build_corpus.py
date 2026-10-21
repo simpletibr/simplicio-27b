@@ -7,7 +7,8 @@ source is written as its own parquet parts and marked done, so a rerun skips wha
 ``--out`` always holds exactly the corpus of the last finished run: ``manifest.json`` is removed when a run starts
 and written when it ends, it lists the parts (with sha256) and every reader goes through it; parts of sources that are
 no longer selected (``--only``, ``--include-review`` off) and shards a smaller cap no longer writes are deleted.
-Use one ``--out`` per corpus.
+Use one ``--out`` per corpus.  A folder whose ``manifest.json`` another tool wrote (the clean corpus, a proxy) is not an
+``--out``: the run fails and leaves it as it was.
 
     python -m decide.data.build_corpus --out work/corpus --reader hub
     python -m decide.data.build_corpus --out work/corpus --reader local:work/raw --only clinc_oos,gsm8k
@@ -37,6 +38,7 @@ DEFAULT_SHARD_ROWS = 50_000
 #: Bumped when the conversion rules change (ids, canary check, option keys...), so a resumed run does not reuse parts
 #: that an older version of the builder wrote.
 BUILDER_VERSION = 2
+TOOL = "build_corpus"      # the `tool` stamp of its manifest.json: how a later run knows it wrote it
 
 
 def split_of(example_id: str, dev_percent: float) -> str:
@@ -107,10 +109,11 @@ def build_corpus(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: An
     """Write the corpus parts of every usable source plus ``extra_rows`` (name -> rows from loop/generator)."""
     SRC.check_policy(sources)
     out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
     # the manifest of an earlier run describes files this run is about to replace or delete: a directory without a
-    # manifest is not finished, and readers (which go through the manifest) refuse it until this run writes a new one
-    (out / S.MANIFEST_NAME).unlink(missing_ok=True)
+    # manifest is not finished, and readers (which go through the manifest) refuse it until this run writes a new one.
+    # A manifest this builder did not write (the clean corpus, a proxy) is not its to delete: the folder is refused.
+    S.claim_manifest(out, TOOL)
+    out.mkdir(parents=True, exist_ok=True)
     wanted = set(only) if only else None
     chosen = [s for k, s in sorted(sources.items()) if SRC.usable(s, include_review=include_review) and (wanted is None or k in wanted)]
     if wanted and not wanted <= set(sources):
@@ -147,7 +150,7 @@ def build_corpus(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: An
     removed = _prune_stale(out, (p["name"] for p in parts), (_done_path(out, k).name for k in report))
     S.assert_unique_example_ids(out / p["name"] for p in parts)
     manifest = {
-        "schema_version": S.SCHEMA_VERSION, "kind": "corpus", "seed": seed, "dev_percent": dev_percent,
+        "schema_version": S.SCHEMA_VERSION, "kind": "corpus", "tool": TOOL, "seed": seed, "dev_percent": dev_percent,
         "include_review": include_review, "caps_scale": caps_scale, "shard_rows": shard_rows,
         "rows": sum(r["rows"] for r in report.values()),
         "sources": {k: {kk: v.get(kk) for kk in ("rows", "license", "decision", "revision", "convert_revision", "kind", "stats")}
@@ -261,6 +264,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
     if not args.out:
         ap.error("--out is required")
+    S.assert_manifest_owner(Path(args.out), TOOL)      # before the generator cache or anything else is written into a folder of another tool
     extra: Dict[str, List[Dict[str, Any]]] = {}
     if args.loop:
         from .loop_traces import convert_file

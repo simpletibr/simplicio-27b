@@ -331,15 +331,19 @@ def corpus_files(path: os.PathLike, *, require_manifest: bool = False, verify: b
     return sorted(f for f in p.rglob("*.parquet") if f.is_file())
 
 
-def _read_rows(path: os.PathLike, columns: Sequence[str]) -> Iterator[Dict[str, Any]]:
+def _read_rows(path: os.PathLike, columns: Sequence[str], *, require_manifest: bool = False) -> Iterator[Dict[str, Any]]:
     _, pq = _arrow()
-    for file in corpus_files(path):
+    for file in corpus_files(path, require_manifest=require_manifest):
         for batch in pq.ParquetFile(file).iter_batches(batch_size=BATCH_ROWS, columns=list(columns)):
             yield from batch.to_pylist()
 
 
 def read_corpus(path: os.PathLike) -> Iterator[Dict[str, Any]]:
-    return _read_rows(path, CORPUS_COLUMNS)
+    """The rows of a corpus: a parquet file the caller names, or a directory read through its ``manifest.json``.
+
+    A directory is never globbed: without a manifest that lists its parts (a build that was interrupted, a folder
+    assembled by hand) it is refused with ``ManifestError``, because a glob would also read the parts nobody approved."""
+    return _read_rows(path, CORPUS_COLUMNS, require_manifest=True)
 
 
 def assert_unique_example_ids(files: Iterable[os.PathLike], *, limit: int = 5) -> int:
@@ -364,6 +368,39 @@ def assert_unique_example_ids(files: Iterable[os.PathLike], *, limit: int = 5) -
 
 def read_teacher(path: os.PathLike) -> Iterator[Dict[str, Any]]:
     return _read_rows(path, TEACHER_COLUMNS)
+
+
+def assert_manifest_owner(directory: os.PathLike, tool: str) -> Optional[Dict[str, Any]]:
+    """The ``manifest.json`` that ``tool`` wrote in ``directory`` earlier, ``None`` if there is none.
+
+    A manifest says what a folder is.  One that ``tool`` did not write (another tool's, a hand-made one, an unreadable
+    one) is not ``tool``'s to delete or replace: ``ManifestError``, and nothing is touched."""
+    path = Path(directory) / MANIFEST_NAME
+    if not path.is_file():
+        return None
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ManifestError(f"{path} is not valid JSON ({exc}), so {tool} cannot tell that it wrote it and will not delete or replace it; "
+                            "use another --out") from exc
+    owner = manifest.get("tool") if isinstance(manifest, Mapping) else None
+    if owner != tool:
+        raise ManifestError(f"{path} was not written by {tool} (its `tool` is {owner!r}, kind {manifest.get('kind') if isinstance(manifest, Mapping) else None!r}): "
+                            f"{tool} will not delete or replace the manifest of another folder; use another --out")
+    return dict(manifest)
+
+
+def claim_manifest(directory: os.PathLike, tool: str) -> Optional[Dict[str, Any]]:
+    """Start of a run of ``tool`` in ``directory``: remove the manifest it wrote earlier and return it.
+
+    A folder without a manifest is an unfinished build that readers refuse, so an interrupted run never leaves the
+    manifest of the run before it describing files it already replaced.  The returned manifest tells the run what the
+    last finished run wrote (and so what it may delete).  A manifest ``tool`` did not write is refused (see
+    :func:`assert_manifest_owner`)."""
+    previous = assert_manifest_owner(directory, tool)
+    if previous is not None:
+        (Path(directory) / MANIFEST_NAME).unlink()
+    return previous
 
 
 def write_manifest(path: os.PathLike, manifest: Mapping[str, Any]) -> None:

@@ -255,6 +255,11 @@ class BuildFlow(unittest.TestCase):
                 with self.assertRaises(S.ManifestError, msg=f"{tool} into the folder of {name}"):
                     attempt(folder)
                 self.assertEqual(state(), before, f"{tool} must leave the folder of {name} as it was")
+        # the CLI of the builder refuses before the generator writes its cache into the folder of another tool
+        cfg = self.write_generator_config()
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(S.ManifestError):
+            B.main(["--out", str(clean), "--reader", f"local:{self.raw}", "--sources", str(self.sources_yaml), "--generate", "--config", str(cfg)])
+        self.assertEqual(state(), before)
         # and each one still reruns on its own folder
         attempts["build_corpus"](corpus)
         attempts["decontaminate"](clean)
@@ -469,6 +474,7 @@ class DecontaminationFlow(unittest.TestCase):
         (directory / "notes.parquet.tmp").write_bytes(b"not ours")
         (directory / "toy-9999.parquet").write_bytes(b"looks like a part of this corpus, is not one")
         (directory / "other.done.json").write_text('{"made": "by hand"}', encoding="utf-8")
+        (directory / "toy-9999.parquet.done.json").write_text('{"part": "toy-9999.parquet", "note": "a marker-shaped file"}', encoding="utf-8")
         (directory / "other.rejected.jsonl").write_text("{}\n", encoding="utf-8")
         (directory / "readme.txt").write_text("keep me", encoding="utf-8")
         return self.fingerprints(directory)
@@ -535,7 +541,7 @@ class DecontaminationFlow(unittest.TestCase):
         for out in (corpus, corpus / "clean", self.root):            # the input itself, a folder inside it, a folder that holds it
             with self.assertRaises(ValueError, msg=str(out)):
                 D.decontaminate_corpus(corpus, out, index)
-        for out in (corpus / "clean", self.root):
+        for out in (corpus, self.root):                              # the folder of a single input file, and the one above it
             with self.assertRaises(ValueError, msg=f"{out} with a single file as input"):
                 D.decontaminate_corpus(corpus / "toy-0000.parquet", out, index)
         self.assertEqual(self.fingerprints(corpus), before)
@@ -743,8 +749,17 @@ class ProxyFlow(unittest.TestCase):
         corpus.mkdir()
         leak = dict(proxy_row, example_id="toy_mcq:leak", source="toy_mcq", split="train")
         S.write_corpus_part(corpus / "c.parquet", [leak])
+        manifest = self.root / "proxy" / "manifest.json"
+        before = manifest.read_bytes()
+        with self.assertRaises(S.ManifestError):             # a corpus is a finished build with a manifest, or one parquet file
+            self.build(corpus=corpus)
+        self.assertEqual(manifest.read_bytes(), before, "refused before anything was written")
+        seal(corpus)
         with self.assertRaises(P.LeakError):
             self.build(corpus=corpus)
+        self.assertFalse(manifest.exists(), "a rebuild that fails leaves no manifest: the old one described a proxy.parquet that was rewritten")
+        with self.assertRaises(P.LeakError):
+            self.build(corpus=corpus / "c.parquet")
         self.assertEqual(first["corpus_leak_check"], {"checked": False, "skipped": True})
 
     def test_score_and_validate_flow(self) -> None:

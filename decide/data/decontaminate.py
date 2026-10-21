@@ -18,6 +18,12 @@ Memory: the reference units live in sorted ``array('Q')`` shards (8 bytes per un
 Everything streams, and a corpus directory is processed part by part so an interrupted run resumes.  The corpus is
 read through its ``manifest.json`` (only the parts it lists, sha256 checked); the output directory holds exactly the
 parts of the last finished run.
+
+What a run may overwrite and delete is limited to what it can prove it wrote itself: ``--out`` must be a directory that
+does not overlap the input (a single input file is never overwritten by its own ``--out``), the ``manifest.json`` and
+``decontamination.json`` it replaces must carry its ``tool`` stamp, and the clean parts, markers, rejection lists and
+half-written files it removes are the ones its own markers and the manifest of its last finished run name.  Any other
+file in ``--out`` stays where it is (and, not being in the manifest, is never read).
 """
 from __future__ import annotations
 
@@ -43,6 +49,7 @@ MAX_SKIPPED_FRACTION = 0.01     # a reference file may have this share of rows w
 RULES_VERSION = 3     # 3: format-only marker lines (text.MARKER_LINES) are not short statements
 _SHARDS = 256
 _SHIFT = 56
+TOOL = "decontaminate"      # the `tool` stamp of its manifest.json and report: how a later run knows it wrote them
 
 
 class ReferenceDataError(ValueError):
@@ -303,16 +310,17 @@ def decontaminate_corpus(corpus_in: os.PathLike, out_dir: os.PathLike, index: Re
                          resume: bool = True) -> Dict[str, Any]:
     """Write the clean rows of ``corpus_in`` to ``out_dir`` part by part; returns (and saves) the report."""
     out = Path(out_dir)
-    if out.resolve() == Path(corpus_in).resolve():
-        raise ValueError("--out must be a different directory from --corpus: the clean corpus never overwrites its input")
+    _check_out(Path(corpus_in), out)
     # the input is read through its manifest.json (only the parts it lists, sha256 checked), before anything in out changes
     files = S.corpus_files(corpus_in, require_manifest=True)
     names = [f.name for f in files]
     if len(set(names)) != len(names):
         raise ValueError(f"the parts of {corpus_in} must have distinct file names (found {sorted(n for n in set(names) if names.count(n) > 1)})")
+    S.assert_manifest_owner(out, TOOL)           # refuse a manifest.json / report that another tool wrote, before anything is deleted
+    _assert_report_is_ours(out)
     out.mkdir(parents=True, exist_ok=True)
-    for stale in (S.MANIFEST_NAME, "decontamination.json"):      # describes the previous run; rewritten at the end
-        (out / stale).unlink(missing_ok=True)
+    previous = S.claim_manifest(out, TOOL)       # what the last finished run wrote; its manifest and report describe a run that is over
+    (out / "decontamination.json").unlink(missing_ok=True)
     fingerprint = index.fingerprint()
     parts_report: List[Dict[str, Any]] = []
     reasons: Dict[str, int] = {}
@@ -357,9 +365,9 @@ def decontaminate_corpus(corpus_in: os.PathLike, out_dir: os.PathLike, index: Re
         S.write_manifest(marker, done)
         parts_report.append(done)
         _accumulate(done, reasons, by_source)
-    removed = _prune_outputs(out, names, [p["part"] for p in parts_report if p["rows_out"]])
+    removed = _prune_outputs(out, names, previous)
     report = {
-        "schema_version": S.SCHEMA_VERSION, "index": index.stats(), "references": index.sources, "removed_stale": removed,
+        "schema_version": S.SCHEMA_VERSION, "tool": TOOL, "index": index.stats(), "references": index.sources, "removed_stale": removed,
         "parts": len(parts_report), "parts_resumed": resumed,
         "rows_in": sum(p["rows_in"] for p in parts_report), "rows_out": sum(p["rows_out"] for p in parts_report),
         "rejected": sum(p["rejected"] for p in parts_report), "reasons": dict(sorted(reasons.items())),
@@ -369,27 +377,76 @@ def decontaminate_corpus(corpus_in: os.PathLike, out_dir: os.PathLike, index: Re
     manifest_parts = [{"name": p["part"], "rows": p["rows_out"], "sha256": p["output_sha256"]} for p in parts_report if p["rows_out"]]
     # `sources` so that proxy_private can still check, on this manifest, that the proxy shares no source with the corpus
     sources = {key: {"rows": counts["kept"]} for key, counts in sorted(by_source.items()) if counts["kept"]}
-    S.write_manifest(out / "manifest.json", {"schema_version": S.SCHEMA_VERSION, "kind": "corpus", "rows": report["rows_out"],
+    S.write_manifest(out / "manifest.json", {"schema_version": S.SCHEMA_VERSION, "kind": "corpus", "tool": TOOL, "rows": report["rows_out"],
                                              "parts": manifest_parts, "sources": sources, "decontamination": "decontamination.json"})
     return report
 
 
-def _prune_outputs(out: Path, input_parts: Sequence[str], kept_parts: Sequence[str]) -> List[str]:
-    """Delete what earlier runs left in ``out`` for parts that are no longer in the input (a rebuilt corpus with fewer
-    shards, a source that left it): clean parts, markers, rejection lists and half-written files."""
-    inputs, kept = set(input_parts), set(kept_parts)
+def _check_out(corpus_in: Path, out: Path) -> None:
+    """``--out`` is a directory of its own: not a file, not the input, not inside it and not holding it.
+
+    A single input file counts as itself, so ``--corpus x/c.parquet --out x`` is refused: it would replace ``c.parquet``
+    by its clean version and put the clean parts next to files that are not this tool's."""
+    if out.exists() and not out.is_dir():
+        raise ValueError(f"--out {out} is a file: the clean corpus needs a directory of its own")
+    a, b = corpus_in.resolve(), out.resolve()
+    if a == b or a.is_relative_to(b) or b.is_relative_to(a):
+        raise ValueError(f"--out {out} overlaps --corpus {corpus_in}: the clean corpus goes to a directory of its own and never overwrites "
+                         "or sits inside its input")
+
+
+def _assert_report_is_ours(out: Path) -> None:
+    path = out / "decontamination.json"
+    if not path.is_file():
+        return
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        report = None
+    if not isinstance(report, Mapping) or report.get("tool") != TOOL:
+        raise S.ManifestError(f"{path} was not written by {TOOL}: it will not delete it; use another --out")
+
+
+def _our_marker(path: Path) -> Optional[Dict[str, Any]]:
+    """The content of a ``<part>.done.json`` if it has the shape this tool writes, else ``None`` (a file of somebody else's)."""
+    try:
+        done = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (isinstance(done, Mapping) and isinstance(done.get("part"), str) and path.name == done["part"] + ".done.json"
+            and "input_sha256" in done and "fingerprint" in done):
+        return dict(done)
+    return None
+
+
+def _prune_outputs(out: Path, input_parts: Sequence[str], previous: Optional[Mapping[str, Any]]) -> List[str]:
+    """Delete what an earlier run of this tool left in ``out`` for parts that are no longer in the input (a rebuilt corpus
+    with fewer shards, a source that left it): clean parts, markers, rejection lists and half-written files.
+
+    Only what the tool can prove it wrote is touched: the parts its own markers name and the parts the manifest of its last
+    finished run (``previous``) lists, with the companions the tool derives from their names.  Anything else in ``out`` stays."""
+    inputs = set(input_parts)
+    owned = {p["name"] for p in (previous or {}).get("parts", []) if isinstance(p, Mapping) and isinstance(p.get("name"), str)}
+    for marker in sorted(out.glob("*.done.json")):
+        done = _our_marker(marker)
+        if done is not None:
+            owned.add(done["part"])
     removed: List[str] = []
-    for f in sorted(out.iterdir()):
-        name = f.name
-        if not f.is_file():
-            continue
-        base = name[: -len(".done.json")] if name.endswith(".done.json") else name[: -len(".rejected.jsonl")] if name.endswith(".rejected.jsonl") else None
-        stale = ((name.endswith(".parquet") and name not in kept)
-                 or (base is not None and base not in inputs)
-                 or name.endswith((".parquet.tmp", ".json.tmp", ".jsonl.tmp")))
-        if stale:
-            f.unlink()
+
+    def drop(name: str) -> None:
+        file = out / name
+        if file.is_file():
+            file.unlink()
             removed.append(name)
+
+    for part in sorted(owned - inputs):
+        for name in (part, part + ".done.json", part + ".rejected.jsonl"):
+            drop(name)
+    leftovers = ["manifest.json", "decontamination.json"]
+    for part in sorted(owned | inputs):
+        leftovers += [part, part + ".done.json", part + ".rejected.jsonl"]
+    for name in leftovers:               # a write that died before it was renamed into place
+        drop(name + ".tmp")
     return removed
 
 
