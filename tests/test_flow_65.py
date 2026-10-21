@@ -840,7 +840,7 @@ class EngineFlow(HermeticTestCase):
             eng(**with_reasoning)
         out = eng.batch([self.tm.REQUEST, with_reasoning, self.tm.REQUEST])
         self.assertEqual([type(o).__name__ for o in out], ["tuple", "Unsupported", "tuple"])
-        self.assertIn("thinking track", str(out[1]))
+        self.assertIn("reasoning='fold'", str(out[1]))                # the refusal says how to ask for the fold
         self.assertIsInstance(eng.batch([{**self.tm.REQUEST, "reasoning": None}])[0], tuple)         # an empty key says nothing to leave out
 
     def test_over_length_requests_are_unsupported_not_truncated(self):
