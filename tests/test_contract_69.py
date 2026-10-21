@@ -659,6 +659,75 @@ class SoupContract(unittest.TestCase):
 
 
 @needs_pyarrow
+class SealContract(unittest.TestCase):
+    """``schema.seal_directory``: the manifest of a folder of parts made by hand or by a tool that does not write one
+    (teacher labels copied from Modal, a corpus assembled by hand).  A sealed folder is read through its manifest like any
+    build output (SCHEMA.md, section 1)."""
+
+    def setUp(self) -> None:
+        from decide.data import schema as S
+
+        self.S = S
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def part(self, name: str, ids) -> Path:
+        rows = [self.S.corpus_row(example_id=i, source="s", license="mit", split="train", lang="en", request=choice_request(f"Question {i}?"), gold={"q1": "A"})
+                for i in ids]
+        path = self.root / name
+        self.S.write_corpus_part(path, rows)
+        return path
+
+    def test_the_manifest_lists_every_part_with_rows_and_sha256(self) -> None:
+        self.part("b-0001.parquet", ["s:3"])
+        self.part("a-0000.parquet", ["s:0", "s:1", "s:2"])
+        self.part("nested/c-0000.parquet", ["s:4", "s:5"])
+        (self.root / "notes.txt").write_text("not a part", encoding="utf-8")
+        (self.root / "half.parquet.tmp").write_bytes(b"interrupted")
+        manifest = self.S.seal_directory(self.root, kind="corpus")
+        self.assertEqual([p["name"] for p in manifest["parts"]], ["a-0000.parquet", "b-0001.parquet", "nested/c-0000.parquet"])
+        self.assertEqual([p["rows"] for p in manifest["parts"]], [3, 1, 2])
+        self.assertEqual(manifest["rows"], 6)
+        self.assertEqual((manifest["kind"], manifest["schema_version"]), ("corpus", self.S.SCHEMA_VERSION))
+        for entry in manifest["parts"]:
+            self.assertEqual(entry["sha256"], self.S.sha256_file(self.root / entry["name"]))
+        self.assertEqual(json.loads((self.root / "manifest.json").read_text(encoding="utf-8")), manifest)
+        self.assertEqual([f.name for f in self.S.corpus_files(self.root, require_manifest=True)], ["a-0000.parquet", "b-0001.parquet", "c-0000.parquet"])
+
+    def test_a_sealed_folder_ignores_later_files_and_refuses_changed_ones(self) -> None:
+        first = self.part("a-0000.parquet", ["s:0"])
+        self.S.seal_directory(self.root)
+        self.part("b-0001.parquet", ["s:9"])                           # dropped in afterwards: not data
+        self.assertEqual([r["example_id"] for r in self.S.read_corpus(self.root)], ["s:0"])
+        self.part("a-0000.parquet", ["s:0", "s:1"])                    # rewritten after the seal
+        self.assertTrue(first.is_file())
+        with self.assertRaises(self.S.ManifestError):
+            list(self.S.read_corpus(self.root))
+
+    def test_sealing_again_replaces_the_manifest(self) -> None:
+        self.part("a-0000.parquet", ["s:0"])
+        self.S.seal_directory(self.root)
+        self.part("b-0001.parquet", ["s:1"])
+        manifest = self.S.seal_directory(self.root)
+        self.assertEqual([p["name"] for p in manifest["parts"]], ["a-0000.parquet", "b-0001.parquet"])
+        self.assertEqual(sorted(r["example_id"] for r in self.S.read_corpus(self.root)), ["s:0", "s:1"])
+
+    def test_an_empty_folder_cannot_be_sealed(self) -> None:
+        with self.assertRaises(self.S.SchemaError):
+            self.S.seal_directory(self.root)
+        self.assertFalse((self.root / "manifest.json").exists())
+
+    def test_extra_fields_are_kept_but_cannot_replace_the_listing(self) -> None:
+        self.part("a-0000.parquet", ["s:0"])
+        manifest = self.S.seal_directory(self.root, extra={"sources": {"s": {"rows": 1}}})
+        self.assertEqual(manifest["sources"], {"s": {"rows": 1}})
+        for key in ("parts", "rows", "kind", "schema_version"):
+            with self.assertRaises(ValueError, msg=key):
+                self.S.seal_directory(self.root, extra={key: 1})
+
+
+@needs_pyarrow
 class BuildTargetsContract(unittest.TestCase):
     """corpus parquet + teacher-label parquet + combiner -> one targets dataset (the trainer's only data input)."""
 
