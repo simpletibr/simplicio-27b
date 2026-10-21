@@ -1,0 +1,43 @@
+{
+  "files": {
+    "LICENSE": {
+      "modified": false,
+      "upstream_sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
+    },
+    "NOTICE": {
+      "modified": false,
+      "upstream_sha256": "b8cf12a80395cbf75e5d8493fa28cecb383ecdc52e2fa552a989d0ac838618ac"
+    },
+    "__init__.py": {
+      "modified": true,
+      "upstream_sha256": "48c26c24432476f2e4a43486d60e24ee0a6e124093a38fb8803686e99fecb5b3"
+    },
+    "decision_config.json": {
+      "modified": false,
+      "upstream_sha256": "ade1801ff9ee38fdeb561f91b808f57aaab547924e72bae0d1c5a795717f497b"
+    },
+    "fast.py": {
+      "modified": true,
+      "upstream_sha256": "afef05e1935be967b6ab6015bea3c86933dd5a45b7f349b0ed2ab5788a66cdbc"
+    },
+    "joint_config.json": {
+      "modified": false,
+      "upstream_sha256": "ecc88efc2a8ebd81ddf93f7d722e35b2829fd7526b5ce754db53395aa49fb510"
+    },
+    "model.py": {
+      "modified": false,
+      "upstream_sha256": "ab5f42bd051d9e04cb9266e378d96dd72684c7a7f074efd9fc5117508e3dee91"
+    },
+    "protocol.py": {
+      "modified": false,
+      "upstream_sha256": "b29d7a50d7214bd42397f8d3ddd5b5706cb8da2b257e175bf89b5a8da455d6a0"
+    },
+    "types.py": {
+      "modified": false,
+      "upstream_sha256": "3de3e545d81692346f65c0f4ff9843952696a12f7b357cf6a5d0e8545badff8a"
+    }
+  },
+  "license": "Apache-2.0",
+  "sentinel": "# --- upstream file follows, byte for byte ---",
+  "upstream": "https://huggingface.co/perplexity-ai/pplx-decider-v1.2"
+}

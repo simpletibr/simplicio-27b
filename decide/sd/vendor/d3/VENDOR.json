@@ -1,0 +1,20 @@
+{
+  "files": {
+    "LICENSE": {
+      "modified": false,
+      "upstream_sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
+    },
+    "NOTICE": {
+      "modified": false,
+      "upstream_sha256": "61f4ea488e1fed0c3fce97171506a23152c2591116442f78f15827fb9e6af469"
+    },
+    "d3_format.py": {
+      "modified": false,
+      "upstream_sha256": "3badfbc70561bb3f5b8ec16a11d2c455b96ddb32caace0a8a54ca102eae1f3fa"
+    }
+  },
+  "license": "Apache-2.0",
+  "license_text_note": "standard Apache License 2.0 text (same bytes as the pplx-decider LICENSE)",
+  "sentinel": "# --- upstream file follows, byte for byte ---",
+  "upstream": "https://huggingface.co/vllm-sr/d3"
+}
