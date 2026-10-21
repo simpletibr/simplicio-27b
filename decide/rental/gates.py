@@ -1,11 +1,12 @@
 """The gates the rented day answers to: label coverage (F3), the GT evidence for the thinker (F2b) and G4 (F6).
 
 * **Label coverage.**  At least ``label_coverage`` of the corpus has a teacher label, or the day does not start paying for GPUs.
-* **GT evidence.**  The thinker-trace step runs only with a ``report.json`` of ``decide.think.compare`` (``think-gt-report/1``,
+* **GT evidence.**  The thinker-trace step runs only with a ``report.json`` of ``decide.think.compare`` (``think-gt-report/2``,
   Squad C, PR #78) that says PASS, is complete, and was made with the same model (the config's, or its FP8 build) with thinking on.
   Fields read, all from that file: ``format``, ``verdict.status``, ``verdict.delta_pts``, ``verdict.ci``, ``coverage.complete``,
-  ``thinker.config.{model,revision,chat_template_kwargs.enable_thinking}``.  UNVERIFIED: written from the code of that pull
-  request, not from a report the GPU produced.
+  ``thinker.config.{model,revision,chat_template_kwargs.enable_thinking}``.  Checked against a report built by the real
+  ``compare.build_report`` (``RealGtReportContract`` in tests/test_contract_71.py, which fails if Squad C renames any of these); still
+  UNVERIFIED: no report that a GPU run produced.
 * **G4.**  The new checkpoint must score at least ``margin_points`` more than the baseline on the home private proxy, with the
   scorer of ``decide.data.proxy_private`` (100 x the mean chance-corrected skill per source), before the public round.  There is
   no parameter that skips it.  The verdict also carries a paired bootstrap 95% interval of the difference; an interval that
@@ -25,7 +26,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 from decide.data import proxy_private as PP
 from decide.data import schema as S
 
-GT_REPORT_FORMAT = "think-gt-report/1"
+GT_REPORT_FORMAT = "think-gt-report/2"                           # decide.think.compare.REPORT_FORMAT
 DEFAULT_SEED = 20261021
 SCOPE = ("home private proxy (decide.data.proxy_private): a stand-in for the board, not the board; "
          "the public round and the lab's agreement (G5) are what the board sees")
