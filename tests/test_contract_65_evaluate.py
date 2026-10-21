@@ -69,6 +69,8 @@ class StubEngine:
             return Unsupported("too long for this double")
         if mode == "error":
             return RuntimeError("boom")
+        if mode == "nonfinite":
+            return FloatingPointError("non-finite logits for question 'q1'")
         if mode == "abstain":
             return NativeAbstention({"why": "test"})
         answers, logits = {}, {}
@@ -254,6 +256,26 @@ class RunRequestsContract(HermeticTestCase):
         self.assertEqual(engine.seen, ["state-5", "state-6"])
         self.assertEqual([r["run_id"] for r in self.results()], [r["_evaluation"]["run_id"] for r in self.rows])
         self.assertEqual(out["total"], 7)
+
+    def test_a_row_with_non_finite_logits_is_final_like_unsupported_not_redone_on_every_resume(self):
+        engine, out = self.go(StubEngine({"state-2": "nonfinite", "state-3": "error"}))
+        self.assertEqual(out["counts"], {"ok": 5, "error": 2})
+        row = next(r for r in self.results() if r["run_id"].endswith(":2"))
+        self.assertEqual((row["status"], row["exception"]), ("error", "FloatingPointError"))
+        lines = []
+        again, out = self.go(StubEngine(), log=lines.append)
+        self.assertEqual(again.seen, ["state-3"])                       # the transient error is redone, the deterministic one is not
+        self.assertEqual((out["rows"], out["skipped"]), (1, 6))
+        self.assertTrue(any("1 row" in t and "non-finite" in t and "not retried" in t for t in lines), lines)
+        statuses = {r["run_id"][-1]: r["status"] for r in self.results()}
+        self.assertEqual((statuses["2"], statuses["3"]), ("error", "ok"))
+
+    def test_retry_nonfinite_asks_the_engine_again(self):
+        self.go(StubEngine({"state-2": "nonfinite"}))
+        again, out = self.go(StubEngine(), retry_nonfinite=True)
+        self.assertEqual(again.seen, ["state-2"])
+        self.assertEqual({r["run_id"][-1]: r["status"] for r in self.results()}["2"], "ok")
+        self.assertEqual(out["counts"], {"ok": 1})
 
     def test_error_rows_are_retried_and_unsupported_rows_are_final(self):
         engine, out = self.go(StubEngine({"state-2": "error", "state-4": "unsupported"}))

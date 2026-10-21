@@ -48,6 +48,7 @@ JSONL_SUFFIXES = (".jsonl", ".jsonl.gz", ".ndjson", ".ndjson.gz")
 META_KEYS = ("example_id", "source", "license", "split", "lang", "catalog_id", "group_id", "track", "proxy_tokens", "dataset", "origin")
 ORIGIN_SUITE, ORIGIN_REQUESTS, ORIGIN_UNKNOWN = "public-suite", "requests", "unknown"
 EVALUATION_ORIGINS = (ORIGIN_SUITE, "gt-sample")                 # ADR 0004, item 6: evaluation data, never training or fitting data
+TERMINAL_ERRORS = ("FloatingPointError",)                        # the same request gives the same non-finite logits: an error row that is final
 DEVICE_ERRORS = ("OutOfMemoryError", "AcceleratorError")
 DEVICE_MARKERS = ("device-side assert", "CUDA error", "CUDA out of memory", "HIP error")
 NOTE = ("Sample index: computed with the scoring kit's own scorer on the sampled rows only; benchmarks that are not in the "
@@ -57,6 +58,16 @@ NOTE = ("Sample index: computed with the scoring kit's own scorer on the sampled
 
 class EvaluateError(RuntimeError):
     pass
+
+
+STATUS_NONFINITE = "error-nonfinite"
+
+
+def _final_status(row: Mapping[str, Any], retry_nonfinite: bool = False) -> str:
+    """The status a resume goes by: an `error` row is redone unless its error is one that repeats."""
+    if row["status"] == "error" and row.get("exception") in TERMINAL_ERRORS and not retry_nonfinite:
+        return STATUS_NONFINITE
+    return row["status"]
 
 
 def _utc() -> str:
@@ -324,11 +335,16 @@ def _row_from(item: Item, got: Any, engine_name: str, started: str, finished: st
 def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: Union[str, os.PathLike], *,
                  budget: Any = None, resume: bool = True, chunk: int = 16, limit: Optional[int] = None,
                  log: Optional[Callable[[str], None]] = print, state: Any = None, state_prefix: Optional[str] = None,
-                 clock: Callable[[], float] = time.monotonic, table: bool = True, tokens_per_second: Optional[float] = None) -> Dict[str, Any]:
+                 clock: Callable[[], float] = time.monotonic, table: bool = True, tokens_per_second: Optional[float] = None,
+                 retry_nonfinite: bool = False) -> Dict[str, Any]:
     """Answer every request of `requests_path` that has no final result yet.  See the module docstring.
 
     `tokens_per_second` (proxy tokens, as `measure_throughput` and `plan.json` give it) prices the first chunk before this run has measured
     anything; without it the first chunk is priced at zero and only runs if the budget has time left at all.
+
+    A row whose logits were not finite (`FloatingPointError`, fp16 overflow) stays an `error` row but is final: the same request gives the
+    same logits, so a resume does not redo it.  `retry_nonfinite=True` asks again (after a change of `compute_dtype`, say).  Any other
+    `error` row is retried on every resume.
 
     Returns `{"rows": new rows, "total": rows with a result, "tokens": input tokens of the new rows, "seconds", "status":
     "complete" | "budget" | "limit", "counts": statuses of the new rows, "skipped": rows kept from before, "files": {...}}`.
@@ -358,7 +374,7 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
                 os.replace(path, path.with_name(f"{path.name}.old-{stamp}"))
     for path in (results_path, raw_path):
         _drop_partial_tail(path)
-    final = {run_id: row["status"] for run_id, row in read_results(results_path).items()}
+    final = {run_id: _final_status(row, retry_nonfinite) for run_id, row in read_results(results_path).items()}
     engine_name = str(getattr(engine, "name", type(engine).__name__))
     started_at = clock()
     event_base = {"engine": engine_name, "requests": len(items)}
@@ -384,6 +400,10 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
     done_tokens = done_seconds = 0.0
     stop = "complete"
     say(f"[evaluate] {len(items)} requests: {skipped} already done, {len(todo)} to run")
+    stuck = sum(1 for item in items if final.get(item.run_id) == STATUS_NONFINITE)
+    if stuck:
+        say(f"[evaluate] {stuck} row{'s' if stuck != 1 else ''} ended with non-finite logits in an earlier run and are not retried "
+            "(retry_nonfinite=True asks again, e.g. after a change of compute_dtype)")
     event(event="ready", todo=len(todo), skipped=skipped)
     position = 0
     while position < len(todo):

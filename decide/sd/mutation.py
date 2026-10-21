@@ -58,12 +58,14 @@ class Mutation:
 MERGE_TESTS = ("test_contract_65.MergeMathContract",)
 TTA_TESTS = ("test_contract_65.TtaContract", "test_flow_65.EngineFlow")
 CAL_TESTS = ("test_contract_65.CalibrateContract",)
+RESUME_TESTS = ("test_contract_65_evaluate.RunRequestsContract",)
 ORIGIN_TESTS = ("test_contract_65_api.FitTemperatureOriginContract", "test_contract_65_evaluate.OriginContract")
 ENGINE_TESTS = ("test_flow_65.EngineFlow", "test_flow_65_api.EngineExtrasFlow")
 LOADER_TESTS = ("test_flow_65.LoaderFlow",)
 STATE_TESTS = ("test_contract_65.StateContract",)
 BUDGET_TESTS = ("test_contract_65.BudgetContract", "test_contract_65_evaluate", "test_flow_65_evaluate.EvaluateFlow")
 CONFIG_TESTS = ("test_contract_65.ConfigContract",)
+VIEWS_TESTS = ("test_flow_65_api.ApiFlow.test_the_number_of_views_follows_the_config_unless_the_caller_says_otherwise",)
 API_TESTS = ("test_contract_65_api.NormalizeSpecContract", "test_contract_65_api.SpecForContract")
 REMOTE_TESTS = ("test_flow_65.RemoteFlow",)
 
@@ -275,6 +277,16 @@ MUTATIONS: Tuple[Mutation, ...] = (
              "a file exactly at the cap is refused"),
     Mutation("remote", "local-file-cap-ignored", R, "if len(data) > self.max_bytes:", "if False:", REMOTE_TESTS, "a local file is read whole whatever its size"),
     Mutation("remote", "cap-of-zero-accepted", R, "value < 1:", "value < 0:", REMOTE_TESTS, "a transport that refuses every file is accepted"),
+    Mutation("api", "views-default-ignores-the-config", AP, 'rotations = cfg["tta"].get("rotations", 1) if tta_rotations is None else tta_rotations',
+             "rotations = 1 if tta_rotations is None else tta_rotations", VIEWS_TESTS, "an engine loaded without tta_rotations runs one view while the plan counts two"),
+    Mutation("api", "views-argument-ignored", AP, 'rotations = cfg["tta"].get("rotations", 1) if tta_rotations is None else tta_rotations',
+             'rotations = cfg["tta"].get("rotations", 1)', VIEWS_TESTS, "tta_rotations=1 does not give one view"),
+    Mutation("budget", "non-finite-row-redone-on-every-resume", EV, 'if row["status"] == "error" and row.get("exception") in TERMINAL_ERRORS and not retry_nonfinite:',
+             "if False:", RESUME_TESTS, "a request that overflows in fp16 is run again, and fails again, on every resume"),
+    Mutation("budget", "retry-nonfinite-flag-ignored", EV, "and not retry_nonfinite:", ":", RESUME_TESTS, "retry_nonfinite=True does not ask again"),
+    Mutation("budget", "every-error-row-is-final", EV, 'row.get("exception") in TERMINAL_ERRORS', 'row.get("exception") is not None', RESUME_TESTS,
+             "a transient error (a dropped connection, a lone out-of-memory) is never retried"),
+    Mutation("budget", "stuck-rows-not-announced", EV, "    if stuck:", "    if False:", RESUME_TESTS, "a resume skips rows without saying so"),
     Mutation("state", "state-written-in-place", S, 'tmp = self.path.with_name(STATE_NAME + ".tmp")', "tmp = self.path", STATE_TESTS,
              "a disk that fills halfway through leaves a torn state.json instead of the previous one"),
     Mutation("state", "absolute-local-path-allowed", S, "if pure.is_absolute():", "if False:", STATE_TESTS,
@@ -301,6 +313,10 @@ MUTATIONS: Tuple[Mutation, ...] = (
              "a restore overwrites a file that is not in the work directory"),
     Mutation("state", "track-file-refuses-a-dotted-folder", S, 'if rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel):',
              'if rel.startswith(".."):', STATE_TESTS, "a folder called '..runs' is taken for a way out of the work directory"),
+    Mutation("loader", "alpha-pattern-ignored", L, 'for key in ("alpha_pattern", "rank_pattern"):', 'for key in ("rank_pattern",):', LOADER_TESTS,
+             "an adapter with an alpha per module is merged with one alpha for all"),
+    Mutation("loader", "rank-pattern-ignored", L, 'for key in ("alpha_pattern", "rank_pattern"):', 'for key in ("alpha_pattern",):', LOADER_TESTS,
+             "an adapter with a rank per module is merged with one rank for all"),
     Mutation("loader", "donor-readout-lent", L, 'head = anchor.shard("readout.safetensors").read_tensor("weight")',
              'head = (donors[0] if donors else anchor).shard("readout.safetensors").read_tensor("weight")', LOADER_TESTS,
              "the readout head comes from a donor that ships one (heads are never merged or lent)"),
