@@ -3,7 +3,7 @@
 - **Status:** Proposta. Nenhum resultado do modelo foi medido. O próximo gate é o GT (F2b).
 - **Data:** 2026-10-21
 - **Plano:** [decide/PLAN.md](../../decide/PLAN.md), versão 2.
-- **Relacionadas:** #64 (épico), #67 (F2), #76 (F2b). Esta ADR substitui os itens 3 (pesos iniciais) e 4 (treino) da decisão da [ADR 0003](0003-simplicio-decide-27b.md) e a consequência dela sobre a rotulagem pelos professores 27B. Os outros itens da ADR 0003 continuam valendo.
+- **Relacionadas:** #64 (épico), #67 (F2), #75 (F2b). Esta ADR substitui os itens 3 (pesos iniciais) e 4 (treino) da decisão da [ADR 0003](0003-simplicio-decide-27b.md) e a consequência dela sobre a rotulagem pelos professores 27B. Os outros itens da ADR 0003 continuam valendo.
 - **Escopo:** não muda a meta, o protocolo, as regras de dados e de licença nem os gates G0 a G5.
 
 Regra de evidência: só número medido entra como fato. Projeção ou estimativa leva a marca **UNVERIFIED** e não decide nada sozinha.
