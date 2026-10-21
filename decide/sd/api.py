@@ -340,7 +340,7 @@ def load_engine(spec: Mapping[str, Any], *, quant: Optional[str] = None, device:
     factories = dict(factories or {})
     secret = token or env.get_secret("HF_TOKEN")
     endpoint = cfg["hub"].get("endpoint", "https://huggingface.co")
-    make_repo = factories.get("repo") or (lambda repo, revision=None: HubRepo(repo, revision, endpoint=endpoint, token=secret))
+    make_repo = factories.get("repo") or (lambda repo, revision: HubRepo(repo, revision, endpoint=endpoint, token=secret))
     quant_name = quant or cfg["eval"]["quant"]
     loader_quant, compute = quant_settings(quant_name, cfg["eval"]["compute_dtype"])
     model_gb = None

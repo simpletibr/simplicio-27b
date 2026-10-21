@@ -25,7 +25,7 @@ def make_cfg(**overrides):
 
 
 def hub_repos(hub):
-    return lambda repo_id, revision=None: remote.HubRepo(repo_id, revision, endpoint=hub.base_url, sleep=lambda s: None, probe=4096)
+    return lambda repo_id, revision: remote.HubRepo(repo_id, revision, endpoint=hub.base_url, sleep=lambda s: None, probe=4096)
 
 
 @needs_transformers
@@ -183,6 +183,7 @@ class ApiFlow(HermeticTestCase):
         self.addCleanup(self._tmp.cleanup)
         self.dir = Path(self._tmp.name)
         self.hub.log.clear()
+        self.hub.requested.clear()
 
     def cfg(self, **over):
         base = {"hub": {"endpoint": self.hub.base_url},
@@ -254,6 +255,14 @@ class ApiFlow(HermeticTestCase):
         _response, raw = eng(**self.tm.REQUEST)
         self.assert_logits(raw["logits"], self.dense(self.merged_state(lora=0.1)).logits([self.tm.REQUEST])[0])
 
+    def test_each_repo_is_read_at_the_commit_the_spec_names_and_at_no_other(self):
+        """The fake Hub used to ignore the revision in the URL, so a loader that passed None for a donor, or a repo that read `main`, went unnoticed."""
+        self.hub.requested.clear()
+        self.engine("ta_l0.5")                                                           # the anchor and a donor
+        self.assertEqual(self.hub.requested, {("org/anchor", A), ("org/donor", D)})
+        self.engine("anchor+lora0.1")                                                    # the anchor and the adapter
+        self.assertEqual(self.hub.requested, {("org/anchor", A), ("org/donor", D), ("org/lora", L)})
+
     def test_provenance_records_the_recipe_and_never_the_token(self):
         secret = "hf_" + "a1b2c3d4e5f6a7b8c9d0"
         eng = self.engine("ta_l0.5", tta_rotations=2, temperatures={"choice": 1.7})
@@ -303,7 +312,7 @@ class ApiFlow(HermeticTestCase):
             self.engine("anchor", fast=True)
 
     def test_stored_bytes_counts_the_text_tower_only(self):
-        repo = hub_repos(self.hub)("org/anchor")
+        repo = hub_repos(self.hub)("org/anchor", A)
         want = sum(t.numel() * t.element_size() for n, t in self.pa.items() if not n.startswith("visual."))
         self.assertEqual(self.L.stored_bytes(repo), want)
         self.assertGreater(self.L.stored_bytes(repo, skip=()), want)

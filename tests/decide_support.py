@@ -116,6 +116,7 @@ class FakeHub:
         self.redirect: set = set()                 # keys served through a 302 to /cdn/<key>
         self.redirect_base: str = ""               # where that 302 points: "" = this server; another server's base_url (or localhost vs 127.0.0.1) = another origin
         self.auth_seen: List[str] = []
+        self.requested: set = set()                # (org/name, revision) of every request for a file: what the pin looked like on the wire
         self.linked_etag: Dict[str, str] = {}      # key -> the sha256 the Hub states in x-linked-etag for that file (HEAD only)
         self.heads: List[str] = []                 # keys that were asked with HEAD
         self.require_token: Optional[str] = None
@@ -132,6 +133,7 @@ class FakeHub:
                 path = self.path.split("?")[0]
                 m = re.match(r"^/([^/]+/[^/]+)/resolve/([^/]+)/(.+)$", path)
                 if m:
+                    hub.requested.add((m.group(1), m.group(2)))
                     return path, f"{m.group(1)}/{m.group(3)}", False
                 m = re.match(r"^/cdn/(.+)$", path)
                 if m:

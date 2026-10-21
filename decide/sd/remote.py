@@ -548,18 +548,24 @@ def _manifest_files(data: Any, where: str) -> Dict[str, Dict[str, Any]]:
         out[name] = {"bytes": size, "sha256": digest}
     return out
 
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}")                       # what a repo is read at; config.py and api.py hold the same rule for the files they validate
+
+
 class HubRepo:
     """A model repo read through Range requests.  `endpoint` is overridable for tests."""
 
-    def __init__(self, repo_id: str, revision: Optional[str] = None, token: Optional[str] = None,
+    def __init__(self, repo_id: str, revision: str, token: Optional[str] = None,
                  endpoint: str = "https://huggingface.co", transport=None, probe: int = 1 << 18, **transport_kw) -> None:
+        if not isinstance(revision, str) or not COMMIT_SHA.fullmatch(revision):
+            raise RemoteError(f"{repo_id}: the revision must be a full commit hash (40 lowercase hex characters), got {revision!r}: "
+                              "a branch such as 'main' moves while a sweep that takes days is running")
         if token:
             problem = endpoint_problem(endpoint)
             if problem:
                 raise RemoteError(f"the Hub endpoint {problem}")
         self.probe = probe
         self.repo_id = repo_id
-        self.revision = revision or "main"
+        self.revision = revision
         self.endpoint = endpoint.rstrip("/")
         self.transport = transport or HttpTransport(token=token, **transport_kw)
         self._shards: Dict[str, SafetensorsFile] = {}

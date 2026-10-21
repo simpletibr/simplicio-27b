@@ -13,12 +13,14 @@ import struct
 import tempfile
 import unittest
 import urllib.parse
-from pathlib import Path
 from unittest import mock
+from pathlib import Path
 
 from decide_support import FakeHub, HermeticTestCase, build_safetensors, needs_kit, needs_requests, needs_torch, needs_transformers, numpy_tensors
 
 from decide.sd import remote
+
+PIN = "1" * 40                                                   # a commit hash: the fake Hub serves any revision, and records which one it was asked for
 
 
 @needs_requests
@@ -42,7 +44,7 @@ class RemoteFlow(HermeticTestCase):
         h.add("org/model", "config.json", json.dumps({"hidden_size": 16}).encode())
 
     def repo(self, name="org/model", **kw):
-        return remote.HubRepo(name, endpoint=self.hub.base_url, sleep=lambda s: None, **kw)
+        return remote.HubRepo(name, kw.pop("revision", PIN), endpoint=self.hub.base_url, sleep=lambda s: None, **kw)
 
     def raw(self, r, name):
         return bytes(r.shard(r.shard_of(name)).read_raw(name))
@@ -114,7 +116,7 @@ class RemoteFlow(HermeticTestCase):
     def test_retries_on_503_with_backoff(self):
         self.hub.fail_first["org/model/model.safetensors"] = 3
         sleeps = []
-        r = remote.HubRepo("org/model", endpoint=self.hub.base_url, sleep=sleeps.append)
+        r = remote.HubRepo("org/model", PIN, endpoint=self.hub.base_url, sleep=sleeps.append)
         self.assertEqual(self.raw(r, "mask"), self.tensors["mask"][2])
         self.assertEqual(len(sleeps), 3)
         self.assertTrue(all(x > 0 for x in sleeps))
@@ -122,7 +124,7 @@ class RemoteFlow(HermeticTestCase):
 
     def test_gives_up_after_max_retries(self):
         self.hub.fail_first["org/model/model.safetensors"] = 99
-        r = remote.HubRepo("org/model", endpoint=self.hub.base_url, sleep=lambda s: None, max_retries=2)
+        r = remote.HubRepo("org/model", PIN, endpoint=self.hub.base_url, sleep=lambda s: None, max_retries=2)
         with self.assertRaisesRegex(remote.RemoteError, "503"):
             r.shard("model.safetensors")
 
@@ -141,20 +143,20 @@ class RemoteFlow(HermeticTestCase):
     def test_redirect_keeps_range_and_token_is_checked_at_the_origin(self):
         self.hub.redirect.add("org/model/model.safetensors")
         self.hub.require_token = "tok"
-        r = remote.HubRepo("org/model", endpoint=self.hub.base_url, token="tok", sleep=lambda s: None)
+        r = remote.HubRepo("org/model", PIN, endpoint=self.hub.base_url, token="tok", sleep=lambda s: None)
         name = "language_model.embed_tokens.weight"
         self.assertEqual(self.raw(r, name), self.tensors[name][2])
-        r2 = remote.HubRepo("org/model", endpoint=self.hub.base_url, token="wrong", sleep=lambda s: None)
+        r2 = remote.HubRepo("org/model", PIN, endpoint=self.hub.base_url, token="wrong", sleep=lambda s: None)
         with self.assertRaisesRegex(remote.RemoteError, "401"):
             r2.shard("model.safetensors")
 
     def test_a_token_is_never_sent_over_plain_http_to_another_machine(self):
         for endpoint in ("http://example.com", "http://huggingface.co", "ftp://example.com", "https://"):
             with self.subTest(endpoint), self.assertRaisesRegex(remote.RemoteError, "endpoint"):
-                remote.HubRepo("org/model", endpoint=endpoint, token="tok")
+                remote.HubRepo("org/model", PIN, endpoint=endpoint, token="tok")
         for endpoint in ("https://huggingface.co", "http://127.0.0.1:1", "http://localhost:8080", "http://[::1]:9"):
-            remote.HubRepo("org/model", endpoint=endpoint, token="tok")
-        remote.HubRepo("org/model", endpoint="http://example.com")                      # nothing secret to leak without a token
+            remote.HubRepo("org/model", PIN, endpoint=endpoint, token="tok")
+        remote.HubRepo("org/model", PIN, endpoint="http://example.com")                      # nothing secret to leak without a token
 
     def second_origin(self):
         """A second server holding the same files, reached as `localhost` while the first is `127.0.0.1`: another origin, as a CDN is."""
@@ -169,7 +171,7 @@ class RemoteFlow(HermeticTestCase):
         cdn = self.second_origin()
         self.hub.redirect.add("org/model/model.safetensors")
         self.hub.require_token = "tok"
-        r = remote.HubRepo("org/model", endpoint=self.hub.base_url, token="tok", sleep=lambda s: None)
+        r = remote.HubRepo("org/model", PIN, endpoint=self.hub.base_url, token="tok", sleep=lambda s: None)
         name = "language_model.embed_tokens.weight"
         self.assertEqual(self.raw(r, name), self.tensors[name][2])                     # the Range request was carried to the other origin
         self.assertIn("Bearer tok", self.hub.auth_seen)
@@ -178,7 +180,7 @@ class RemoteFlow(HermeticTestCase):
 
     def test_the_token_stays_on_a_redirect_inside_the_same_origin(self):
         self.hub.redirect.add("org/model/model.safetensors")
-        r = remote.HubRepo("org/model", endpoint=self.hub.base_url, token="tok", sleep=lambda s: None)
+        r = remote.HubRepo("org/model", PIN, endpoint=self.hub.base_url, token="tok", sleep=lambda s: None)
         self.hub.auth_seen.clear()
         r.shard("model.safetensors")
         self.assertEqual(set(self.hub.auth_seen), {"Bearer tok"})
@@ -347,7 +349,6 @@ class RemoteFlow(HermeticTestCase):
         with self.assertRaisesRegex(remote.RemoteError, "without a Location"):
             follow("")
 
-
     def test_the_request_goes_to_the_url_that_was_checked_not_to_the_text_of_the_location(self):
         """`urlsplit` decides the origin, `urllib3` makes the connection: what is sent is rebuilt from the fields `urlsplit` gave, so the host that was
         checked is the host that is connected to, and a second parser (urllib3's) must agree with it or the redirect is refused."""
@@ -394,7 +395,6 @@ class RemoteFlow(HermeticTestCase):
         with mock.patch.object(urllib3.util, "parse_url", real):
             self.assertEqual(follow("/x")[1], "Bearer tok")                  # the check does not trip on an honest location
 
-
     def test_a_redirect_that_two_parsers_read_differently_never_gets_the_token(self):
         """Two real servers.  `A` is the Hub, `B` is somebody else's: a Location that `urllib.parse` reads as `A` and `urllib3` reads as `B`
         (a backslash before the at sign) used to keep the Authorization header and then connect to `B`.  `B` must never see a Bearer."""
@@ -433,6 +433,20 @@ class RemoteFlow(HermeticTestCase):
         resp.close()
         self.assertEqual(self.hub.auth_seen[before:], ["Bearer hf_SECRET", "Bearer hf_SECRET"])
 
+    def test_a_repo_is_read_at_a_full_commit_hash_and_nothing_else(self):
+        for bad in (None, "main", "", "abc123", "A" * 40, "z" * 40, "1" * 39, "1" * 41, " " + "1" * 40, "1" * 40 + "\n", 7):
+            with self.subTest(repr(bad)), self.assertRaisesRegex(remote.RemoteError, "revision"):
+                remote.HubRepo("org/model", bad, endpoint=self.hub.base_url)
+        with self.assertRaises(TypeError):
+            remote.HubRepo("org/model", endpoint=self.hub.base_url)                  # there is no default revision to fall back to
+        self.assertEqual(remote.HubRepo("org/model", PIN, endpoint=self.hub.base_url).revision, PIN)
+
+    def test_the_pinned_revision_is_what_goes_on_the_wire(self):
+        r = self.repo(revision="2" * 40)
+        self.assertEqual(r.url("config.json"), f"{self.hub.base_url}/org/model/resolve/{'2' * 40}/config.json")
+        r.read_bytes("config.json")
+        r.shard("model.safetensors")
+        self.assertEqual(self.hub.requested, {("org/model", "2" * 40)})
 
     def test_missing_file_and_unknown_tensor(self):
         r = self.repo()
@@ -581,7 +595,7 @@ class RemoteFlow(HermeticTestCase):
         for name in ("../x", "/x", "a?b", "a#b"):
             with self.subTest(name), self.assertRaisesRegex(remote.RemoteError, "file name"):
                 self.repo().url(name)
-        self.assertTrue(self.repo().url("evaluation/inference-verification.json").endswith("/resolve/main/evaluation/inference-verification.json"))
+        self.assertTrue(self.repo().url("evaluation/inference-verification.json").endswith(f"/resolve/{PIN}/evaluation/inference-verification.json"))
 
     def test_dtype_table_covers_safetensors_dtypes(self):
         for k in ("F64", "F32", "F16", "BF16", "I64", "I32", "I16", "I8", "U8", "BOOL"):
@@ -615,7 +629,7 @@ class RemoteTensorFlow(HermeticTestCase):
         self.hub.__enter__()
         self.addCleanup(self.hub.__exit__, None, None, None)
         self.hub.add("org/model", "model.safetensors", self.blob)
-        self.r = remote.HubRepo("org/model", endpoint=self.hub.base_url, sleep=lambda s: None)
+        self.r = remote.HubRepo("org/model", PIN, endpoint=self.hub.base_url, sleep=lambda s: None)
 
     def expect(self, name):
         dtype, shape, data = self.tensors[name]
@@ -909,13 +923,17 @@ class LoaderFlow(HermeticTestCase):
     def setUp(self):
         super().setUp()
         self.hub.log.clear()
+        self.hub.requested.clear()
 
-    def repo(self, repo_id, revision=None):
+    PINS = {"org/anchor": "a" * 40, "org/donor": "b" * 40, "org/donor2": "e" * 40, "org/lora": "c" * 40}          # the commit each repo of these tests is read at
+
+    def repo(self, repo_id, revision):
         return remote.HubRepo(repo_id, revision, endpoint=self.hub.base_url, sleep=lambda s: None, probe=4096)
 
     def spec(self, donors=(("org/donor", 0.5),), lora=None, method="task_arithmetic", **extra):
-        return {"anchor": "org/anchor", "donors": [{"repo": r, "weight": w} for r, w in donors],
-                "lora": None if lora is None else {"repo": "org/lora", "weight": lora}, "method": method, **extra}
+        return {"anchor": "org/anchor", "anchor_revision": self.PINS["org/anchor"],
+                "donors": [{"repo": r, "weight": w, "revision": self.PINS.get(r, "9" * 40)} for r, w in donors],
+                "lora": None if lora is None else {"repo": "org/lora", "weight": lora, "revision": self.PINS["org/lora"]}, "method": method, **extra}
 
     def load(self, spec=None, progress=None, **opts):
         opts = {"quant": "none", "compute_dtype": "float32", "workers": 2, **opts}
@@ -979,6 +997,19 @@ class LoaderFlow(HermeticTestCase):
                     if skipped(name):
                         self.assertFalse(any(x < b and y >= a for x, y in asked), f"{key}: {name} was downloaded")
 
+    def test_each_repo_is_read_at_the_commit_the_spec_names_and_at_no_other(self):
+        """The fake Hub serves any revision, so this used to go unnoticed when the loader asked for `None` (read as `main`) for a donor."""
+        self.load(self.spec(donors=(("org/donor", 0.5), ("org/donor2", 0.25)), lora=0.1))
+        self.assertEqual(self.hub.requested, {("org/anchor", "a" * 40), ("org/donor", "b" * 40), ("org/donor2", "e" * 40), ("org/lora", "c" * 40)})
+
+    def test_a_spec_without_a_commit_for_a_repo_stops_before_anything_is_read(self):
+        for name, spec in (("anchor", {**self.spec(), "anchor_revision": None}),
+                           ("donor", {**self.spec(), "donors": [{"repo": "org/donor", "weight": 0.5}]}),
+                           ("lora", {**self.spec(lora=0.1), "lora": {"repo": "org/lora", "weight": 0.1}})):
+            with self.subTest(name), self.assertRaisesRegex(remote.RemoteError, "revision"):
+                self.load(spec)
+        self.assertEqual(self.hub.requested - {("org/anchor", "a" * 40)}, set())            # at most the anchor's shards were asked for
+
     def test_anchor_only_spec_reproduces_the_anchor(self):
         d = self.load(self.spec(donors=()))
         self.assert_state(d, self.expected(donors=()))
@@ -989,7 +1020,7 @@ class LoaderFlow(HermeticTestCase):
         def publish(name, **extra):
             self.hub.add(name, "adapter_model.safetensors", weights)
             self.hub.add(name, "adapter_config.json", json.dumps({"peft_type": "LORA", "r": 4, "lora_alpha": 8.0, **extra}).encode())
-            return self.repo(name)
+            return self.repo(name, "c" * 40)
 
         for key in ("alpha_pattern", "rank_pattern"):
             with self.subTest(key), self.assertRaisesRegex(self.L.LoaderError, key):
@@ -1016,7 +1047,7 @@ class LoaderFlow(HermeticTestCase):
     def test_reference_base_uses_the_base_repo_with_prefixed_names(self):
         prefixed = {("model." + k if k.startswith(("language_model.", "visual.")) else k): v for k, v in self.sa.items()}
         self.tm.publish_backbone(self.hub, "org/base", prefixed, shards=2)
-        d = self.load(self.spec(reference="base", base={"repo": "org/base"}))
+        d = self.load(self.spec(reference="base", base={"repo": "org/base", "revision": "f" * 40}))
         name = "language_model.layers.0.mlp.gate_proj.weight"
         base = self.sa[name].to(self.torch.bfloat16).double()
         want = base + 1.0 * (self.pa[name].double() - base) + 0.5 * (self.pd[name].double() - base)
@@ -1149,7 +1180,7 @@ class LoaderFlow(HermeticTestCase):
                                          "base_model.model.model.nowhere.q_proj.lora_B.weight": self.torch.zeros(8, 2)})
         self.hub.add("org/stray", "adapter_model.safetensors", blob)
         spec = self.spec(donors=())
-        spec["lora"] = {"repo": "org/stray", "weight": 0.1}
+        spec["lora"] = {"repo": "org/stray", "weight": 0.1, "revision": "c" * 40}
         with self.assertRaisesRegex(self.L.LoaderError, "match no anchor tensor"):
             self.load(spec)
 
