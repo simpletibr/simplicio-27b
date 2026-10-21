@@ -143,6 +143,9 @@ MUTATIONS: Tuple[Mutation, ...] = (
     Mutation("engine", "engine-general-key-first", E, 'for key in (f"{kind}:{calibrate.k_bucket(n)}", kind, "default"):',
              'for key in (kind, f"{kind}:{calibrate.k_bucket(n)}", "default"):', ENGINE_TESTS,
              "the temperature of the whole type wins over the one of its option count"),
+    Mutation("engine", "oom-condemns-the-whole-batch", E, "return [out for job in jobs for out in self._run_jobs([job])]",
+             "return [exc for _job in jobs]", ("test_flow_65.EngineFlow", "test_flow_65_evaluate.EvaluateFlow"),
+             "one request that runs out of memory alone makes every request of its batch unsupported for good"),
 
     # ---- the loader: which tensors are merged with which weights
     Mutation("loader", "donor-weights-misaligned", L, "[weights[i] for i in plan.donors]", "[weights[i] for i in reversed(plan.donors)]",

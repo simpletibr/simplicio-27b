@@ -200,24 +200,38 @@ class DecisionEngine(Engine):
                 continue
             jobs.append((i, request, plans, encoded, view_requests))
         if jobs:
-            flat = [chunks for _i, _r, _p, encoded, _v in jobs for chunks in encoded]
-            flat_requests = [view for _i, _r, _p, _e, views in jobs for view in views]
-            try:
-                logits = self.decider.run_batch(flat, flat_requests)
-            except Unsupported as exc:
-                for i, *_ in jobs:
-                    results[i] = exc
-                return results
-            cursor = 0
-            for i, request, plans, encoded, _views in jobs:
-                mine = logits[cursor:cursor + len(encoded)]
-                cursor += len(encoded)
+            for (i, request, plans, encoded, _views), mine in zip(jobs, self._run_jobs(jobs)):
+                if isinstance(mine, BaseException):
+                    results[i] = mine
+                    continue
                 tokens = sum(c.length for chunks in encoded for c in chunks)
                 try:
                     results[i] = self._finish(request, plans, mine, tokens)
                 except FloatingPointError as exc:
                     results[i] = exc
         return results
+
+    def _run_jobs(self, jobs: Sequence[Tuple[Any, ...]]) -> List[Any]:
+        """The logits of every view of every job, or the `Unsupported` that job raised when it ran alone.
+
+        The jobs go to the model together.  If that fails with `Unsupported` (a lone sequence ran out of memory) and there is
+        more than one job, the failure is not the batch's: every job is run again by itself, so only the request that cannot
+        fit alone is lost.  Without this one long request would turn up to `chunk - 1` neighbours that fit into permanent errors.
+        """
+        flat = [chunks for _i, _r, _p, encoded, _v in jobs for chunks in encoded]
+        flat_requests = [view for _i, _r, _p, _e, views in jobs for view in views]
+        try:
+            logits = self.decider.run_batch(flat, flat_requests)
+        except Unsupported as exc:
+            if len(jobs) == 1:
+                return [exc]
+            return [out for job in jobs for out in self._run_jobs([job])]
+        out: List[Any] = []
+        cursor = 0
+        for _i, _r, _p, encoded, _v in jobs:
+            out.append(logits[cursor:cursor + len(encoded)])
+            cursor += len(encoded)
+        return out
 
     # ---- bookkeeping the kit's runner reads
     def synchronize(self) -> None:

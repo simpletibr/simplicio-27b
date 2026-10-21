@@ -382,6 +382,52 @@ class EngineFlow(HermeticTestCase):
         with self.assertRaisesRegex(self.E.Unsupported, "out of memory"):
             eng(**self.tm.REQUEST)
 
+    def oom_above(self, decider, limit):
+        """Make `reference_logits` raise a simulated out-of-memory error for any chunk longer than `limit` tokens."""
+        real = decider.reference_logits
+
+        def flaky(chunks):
+            if any(c.length > limit for c in chunks):
+                raise self.E.OOM_ERRORS[0]("CUDA out of memory (simulated)")
+            return real(chunks)
+
+        decider.reference_logits = flaky
+
+    def short_and_long(self, decider):
+        """A request that fits and one that does not, plus the token count that separates them."""
+        short = self.tm.REQUEST
+        long_one = {"state": "x " * 60, "questions": {"q": {"type": "choice", "criteria": {"a": "1", "b": "2"}}}}
+        sizes = [max(c.length for c in decider.encoder.plan(r, decider.max_length)) for r in (short, long_one)]
+        self.assertLess(sizes[0], sizes[1])
+        return short, long_one, (sizes[0] + sizes[1]) // 2
+
+    def test_one_request_that_runs_out_of_memory_alone_does_not_condemn_the_batch(self):
+        d = self.decider()
+        short, long_one, limit = self.short_and_long(d)
+        self.oom_above(d, limit)
+        eng = self.engine(d)
+        out = eng.batch([short, long_one, short])
+        self.assertEqual([type(o).__name__ for o in out], ["tuple", "Unsupported", "tuple"])
+        self.assertIn("out of memory", str(out[1]))
+        self.assertEqual(out[0][1]["tokens"], out[2][1]["tokens"])
+
+    def test_the_requests_saved_from_the_batch_have_the_logits_they_have_alone(self):
+        d = self.decider()
+        short, long_one, limit = self.short_and_long(d)
+        self.oom_above(d, limit)
+        eng = self.engine(d)
+        (_r, mixed), _bad = eng.batch([short, long_one])
+        _r2, alone = eng(**short)
+        for a, b in zip(mixed["logits"]["route"][0], alone["logits"]["route"][0]):
+            self.assertAlmostEqual(a, b, places=5)
+
+    def test_a_request_with_two_views_that_runs_out_of_memory_is_unsupported_as_a_whole(self):
+        d = self.decider()
+        short, long_one, limit = self.short_and_long(d)
+        self.oom_above(d, limit)
+        out = self.engine(d, tta_rotations=2).batch([long_one, short])
+        self.assertEqual([type(o).__name__ for o in out], ["Unsupported", "tuple"])
+
     def test_temperatures_per_question_type(self):
         eng = self.engine(temperatures={"choice": 2.0, "noul": 0.5})
         response, raw = eng(**self.tm.REQUEST)
