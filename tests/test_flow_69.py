@@ -19,6 +19,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from typing import Any, Dict, List
 
 from decide_b_support import HAVE_PEFT, HAVE_PYARROW, HAVE_TRANSFORMERS, FakeTokenizer, make_targets_dataset, make_tiny_checkpoint
@@ -265,6 +266,71 @@ class ResumeFlow(unittest.TestCase):
             (out / "resume.pt").unlink()
             with self.assertRaises(ValueError):
                 _STATE["TRAIN"].main(base + list(self.ARGS) + list(FULL) + ["--resume"], tokenizer=FakeTokenizer())
+
+    def test_a_resume_on_other_data_or_another_checkpoint_is_refused(self) -> None:
+        out = train("resume_guard_inputs", *self.ARGS, *FULL, "--max-steps", "3", cache=False)
+        saved = (out / "resume.pt").read_bytes()
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        other_targets = make_targets_dataset(Path(scratch.name) / "data", train=8, dev=5)            # same size of training set, other bytes
+        other_base = Path(scratch.name) / "base"
+        shutil.copytree(_STATE["base"], other_base)
+        decision = json.loads((other_base / "decision_config.json").read_text(encoding="utf-8"))
+        decision["temperature"] = decision["temperature"] + 0.25
+        (other_base / "decision_config.json").write_text(json.dumps(decision), encoding="utf-8")
+
+        def resume(targets: Path, checkpoint: Path) -> None:
+            with contextlib.redirect_stdout(io.StringIO()):
+                _STATE["TRAIN"].main(["--targets", str(targets), "--checkpoint", str(checkpoint), "--out", str(out), *self.ARGS, *FULL, "--resume"], tokenizer=FakeTokenizer())
+
+        with self.assertRaises(ValueError) as caught:
+            resume(other_targets, _STATE["base"])
+        self.assertIn("targets", str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            resume(_STATE["targets"], other_base)
+        self.assertIn("checkpoint", str(caught.exception))
+        self.assertEqual((out / "resume.pt").read_bytes(), saved, "a refused resume leaves the saved state alone")
+        self.assertFalse((out / "final").exists())
+
+
+class WhatTheTrainerDrawsEachEpoch(unittest.TestCase):
+    """The data order and the option order are drawn again every epoch (permute.py and schedule.py take the epoch), and the
+    trainer must say which epoch it is in."""
+
+    def test_every_epoch_asks_for_its_own_orders(self) -> None:
+        TRAIN = _STATE["TRAIN"]
+        order_epochs, item_epochs = [], []
+        real_order, real_item = TRAIN.epoch_order, TRAIN.make_item
+
+        def spy_order(rows, **kwargs):
+            order_epochs.append(kwargs["epoch"])
+            return real_order(rows, **kwargs)
+
+        def spy_item(*args, **kwargs):
+            item_epochs.append(kwargs["epoch"])
+            return real_item(*args, **kwargs)
+
+        with mock.patch.object(TRAIN, "epoch_order", spy_order), mock.patch.object(TRAIN, "make_item", spy_item):
+            out = train("epochs_spied", *THREE, *FULL, cache=False)
+        self.assertEqual(len(steps(out)), 3)
+        self.assertEqual(order_epochs, [0, 1, 2], "one data order per epoch, each with its own epoch number")
+        self.assertEqual(sorted(set(item_epochs)), [0, 1, 2], "the options of every request are shuffled with the epoch they are used in")
+
+    def test_the_fingerprint_of_the_data_is_the_manifest_not_the_folder(self) -> None:
+        digest_of = _STATE["TRAIN"].digest_of
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        copy = Path(scratch.name) / "targets"
+        shutil.copytree(_STATE["targets"], copy)
+        whole = digest_of(_STATE["targets"])
+        self.assertEqual(digest_of(copy), whole, "same parts, same fingerprint, wherever the folder is")
+        part = next(copy.glob("*.parquet"))
+        shutil.copy(part, copy / "stray-0000.parquet")
+        self.assertEqual(digest_of(copy), whole, "a parquet file the manifest does not list is not data")
+        (copy / "manifest.json").unlink()
+        with self.assertRaises(Exception) as caught:
+            digest_of(copy)
+        self.assertEqual(type(caught.exception).__name__, "ManifestError", "a folder without a manifest is an unfinished build, not a glob")
 
 
 class SoupAndTemperatureFlow(unittest.TestCase):

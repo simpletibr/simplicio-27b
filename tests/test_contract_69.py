@@ -552,6 +552,8 @@ class ScheduleContract(unittest.TestCase):
         self.assertEqual(SC.microbatches([10, 10, 10, 10, 10], max_rows=2, token_budget=10_000), [[0, 1], [2, 3], [4]])
         self.assertEqual(SC.microbatches([900, 10], max_rows=8, token_budget=700), [[0], [1]], "an over-budget row still goes alone")
         self.assertEqual(SC.microbatches([], max_rows=8, token_budget=700), [])
+        self.assertEqual(SC.microbatches([350, 350], max_rows=8, token_budget=700), [[0, 1]], "a batch that fills the budget exactly is allowed")
+        self.assertEqual(SC.microbatches([350, 351], max_rows=8, token_budget=700), [[0], [1]], "one token over the budget is not")
         rng = random.Random(1)
         lengths = sorted(rng.randrange(5, 500) for _ in range(300))
         groups = SC.microbatches(lengths, max_rows=16, token_budget=2048)
@@ -768,6 +770,37 @@ class SoupContract(unittest.TestCase):
         self.assertEqual(cfg["temperature"], 1.11)
         self.assertEqual(cfg["soup"]["weights"], [0.75, 0.25])
 
+    def test_every_input_gets_its_own_weight(self) -> None:
+        torch = self.torch
+        from safetensors import safe_open
+
+        inputs = [self.make(index, 1, 1.0) for index in range(3)]
+        self.soup.average_checkpoints(inputs, self.root / "w3", weights=[1, 2, 5])
+        with safe_open(str(self.root / "w3" / "model-00001-of-00001.safetensors"), "pt") as f:
+            got = f.get_tensor("a.weight").float()
+        stack = torch.stack([run[0]["a.weight"].float() for run in self.runs])
+        want = (stack * torch.tensor([1.0, 2.0, 5.0]).view(-1, 1, 1)).sum(0) / 8
+        self.assertTrue(torch.allclose(got, want, rtol=1e-2, atol=1e-6), "1:2:5, not 1:1:5 or 1:1:1")
+        self.assertGreater(float((got - stack.mean(0)).abs().max()), 0.01, "the weights must move the result away from the plain mean")
+
+    def test_a_tensor_that_is_not_a_weight_must_be_the_same_in_every_input(self) -> None:
+        torch = self.torch
+        from safetensors import safe_open
+
+        def make(name: str, positions) -> Path:
+            tensors = {"a.weight": torch.ones(2, 2, dtype=torch.bfloat16), "positions": torch.tensor(positions, dtype=torch.int64)}
+            return _write_checkpoint(self.root / name, tensors, shards=1, temperature=1.0)
+
+        same_a, same_b, other = make("na", [0, 1, 2]), make("nb", [0, 1, 2]), make("nc", [0, 1, 3])
+        self.soup.average_checkpoints([same_a, same_b], self.root / "kept")
+        with safe_open(str(self.root / "kept" / "model-00001-of-00001.safetensors"), "pt") as f:
+            kept = f.get_tensor("positions")
+        self.assertEqual((kept.dtype, kept.tolist()), (torch.int64, [0, 1, 2]), "copied, not averaged")
+        with self.assertRaises(self.soup.SoupError) as caught:
+            self.soup.average_checkpoints([same_a, other], self.root / "differs")
+        self.assertIn("positions", str(caught.exception))
+        self.assertFalse((self.root / "differs" / "decision_config.json").exists(), "no half-made soup is left to be mistaken for a finished one")
+
     def test_a_soup_does_not_inherit_the_calibration_or_the_training_record_of_its_first_input(self) -> None:
         # the averaged weights are nobody's run: the first input's per-type temperatures, fit flag and training record would lie
         inputs = [self.make(0, 1, 1.2), self.make(1, 1, 1.4)]
@@ -856,9 +889,19 @@ class CalibrationConfigContract(unittest.TestCase):
         self.assertEqual(fields["calibration"]["with_reasoning"], {"examples": 5, "questions": 60})
 
     def test_nothing_to_fit_is_an_error_not_a_default(self) -> None:
-        for report in ({}, {"examples": 3}, {"examples": 3, "questions": 0}):
+        for report in ({}, {"examples": 3}, {"examples": 3, "questions": 0}, dict(self.PLAIN, questions=0)):
             with self.assertRaises(self.TM.CalibrationError, msg=str(report)):
                 self.TM.calibration_fields(report)
+
+    def test_the_temperature_with_reasoning_is_checked_like_the_others(self) -> None:
+        self.write()
+        before = self.path.read_bytes()
+        fields = self.TM.calibration_fields(self.PLAIN, self.THINKING)
+        for bad in (0.0, -1.2, float("nan"), float("inf"), True, "1.2"):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                self.TM.write_calibration(self.root, dict(fields, temperature_with_reasoning=bad))
+        self.assertEqual(self.path.read_bytes(), before, "nothing is written when one value is bad")
+        self.assertEqual(self.TM.write_calibration(self.root, fields)["temperature_with_reasoning"], 1.2)
 
     def test_write_replaces_the_calibration_and_keeps_the_rest(self) -> None:
         self.write(temperature_by_type={"choice": 9.0}, temperature_fallback=["noul"], temperature_with_reasoning=1.9, temperature_is_placeholder=True,
@@ -868,6 +911,7 @@ class CalibrationConfigContract(unittest.TestCase):
         self.assertEqual(config["temperature"], 1.7)
         self.assertEqual(config["temperature_by_type"], {"choice": 1.8, "noul": 1.5, "score": 1.7})
         self.assertIs(config["temperature_is_placeholder"], False)
+        self.assertEqual(config["temperature_fallback"], ["score"], "the types that took the overall temperature stay listed")
         self.assertNotIn("temperature_with_reasoning", config, "an old fit with reasoning must not survive a new plain fit")
         self.assertIs(config["soup"]["temperature_is_placeholder"], False)
         self.assertEqual(config["soup"]["weights"], [0.5, 0.5])
@@ -1150,6 +1194,7 @@ class BuildTargetsContract(unittest.TestCase):
         from decide.train import data as DT
 
         self.build()
+        self.assertTrue((self.root / "targets" / "report.json").is_file())
         self.S.write_teacher_part(self.root / "labels" / "t1" / "part-0001.parquet", [
             {"example_id": "s:3", "question_id": "q1", "teacher": "t1", "codes": ["A", "B", "C"], "probs": [0.1, 0.1, 0.8], "temperature": 1.3}])   # differs from part-0000
         argv = ["--corpus", str(self.root / "corpus"), "--labels", str(self.root / "labels" / "t1"), "--out", str(self.root / "targets")]
@@ -1157,8 +1202,33 @@ class BuildTargetsContract(unittest.TestCase):
             with self.assertRaises(self.BT.TargetError):
                 self.BT.main(argv)
         self.assertFalse((self.root / "targets" / "manifest.json").exists())
+        self.assertFalse((self.root / "targets" / "report.json").exists(), "the report of the build before is not the report of this one")
         with self.assertRaises(self.S.ManifestError):
             DT.load_examples(self.root / "targets")
+
+    def test_a_part_that_no_longer_matches_its_marker_is_built_again(self) -> None:
+        from decide.train import data as DT
+
+        self.build()
+        part = self.root / "targets" / "s-0000.parquet"
+        good = self.S.sha256_file(part)
+        part.write_bytes(b"not a parquet file")                  # the marker still vouches for the old bytes
+        again = self.build()
+        self.assertEqual(again["parts_resumed"], 0)
+        self.assertEqual(self.S.sha256_file(part), good, "rebuilt to the same bytes")
+        part.unlink()
+        self.assertEqual(self.build()["parts_resumed"], 0, "a part that went missing is built again")
+        self.assertEqual(len(DT.load_examples(self.root / "targets")), 6)
+
+    def test_a_gold_label_outside_the_options_is_refused_by_name(self) -> None:
+        from decide.train import data as DT
+
+        request = choice_request(instructions="Which one?", options=["a", "b", "c"], keys=["x", "y", "z"])
+        row = {"example_id": "s:9", "source": "s", "split": "train", "lang": "en", "request": json.dumps(request), "gold": json.dumps({"q1": "w"}),
+               "combined": json.dumps({"q1": None}), "teachers": json.dumps([]), "reasoning": None}
+        with self.assertRaisesRegex(ValueError, "s:9/q1.*not one of the options"):
+            DT.example_from_row(row)
+        self.assertEqual(DT.example_from_row(dict(row, gold=json.dumps({"q1": "z"}))).gold_index, {"q1": 2})
 
     def test_the_corpus_folder_must_be_a_finished_build(self) -> None:
         (self.root / "corpus" / "manifest.json").unlink()
