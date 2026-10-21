@@ -112,3 +112,77 @@ def board_index(scores: Dict[str, Dict[str, float]]) -> Dict[str, Any]:
     """A minimal board index.json: engine -> {v, same_skills, new_domains, pub}."""
     return {"models": [{"engine": engine, "name": engine, "meta": {"kind": "full fine-tune"}, "v03": dict(v, engine=engine)}
                        for engine, v in scores.items()]}
+
+
+# --------------------------------------------------------------------------- tokenizer stand-in (decide/train)
+
+class FakeTokenizer:
+    """Just enough of a Hugging Face tokenizer for decide/train tests, with no files and no network.
+
+    ChatML-style template like the Qwen one (`<think>` block closed because thinking is disabled), special tokens
+    kept whole, every answer code a single token, every other word a hashed id.  Not the real vocabulary: the real
+    one is exercised by `DECIDE_PPLX_REFERENCE` (see test_contract_69.ReferenceParity).
+    """
+
+    SPECIALS = ("<|endoftext|>", "<|im_start|>", "<|im_end|>", "<|fim_suffix|>")
+    WORD_BUCKETS = 300
+
+    def __init__(self, codes: Optional[Sequence[str]] = None) -> None:
+        from decide.train.codes import ANSWER_CODES  # imported lazily: the module under test may not exist yet
+
+        self.codes = list(codes or ANSWER_CODES)
+        self.special_ids = {tok: i for i, tok in enumerate(self.SPECIALS)}
+        self.code_ids = {code: len(self.SPECIALS) + i for i, code in enumerate(self.codes)}
+        self.newline_id = len(self.SPECIALS) + len(self.codes)
+        self.first_word_id = self.newline_id + 1
+        self.vocab_size = self.first_word_id + self.WORD_BUCKETS
+        self.pad_token, self.pad_token_id = "<|endoftext|>", 0
+        self.padding_side = "left"
+        self.all_special_tokens = ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]
+        self._split = __import__("re").compile(r"(<\|[a-z_]+\|>)|(\n)|([^\W_]+|[^\w\s])|(\s+)")
+
+    # -- chat template
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False, enable_thinking=True, **_):
+        assert tokenize is False
+        out = []
+        for message in messages:
+            content = message["content"]
+            if not isinstance(content, str):
+                content = "".join(part["text"] for part in content if part.get("type") == "text")
+            out.append(f"<|im_start|>{message['role']}\n{content}<|im_end|>\n")
+        if add_generation_prompt:
+            out.append("<|im_start|>assistant\n" + ("" if enable_thinking else "<think>\n\n</think>\n\n"))
+        return "".join(out)
+
+    # -- tokenization
+    def _id(self, piece: str) -> int:
+        if piece in self.special_ids:
+            return self.special_ids[piece]
+        if piece in self.code_ids:
+            return self.code_ids[piece]
+        if piece == "\n":
+            return self.newline_id
+        import hashlib
+
+        return self.first_word_id + int.from_bytes(hashlib.blake2b(piece.encode(), digest_size=4).digest(), "big") % self.WORD_BUCKETS
+
+    def encode(self, text: str, add_special_tokens: bool = False) -> List[int]:
+        assert add_special_tokens is False
+        ids = []
+        for match in self._split.finditer(text):
+            piece = match.group(0)
+            if piece.strip() == "" and piece != "\n":
+                continue  # spaces carry no token in this stand-in
+            ids.append(self._id(piece))
+        return ids
+
+    def __call__(self, text, add_special_tokens: bool = False, **_):
+        if isinstance(text, str):
+            return {"input_ids": self.encode(text, add_special_tokens)}
+        return {"input_ids": [self.encode(t, add_special_tokens) for t in text]}
+
+    def convert_ids_to_tokens(self, ids):
+        names = {v: k for k, v in {**self.special_ids, **self.code_ids}.items()}
+        single = isinstance(ids, int)
+        out = [names.get(i, f"<{i}>") for i in ([ids] if single else ids)]
+        return out[0] if single else out
