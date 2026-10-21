@@ -186,3 +186,88 @@ class FakeTokenizer:
         single = isinstance(ids, int)
         out = [names.get(i, f"<{i}>") for i in ([ids] if single else ids)]
         return out[0] if single else out
+
+
+# --------------------------------------------------------------------------- tiny model + targets for the training flow tests
+
+TINY_VOCAB = 600
+
+
+def make_tiny_checkpoint(directory: Path, tokenizer: "FakeTokenizer", seed: int = 0, temperature: float = 1.0) -> Path:
+    """A random 4-layer Qwen3.5 backbone with the files of a v1.2 joint checkpoint (needs torch + transformers).
+
+    Same layout as perplexity-ai/pplx-decider-v1.2 (backbone + ``readout.safetensors`` + ``decision_config.json`` +
+    ``joint_config.json``) and a tokenizer-sized vocabulary, so the real code paths run on a CPU in a fraction of a second.
+    """
+    import torch
+    from safetensors.torch import save_file
+    from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5Config
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5Model
+
+    from decide.train.codes import ANSWER_CODES
+    from decide.train.protocol import PROTOCOL
+
+    text = dict(
+        vocab_size=TINY_VOCAB, hidden_size=64, intermediate_size=96, num_hidden_layers=4, num_attention_heads=4, num_key_value_heads=2, head_dim=16,
+        linear_conv_kernel_dim=4, linear_key_head_dim=16, linear_num_key_heads=2, linear_num_value_heads=4, linear_value_head_dim=16,
+        full_attention_interval=4, layer_types=["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+        max_position_embeddings=2048, rms_norm_eps=1e-6, partial_rotary_factor=0.25, attn_output_gate=True,
+        rope_parameters={"mrope_interleaved": True, "mrope_section": [1, 1, 2], "partial_rotary_factor": 0.25, "rope_theta": 10000.0, "rope_type": "default"},
+        tie_word_embeddings=False, pad_token_id=0, bos_token_id=1, eos_token_id=1,
+    )
+    vision = dict(depth=1, hidden_size=32, intermediate_size=64, num_heads=2, out_hidden_size=64, patch_size=16, spatial_merge_size=2,
+                  temporal_patch_size=2, num_position_embeddings=16, in_channels=3)
+    config = Qwen3_5Config(text_config=text, vision_config=vision, image_token_id=590, video_token_id=591, vision_start_token_id=592,
+                           vision_end_token_id=593, tie_word_embeddings=False)
+    torch.manual_seed(seed)
+    model = Qwen3_5Model(config).to(torch.float32)
+    directory.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(str(directory))
+    readout = torch.nn.Linear(64, 255, bias=False)
+    save_file({"weight": readout.weight.detach().contiguous()}, str(directory / "readout.safetensors"))
+    codes = list(ANSWER_CODES)
+    (directory / "decision_config.json").write_text(json.dumps({
+        "format_version": 2, "base_model": "tiny/qwen3_5", "revision": "0" * 40, "attention_mode": "noncausal_full_attention", "pooling": "last",
+        "temperature": temperature, "max_pixels": 1, "codes": codes, "token_ids": [tokenizer.code_ids[c] for c in codes]}, indent=2), encoding="utf-8")
+    (directory / "joint_config.json").write_text(json.dumps(PROTOCOL, indent=2), encoding="utf-8")
+    (directory / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+    (directory / "chat_template.jinja").write_text("{{ messages }}", encoding="utf-8")
+    return directory
+
+
+def make_targets_dataset(root: Path, *, train: int = 8, dev: int = 6, traces_for: Sequence[int] = ()) -> Path:
+    """A small corpus with one teacher and gold labels, built into a targets dataset by ``decide.train.build_targets``.
+
+    Every request is a 3-option choice question whose right option is the one named in the state, so a model can learn it.
+    Returns the targets folder.  ``traces_for`` lists the indices of the training examples that also get a thinker trace.
+    """
+    from decide.data import schema as S
+    from decide.data import traces as TR
+    from decide.train import build_targets as BT
+
+    rows, teacher_rows = [], []
+    names = ["river", "stone", "market", "lantern", "copper", "violin", "harbor", "winter", "orchid", "signal", "paper", "engine", "garden", "bridge"]
+    for i in range(train + dev):
+        right = i % 3
+        options = [names[(i + k) % len(names)] for k in range(3)]
+        request = choice_request(f"Which one is the odd one number {i}?", options, state=f"The answer is {options[right]} for case {i}.", keys=["x", "y", "z"])
+        example_id = f"toy:{i}"
+        rows.append(S.corpus_row(example_id=example_id, source="toy", license="mit", split="train" if i < train else "dev", lang="en", request=request,
+                                 gold={"q1": ["x", "y", "z"][right]}))
+        probs = [0.1, 0.1, 0.1]
+        probs[right] = 0.8
+        teacher_rows.append({"example_id": example_id, "question_id": "q1", "teacher": "toy-teacher", "codes": ["A", "B", "C"], "probs": probs, "temperature": 1.0})
+    S.write_corpus_part(root / "corpus" / "toy-0000.parquet", rows)
+    S.write_teacher_part(root / "labels" / "toy-teacher" / "part-0000.parquet", teacher_rows)
+    argv = ["--corpus", str(root / "corpus"), "--labels", str(root / "labels"), "--out", str(root / "targets")]
+    if traces_for:
+        TR.write_trace_part(root / "traces" / "toy-thinker" / "part-0000.parquet", [
+            TR.trace_row(example_id=f"toy:{i}", thinker="toy-thinker", reasoning=f"The state names option {i % 3}, so the answer is {['x', 'y', 'z'][i % 3]}.",
+                         tokens=12, finish_reason="stop") for i in traces_for])
+        argv += ["--traces", str(root / "traces")]
+    import contextlib
+    import io
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        BT.main(argv)
+    return root / "targets"

@@ -21,7 +21,6 @@ from pathlib import Path
 
 from decide_b_support import (
     ROOT, FakeTokenizer, choice_request, have, needs_numpy, needs_pyarrow, needs_torch, noul_request, score_request,
-    write_jsonl,
 )
 
 from decide.train import codes as CODES
@@ -31,6 +30,17 @@ from decide.train import schedule as SC
 from decide.train import targets as TG
 
 CODE_SKIPS = ("BQ BZ CJ CQ CZ DQ DZ EJ EY FJ FQ FV FZ GJ GK GQ GZ HJ IY JF JG JH JL JN JQ").split()
+
+
+def _float32(value: float) -> float:
+    import struct
+
+    return struct.unpack("<f", struct.pack("<f", value))[0]
+
+
+#: The teacher label [0.6, 0.3, 0.1] as stored in a float32 parquet column, normalized back to sum 1.
+_F32_P1 = [_float32(v) for v in (0.6, 0.3, 0.1)]
+F32_P1_NORMALIZED = [v / sum(_F32_P1) for v in _F32_P1]
 
 
 def reference_permutation(n, *, seed, example_id, question_id, epoch=0):
@@ -55,7 +65,7 @@ def reference_permutation(n, *, seed, example_id, question_id, epoch=0):
 class PureModules(unittest.TestCase):
     def test_pure_modules_do_not_import_torch(self) -> None:
         code = ("import sys; sys.modules['torch'] = None; sys.modules['transformers'] = None\n"
-                "import decide.train.codes, decide.train.permute, decide.train.targets, decide.train.schedule, decide.train.protocol\n"
+                "import decide.train.codes, decide.train.permute, decide.train.targets, decide.train.schedule, decide.train.protocol, decide.train.batching\n"
                 "print('ok')")
         done = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=60)
         self.assertEqual((done.returncode, done.stdout.strip()), (0, "ok"), done.stderr[-400:])
@@ -434,6 +444,10 @@ class ScheduleContract(unittest.TestCase):
         self.assertEqual(plan.batch_indices(4, seed=1), SC.epoch_order(1000, seed=1, epoch=1)[:256])
         with self.assertRaises(IndexError):
             plan.batch_indices(8, seed=1)
+        cached = SC.epoch_order(1000, seed=1, epoch=1)
+        self.assertEqual(plan.batch_indices(5, seed=1, order=cached), plan.batch_indices(5, seed=1), "a cached epoch order gives the same rows")
+        with self.assertRaises(ValueError):
+            plan.batch_indices(5, seed=1, order=cached[:-1])
         self.assertEqual(SC.plan_steps(rows=512, effective_batch=256, epochs=1).total_steps, 2)
         with self.assertRaises(ValueError):
             SC.plan_steps(rows=0, effective_batch=256, epochs=1)
@@ -473,7 +487,7 @@ class LossContract(unittest.TestCase):
         torch = self.torch
         logits = torch.tensor([[1.0, 2.0, 0.0, 0.0]], requires_grad=True)
         masked = self.loss.mask_logits(logits, torch.tensor([2]))
-        self.assertEqual(float(masked[0, 2]), -1e9)
+        self.assertEqual(float(masked[0, 2].detach()), -1e9)
         target = torch.tensor([[0.3, 0.7, 0.0, 0.0]])
         out = self.loss.decision_loss(masked, target)
         out.total.backward()
@@ -694,7 +708,9 @@ class BuildTargetsContract(unittest.TestCase):
         rows = self.read_out()
         self.assertEqual(tuple(next(iter(rows.values()))), self.BT.TARGET_COLUMNS)
         self.assertEqual(set(rows), {f"s:{i}" for i in range(6)}, "s:6 has neither a teacher nor a gold label")
-        self.assertEqual(json.loads(rows["s:0"]["combined"]), {"q1": [0.6000000238418579, 0.30000001192092896, 0.10000000149011612]})
+        for got, want in zip(json.loads(rows["s:0"]["combined"])["q1"], F32_P1_NORMALIZED):
+            self.assertAlmostEqual(got, want, places=12)
+        self.assertAlmostEqual(sum(json.loads(rows["s:0"]["combined"])["q1"]), 1.0, places=12, msg="stored distributions sum to 1")
         self.assertEqual(json.loads(rows["s:0"]["gold"]), {"q1": "x"})
         self.assertEqual(json.loads(rows["s:0"]["teachers"]), ["t1"])
         self.assertEqual(json.loads(rows["s:5"]["combined"]), {"q1": None}, "gold only")
@@ -761,17 +777,250 @@ class BuildTargetsContract(unittest.TestCase):
         self.assertEqual(e0.gold_index, {"q1": 0})
         target = e0.target("q1", alpha=0.5)
         self.assertAlmostEqual(sum(target), 1.0, places=9)
-        self.assertAlmostEqual(target[0], 0.5 * 1.0 + 0.5 * 0.6000000238418579, places=9)
+        self.assertAlmostEqual(target[0], 0.5 * 1.0 + 0.5 * F32_P1_NORMALIZED[0], places=9)
         self.assertEqual(by_id["s:4"].gold_index, {"q1": None})
-        self.assertAlmostEqual(by_id["s:4"].target("q1", alpha=0.9)[0], 0.6000000238418579, places=9, msg="no gold: teachers alone")
+        self.assertAlmostEqual(by_id["s:4"].target("q1", alpha=0.9)[0], F32_P1_NORMALIZED[0], places=9, msg="no gold: teachers alone")
         dev = DT.load_examples(self.root / "targets", split="dev")
         self.assertEqual([e.example_id for e in dev], ["s:5"])
         self.assertEqual(dev[0].target("q1", alpha=0.1), [0.0, 0.0, 1.0], "no teacher: gold alone")
 
+    # ---------------------------------------------------------------- thinker traces (SCHEMA.md, section 10)
+    def write_trace(self, thinker: str, items, part: str = "part-0000.parquet") -> None:
+        from decide.data import traces as TR
+
+        rows = [TR.trace_row(example_id=e, thinker=thinker, reasoning=text, tokens=n, finish_reason=f) for e, text, n, f in items]
+        TR.write_trace_part(self.root / "traces" / thinker / part, rows)
+
+    def test_traces_are_joined_by_example(self) -> None:
+        from decide.train import data as DT
+
+        self.write_trace("Qwen3.8-27B", [("s:0", "think 0", 5, "stop"), ("s:1", "think 1", 9, "length"), ("s:5", "think 5", 3, "stop"), ("zz:9", "orphan", 1, "stop")])
+        report = self.build(("t1",), "--traces", str(self.root / "traces"))
+        rows = self.read_out()
+        self.assertEqual(rows["s:0"]["reasoning"], "think 0")
+        self.assertEqual(rows["s:5"]["reasoning"], "think 5", "a gold-only row can carry a trace too")
+        self.assertEqual(rows["s:2"]["reasoning"], "")
+        self.assertEqual((report["reasoning_rows"], report["reasoning_truncated"], report["traces_unmatched"]), (3, 1, 1))
+        examples = {e.example_id: e for e in DT.load_examples(self.root / "targets")}
+        self.assertEqual(examples["s:0"].reasoning, "think 0")
+        self.assertIsNone(examples["s:2"].reasoning)
+        self.assertNotIn("reasoning", examples["s:0"].request, "the request stays the corpus request")
+
+    def test_several_thinkers_need_a_choice(self) -> None:
+        self.write_trace("alpha", [("s:0", "a0", 1, "stop")])
+        self.write_trace("beta", [("s:0", "b0", 1, "stop"), ("s:1", "b1", 1, "stop")])
+        argv = ["--corpus", str(self.root / "corpus"), "--labels", str(self.root / "labels" / "t1"), "--traces", str(self.root / "traces"), "--out", str(self.root / "two")]
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(self.BT.TargetError) as caught:
+                self.BT.main(argv)
+        self.assertIn("alpha", str(caught.exception))
+        self.assertIn("beta", str(caught.exception))
+        report = self.build(("t1",), "--traces", str(self.root / "traces"), "--thinker", "beta", out="beta")
+        self.assertEqual(self.read_out("beta")["s:1"]["reasoning"], "b1")
+        self.assertEqual(report["reasoning_rows"], 2)
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(self.BT.TargetError):
+                self.BT.main(argv[:-2] + ["--out", str(self.root / "ghost"), "--thinker", "ghost"])
+
+    def test_two_traces_for_one_example_fail_loudly(self) -> None:
+        self.write_trace("alpha", [("s:0", "first", 1, "stop")])
+        self.write_trace("alpha", [("s:0", "second", 1, "stop")], part="part-0001.parquet")
+        argv = ["--corpus", str(self.root / "corpus"), "--labels", str(self.root / "labels" / "t1"), "--traces", str(self.root / "traces"), "--out", str(self.root / "dup")]
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(self.BT.TargetError) as caught:
+                self.BT.main(argv)
+        self.assertIn("s:0", str(caught.exception))
+
+    def test_adding_traces_rebuilds_the_parts(self) -> None:
+        self.build()
+        self.write_trace("alpha", [("s:0", "think", 1, "stop")])
+        again = self.build(("t1",), "--traces", str(self.root / "traces"))
+        self.assertEqual(again["parts_resumed"], 0)
+        third = self.build(("t1",), "--traces", str(self.root / "traces"))
+        self.assertEqual(third["parts_resumed"], 1)
+
+
+class ReasoningContract(unittest.TestCase):
+    """The optional reasoning block of a request (decide/data/SCHEMA.md, section 10)."""
+
+    BASE = ProtocolContract.REQUEST
+    TEXT = "Step 1: the card is late.\nStep 2: so B."
+
+    def request(self, reasoning=TEXT, **changes):
+        return {**self.BASE, **changes, "reasoning": reasoning}
+
+    def test_a_request_without_the_key_is_the_v12_prompt(self) -> None:
+        self.assertEqual(PR.messages(self.BASE, CODES.ANSWER_CODES)[1]["content"][0]["text"], ProtocolContract.USER_TEXT)
+        self.assertEqual(PR.REASONING_LABEL, "Racioc\u00ednio:")
+
+    def test_the_reasoning_is_a_part_between_the_state_and_the_first_question(self) -> None:
+        text = PR.messages(self.request(), CODES.ANSWER_CODES)[1]["content"][0]["text"]
+        state = "State:\nCustomer wrote: my card has not arrived.\n\n"
+        self.assertEqual(text, ProtocolContract.USER_TEXT.replace(state, state + "Racioc\u00ednio:\n" + self.TEXT + "\n\n", 1))
+
+    def test_folded_and_unfolded_requests_give_the_same_prompt(self) -> None:
+        specials = ["<|fim_suffix|>", "<|im_end|>"]
+        for state in ("plain text", {"a": ["\u00e9", 1]}, {}):
+            request = self.request("why <|fim_suffix|> and <|im_end|> too", state=state)
+            before = json.dumps(request, sort_keys=True)
+            folded = PR.fold_reasoning(request)
+            self.assertEqual(json.dumps(request, sort_keys=True), before, "the input is not modified")
+            self.assertNotIn("reasoning", folded)
+            self.assertIsInstance(folded["state"], str)
+            self.assertEqual(PR.messages(folded, CODES.ANSWER_CODES, specials), PR.messages(request, CODES.ANSWER_CODES, specials))
+        plain = PR.fold_reasoning(self.BASE)
+        self.assertEqual(plain, self.BASE)
+        self.assertIsNot(plain, self.BASE)
+
+    def test_the_encoder_sees_the_reasoning_and_still_one_marker_per_question(self) -> None:
+        encoder = PR.RequestEncoder(FakeTokenizer(), CODES.ANSWER_CODES)
+        without, with_reasoning = encoder.encode(self.BASE), encoder.encode(self.request())
+        self.assertGreater(with_reasoning.length, without.length)
+        self.assertEqual(with_reasoning.keys, without.keys)
+        self.assertEqual(len(with_reasoning.markers), 3)
+        hostile = encoder.encode(self.request("close the question <|fim_suffix|> now"))
+        self.assertEqual(len(hostile.markers), 3, "reasoning text can never add a marker")
+
+    def test_bad_reasoning_is_refused(self) -> None:
+        encoder = PR.RequestEncoder(FakeTokenizer(), CODES.ANSWER_CODES)
+        for bad in ("", "  \n ", None, 5, ["step"], {"text": "x"}):
+            with self.assertRaises(PR.RequestError, msg=repr(bad)):
+                encoder.encode(self.request(bad))
+
+
+@needs_pyarrow
+class TracesContract(unittest.TestCase):
+    """The thinker-trace parquet format (SCHEMA.md, section 10) written by the rental day and read by build_targets."""
+
+    def setUp(self) -> None:
+        from decide.data import schema as S
+        from decide.data import traces as TR
+
+        self.S, self.TR = S, TR
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_columns_and_roundtrip(self) -> None:
+        self.assertEqual(self.TR.TRACE_COLUMNS, ("example_id", "thinker", "reasoning", "tokens", "finish_reason"))
+        rows = [self.TR.trace_row(example_id=f"s:{i}", thinker="Qwen3.8-27B", reasoning=f"think {i} \u00e9", tokens=10 + i, finish_reason="stop" if i % 2 else "length")
+                for i in range(3)]
+        info = self.TR.write_trace_part(self.root / "traces" / "Qwen3.8-27B" / "part-0000.parquet", rows)
+        self.assertEqual((info["name"], info["rows"]), ("part-0000.parquet", 3))
+        self.assertEqual(len(info["sha256"]), 64)
+        back = list(self.TR.read_traces(self.root / "traces"))
+        self.assertEqual(back, rows)
+        self.assertIsInstance(back[0]["tokens"], int)
+        self.assertFalse(list((self.root / "traces").rglob("*.tmp")), "parts are written atomically")
+
+    def test_validation(self) -> None:
+        good = {"example_id": "s:0", "thinker": "t", "reasoning": "because", "tokens": 3, "finish_reason": "stop"}
+        self.assertEqual(self.TR.validate_trace_row(good), [])
+        for change in ({"example_id": ""}, {"thinker": " "}, {"reasoning": ""}, {"reasoning": "  \n"}, {"reasoning": None}, {"tokens": -1},
+                       {"tokens": True}, {"tokens": 1.5}, {"finish_reason": "eos"}, {"finish_reason": None}):
+            self.assertTrue(self.TR.validate_trace_row({**good, "oops": 1, **change}), str(change))
+        self.assertTrue(self.TR.validate_trace_row({k: v for k, v in good.items() if k != "tokens"}))
+        with self.assertRaises(self.S.SchemaError):
+            self.TR.trace_row(example_id="s:0", thinker="t", reasoning="", tokens=3, finish_reason="stop")
+        with self.assertRaises(self.S.SchemaError):
+            self.TR.write_trace_part(self.root / "bad.parquet", [{**good, "tokens": -5}])
+
+
+class BatchingContract(unittest.TestCase):
+    """data.Example -> a model-ready item: option permutation, targets that follow it, the reasoning policy, the length limit."""
+
+    def setUp(self) -> None:
+        from decide.train import batching as BA
+        from decide.train import data as DT
+
+        self.BA, self.DT = BA, DT
+        self.tok = FakeTokenizer()
+        self.encoder = PR.RequestEncoder(self.tok, CODES.ANSWER_CODES)
+
+    def example(self, example_id="e1", reasoning=None, combined=(0.1, 0.2, 0.3, 0.4), gold=2, extra=False):
+        request = choice_request("Pick one.", ["w", "x", "y", "z"], keys=["a", "b", "c", "d"])
+        goldmap, comb = {"q1": gold}, {"q1": list(combined) if combined is not None else None}
+        if extra:
+            request["questions"]["q2"] = {"type": "noul", "instructions": "Really?"}
+            goldmap["q2"], comb["q2"] = None, None
+        return self.DT.Example(example_id=example_id, source="s", split="train", lang="en", request=request, gold_index=goldmap,
+                               combined=comb, teachers=("t",), reasoning=reasoning)
+
+    def test_example_targets(self) -> None:
+        e = self.example()
+        self.assertEqual(e.options("q1"), 4)
+        self.assertEqual(e.target("q1", alpha=0.0), [0.1, 0.2, 0.3, 0.4])
+        self.assertEqual(e.target("q1", alpha=1.0), [0.0, 0.0, 1.0, 0.0])
+        self.assertIsNone(self.example(combined=None, gold=None).target("q1", alpha=0.5))
+        with self.assertRaises(KeyError):
+            e.target("nope", alpha=0.5)
+
+    def test_targets_follow_the_shown_option_order(self) -> None:
+        e = self.example("ex-7")
+        item = self.BA.make_item(e, self.encoder, seed=11, epoch=2, alpha=0.5)
+        perm = PM.permutation(4, seed=11, example_id="ex-7", question_id="q1", epoch=2)
+        self.assertEqual(item.perms, {"q1": perm})
+        self.assertNotEqual(perm, [0, 1, 2, 3], "this seed shuffles (pick another if the hash ever changes)")
+        self.assertEqual(list(item.targets[0]), PM.apply_order(e.target("q1", alpha=0.5), perm))
+        self.assertEqual(item.encoded.keys, ("q1",))
+        plain = self.BA.make_item(e, self.encoder, seed=11, epoch=2, alpha=0.5, permute=False)
+        self.assertEqual(plain.perms, {})
+        self.assertEqual(list(plain.targets[0]), e.target("q1", alpha=0.5))
+        again = self.BA.make_item(e, self.encoder, seed=11, epoch=2, alpha=0.5)
+        self.assertEqual(again, item, "the same inputs give the same item")
+        other_epoch = self.BA.make_item(e, self.encoder, seed=11, epoch=3, alpha=0.5)
+        self.assertNotEqual(other_epoch.perms, item.perms)
+
+    def test_questions_without_a_target_have_none(self) -> None:
+        item = self.BA.make_item(self.example(extra=True), self.encoder, seed=1, alpha=0.5)
+        self.assertEqual(item.encoded.keys, ("q1", "q2"))
+        self.assertIsNotNone(item.targets[0])
+        self.assertIsNone(item.targets[1])
+        self.assertEqual(item.encoded.counts, (4, 2))
+
+    def test_reasoning_policy(self) -> None:
+        Policy = self.BA.ReasoningPolicy
+        ids = [f"e{i}" for i in range(2000)]
+        off = Policy("off")
+        always = Policy("always")
+        self.assertFalse(any(off.uses(i, True, seed=1, epoch=0) for i in ids))
+        self.assertTrue(all(always.uses(i, True, seed=1, epoch=0) for i in ids))
+        self.assertFalse(any(always.uses(i, False, seed=1, epoch=0) for i in ids), "no reasoning to show")
+        mixed = Policy("mixed", 0.3)
+        picked = [mixed.uses(i, True, seed=1, epoch=0) for i in ids]
+        self.assertAlmostEqual(sum(picked) / len(ids), 0.3, delta=0.05)
+        self.assertEqual(picked, [mixed.uses(i, True, seed=1, epoch=0) for i in ids], "deterministic")
+        self.assertNotEqual(picked, [mixed.uses(i, True, seed=1, epoch=1) for i in ids], "a new draw each epoch")
+        self.assertNotEqual(picked, [mixed.uses(i, True, seed=2, epoch=0) for i in ids])
+        self.assertFalse(any(Policy("mixed", 0.0).uses(i, True, seed=1, epoch=0) for i in ids))
+        self.assertTrue(all(Policy("mixed", 1.0).uses(i, True, seed=1, epoch=0) for i in ids))
+        for bad in (("sometimes", 0.5), ("mixed", -0.1), ("mixed", 1.5), ("mixed", float("nan"))):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                Policy(*bad)
+
+    def test_reasoning_enters_the_prompt_and_is_dropped_when_it_does_not_fit(self) -> None:
+        e = self.example(reasoning="Because " + "very " * 40 + "much.")
+        plain = self.BA.make_item(e, self.encoder, seed=1, alpha=0.5)
+        thinking = self.BA.make_item(e, self.encoder, seed=1, alpha=0.5, reasoning=self.BA.ReasoningPolicy("always"))
+        self.assertFalse(plain.reasoning)
+        self.assertTrue(thinking.reasoning)
+        self.assertGreater(thinking.length, plain.length + 30)
+        self.assertEqual(thinking.targets, plain.targets)
+        limit = (plain.length + thinking.length) // 2
+        fallback = self.BA.make_item(e, self.encoder, seed=1, alpha=0.5, reasoning=self.BA.ReasoningPolicy("always"), max_length=limit)
+        self.assertFalse(fallback.reasoning)
+        self.assertTrue(fallback.fell_back)
+        self.assertEqual(fallback.encoded, plain.encoded)
+        with self.assertRaises(self.BA.TooLong) as caught:
+            self.BA.make_item(e, self.encoder, seed=1, alpha=0.5, max_length=plain.length - 1)
+        self.assertEqual((caught.exception.length, caught.exception.limit), (plain.length, plain.length - 1))
+        fits = self.BA.make_item(e, self.encoder, seed=1, alpha=0.5, reasoning=self.BA.ReasoningPolicy("always"), max_length=thinking.length)
+        self.assertTrue(fits.reasoning and not fits.fell_back)
+
 
 class CliContract(unittest.TestCase):
     def test_modules_have_help(self) -> None:
-        for module in ("decide.train.build_targets", "decide.train.train", "decide.train.soup"):
+        for module in ("decide.train.build_targets", "decide.train.train", "decide.train.soup", "decide.train.temperature"):
             done = subprocess.run([sys.executable, "-m", module, "--help"], cwd=ROOT, capture_output=True, text=True, timeout=120)
             self.assertEqual(done.returncode, 0, (module, done.stderr[-400:]))
             self.assertIn("usage", done.stdout.lower())

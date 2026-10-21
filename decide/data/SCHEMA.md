@@ -214,3 +214,73 @@ a triagem contra uma referência não lida deixaria tudo passar. O relatório (`
 contagens por motivo e por fonte, linhas lidas/puladas por referência e o sha256 das entradas.
 Limite conhecido: um trecho longo repetido nas **instruções** (não no estado) de mais de 20 pedidos de referência é tratado
 como modelo de texto.
+
+## 10. Bloco de raciocínio (opcional)
+
+Plano v2 ([ADR 0004](../../docs/adr/0004-pensar-sob-demanda.md)): um modelo pensador (Qwen3.8-27B com thinking) escreve
+um raciocínio e o decisor lê **estado + raciocínio**, ainda numa passada só. O bloco é opcional; sem ele, tudo funciona
+como antes.
+
+**No pedido.** Chave opcional de topo `reasoning`: uma string, não vazia depois de `strip`, com o texto do raciocínio sem
+as marcas `<think>` e `</think>`. Vale para o pedido inteiro (todas as perguntas), não para uma pergunta só.
+
+```json
+{"state": "…", "questions": {"q1": {"type": "choice", "criteria": {"A": "…", "B": "…"}}}, "reasoning": "O estado diz … logo B."}
+```
+
+**No prompt.** O raciocínio é uma parte nova, depois do estado e antes da primeira pergunta. As partes continuam
+separadas por uma linha em branco:
+
+```
+State:
+<estado>
+
+Raciocínio:
+<raciocínio>
+
+Question 0:
+…
+```
+
+O rótulo é exatamente `Raciocínio:` (com acento) e faz parte do contrato entre o treino e a inferência. O texto passa
+pela mesma neutralização de tokens especiais do estado. Um pedido sem `reasoning` gera o prompt do v1.2 sem mudar um byte.
+
+**Forma dobrada.** Para um motor que só conhece `state`, `decide.train.protocol.fold_reasoning(pedido)` devolve o mesmo
+pedido sem a chave e com o estado em texto: `describe(estado) + "\n\nRaciocínio:\n" + raciocínio`. As duas formas geram o
+mesmo prompt (teste em `tests/test_contract_69.py`). O corpus (seção 3) nunca guarda `reasoning` no `request`: o
+raciocínio fica nos traços abaixo e entra no pedido só na hora do treino ou da decisão.
+
+**Traços do pensador (parquet).** O passo "gerar traços do pensador" do dia alugado grava uma pasta de partes
+`traces/<pensador>/part-NNNN.parquet` (mais `manifest.json`, como na seção 1). Uma linha por exemplo e por pensador:
+
+| coluna | tipo | conteúdo |
+|---|---|---|
+| `example_id` | string | o do corpus |
+| `thinker` | string | nome estável do pensador (ex.: `Qwen3.8-27B`) |
+| `reasoning` | string | texto do raciocínio, não vazio; quem gera não grava linha sem raciocínio |
+| `tokens` | int32 | tokens de pensamento gerados (≥ 0) |
+| `finish_reason` | string | `stop` (fechou o pensamento dentro do orçamento) ou `length` (o orçamento cortou) |
+
+Um raciocínio cortado (`length`) é mantido: na hora de decidir ele é cortado pelo mesmo orçamento.
+`decide.data.traces` valida, escreve e lê esse formato; `decide.train.build_targets --traces` junta pelo `example_id`.
+
+## 11. Dataset de alvos (saída de `decide.train.build_targets`)
+
+É a única entrada de dados do treino. Pasta de partes `*.parquet` (uma por parte do corpus, mesmo nome), mais
+`manifest.json` (por parte: linhas, sha256 e impressão digital das entradas, para retomar) e `report.json` (contagens).
+
+| coluna | tipo | conteúdo |
+|---|---|---|
+| `example_id` | string | o do corpus |
+| `source` | string | a do corpus |
+| `split` | string | `train` ou `dev` |
+| `lang` | string | o do corpus |
+| `request` | string | JSON canônico do pedido (seção 2), sem `reasoning` |
+| `gold` | string | JSON `{question_id: chave de opção ou null}`, como no corpus |
+| `combined` | string | JSON `{question_id: [prob, …] ou null}`: a distribuição dos professores já combinada (seção 5), normalizada, na ordem original das opções; `null` = nenhum professor rotulou a pergunta |
+| `teachers` | string | JSON lista dos professores que entraram no exemplo |
+| `reasoning` | string | texto do raciocínio (seção 10) ou `""` |
+
+Uma linha só sai se alguma pergunta tem alvo (ouro ou professores). Uma pergunta sem alvo dentro de uma linha que sai
+fica com peso 0 no treino. Política de professor faltando (`--missing`): `drop` (padrão: a pergunta fica só com o ouro),
+`renormalize` (combina os que existem) ou `error`.

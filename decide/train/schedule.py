@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 from .permute import permutation
 
@@ -58,13 +58,20 @@ class StepPlan:
     def total_steps(self) -> int:
         return self.per_epoch * self.epochs
 
-    def batch_indices(self, step: int, *, seed: int) -> List[int]:
-        """Row indices of the 0-based ``step``; the last batch of an epoch is the remainder."""
+    def batch_indices(self, step: int, *, seed: int, order: Optional[Sequence[int]] = None) -> List[int]:
+        """Row indices of the 0-based ``step``; the last batch of an epoch is the remainder.
+
+        ``order`` is the ``epoch_order`` of the step's epoch, when the caller already has it (computing it costs one
+        hash per row, so a training loop keeps it for the whole epoch).
+        """
         if not 0 <= step < self.total_steps:
             raise IndexError(f"step {step} outside 0..{self.total_steps - 1}")
         epoch, within = divmod(step, self.per_epoch)
-        order = epoch_order(self.rows, seed=seed, epoch=epoch)
-        return order[within * self.effective_batch:(within + 1) * self.effective_batch]
+        if order is None:
+            order = epoch_order(self.rows, seed=seed, epoch=epoch)
+        elif len(order) != self.rows:
+            raise ValueError("order must list every row once")
+        return list(order[within * self.effective_batch:(within + 1) * self.effective_batch])
 
 
 def plan_steps(*, rows: int, effective_batch: int, epochs: int) -> StepPlan:

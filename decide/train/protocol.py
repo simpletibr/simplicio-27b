@@ -7,9 +7,13 @@ validated against decide/data/SCHEMA.md; the splitting of over-length requests i
 
 One sequence per request holds the state and every question.  Each question is followed by its options and a
 ``<|fim_suffix|>`` marker; the readout head is applied to the hidden state at each marker.
+
+Addition of this repository (not in v1.2): an optional ``reasoning`` string in the request becomes a
+part headed ``Raciocínio:`` between the state and the first question.  Without it the prompt is the v1.2 one.
 """
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
@@ -32,6 +36,8 @@ SYSTEM_PROMPT = (
     "Each readout selects the answer code for the question immediately preceding it."
 )
 DEFAULT_INSTRUCTIONS = "Choose the best matching option."
+#: Label of the optional reasoning block (decide/data/SCHEMA.md, section 10).  Part of the train/inference contract.
+REASONING_LABEL = "Racioc\u00ednio:"
 QUESTION_TYPES = ("choice", "noul", "score")
 
 
@@ -58,6 +64,8 @@ def options(question: Mapping[str, Any]) -> Tuple[List[str], List[Any]]:
 def validate(request: Any, codes: Sequence[str]) -> None:
     if not isinstance(request, dict) or "state" not in request or "questions" not in request:
         raise RequestError("A request needs 'state' and 'questions'")
+    if "reasoning" in request and (not isinstance(request["reasoning"], str) or not request["reasoning"].strip()):
+        raise RequestError("'reasoning' must be a non-empty string")
     questions = request["questions"]
     if not isinstance(questions, dict) or not questions:
         raise RequestError("A request needs at least one question")
@@ -90,6 +98,8 @@ def messages(request: Mapping[str, Any], codes: Sequence[str], special_tokens: S
     """Chat messages of a request (system prompt + one user turn holding the state and every question)."""
     escapes = sorted(set(special_tokens), key=len, reverse=True)
     parts = ["State:\n" + _neutralize(describe(request["state"]), escapes)]
+    if request.get("reasoning") is not None:
+        parts.append(f"{REASONING_LABEL}\n" + _neutralize(describe(request["reasoning"]), escapes))
     for index, question in enumerate(request["questions"].values()):
         _, descriptions = options(question)
         instructions = question.get("instructions") or DEFAULT_INSTRUCTIONS
@@ -97,6 +107,20 @@ def messages(request: Mapping[str, Any], codes: Sequence[str], special_tokens: S
         parts.append(f"Question {index}:\n{_neutralize(describe(instructions), escapes)}\nOptions:\n{lines}\n{MARKER}")
     return [{"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": [{"type": "text", "text": "\n\n".join(parts)}]}]
+
+
+def fold_reasoning(request: Mapping[str, Any]) -> Dict[str, Any]:
+    """A copy of the request without the ``reasoning`` key and with the reasoning appended to the state text.
+
+    For engines that only know ``state``: the prompt is the same as the one ``messages`` builds from the original.
+    """
+    folded = copy.deepcopy(dict(request))
+    reasoning = folded.pop("reasoning", None)
+    if reasoning is not None:
+        if not isinstance(reasoning, str) or not reasoning.strip():
+            raise RequestError("'reasoning' must be a non-empty string")
+        folded["state"] = describe(folded["state"]) + "\n\n" + REASONING_LABEL + "\n" + reasoning
+    return folded
 
 
 @dataclass(frozen=True)
