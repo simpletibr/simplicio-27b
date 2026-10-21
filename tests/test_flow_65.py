@@ -1058,6 +1058,20 @@ class LoaderFlow(HermeticTestCase):
         self.assert_state(d, self.expected(lora=0.1))
         self.assertEqual(self.hub.requested, set())
 
+    def test_a_donor_or_an_adapter_that_is_the_same_folder_under_another_spelling_is_refused_before_anything_is_read(self):
+        x, link = self.folder_of("org/anchor"), Path(tempfile.mkdtemp(prefix="sd-link-")) / "latest"
+        self.addCleanup(__import__("shutil").rmtree, link.parent, True)
+        link.symlink_to(x)
+        y = self.folder_of("org/donor")
+        opts = self.L.LoadOptions(quant="none", compute_dtype="float32", workers=2)
+        for name, spelling in {"a trailing slash": f"dir:{x}/", "a dot-dot": f"dir:{x}/../{x.name}", "a link": f"dir:{link}"}.items():
+            with self.subTest(f"donor is the anchor: {name}"), self.assertRaisesRegex(self.L.LoaderError, "is the anchor"):
+                self.L.load_decider({"anchor": f"dir:{x}", "donors": [{"repo": spelling, "weight": 0.5}], "method": "task_arithmetic"}, opts,
+                                    processor_factory=self.tm.processor_factory)
+            with self.subTest(f"donor is the LoRA: {name}"), self.assertRaisesRegex(self.L.LoaderError, "both a donor and the LoRA"):
+                self.L.load_decider({"anchor": f"dir:{y}", "donors": [{"repo": f"dir:{x}", "weight": 0.5}], "lora": {"repo": spelling, "weight": 0.1},
+                                     "method": "task_arithmetic"}, opts, processor_factory=self.tm.processor_factory)
+
     def test_a_folder_that_is_a_hub_checkpoint_with_a_pin_beside_it_still_needs_the_pin(self):
         spec = {**self.spec(), "donors": [{"repo": "org/donor", "weight": 0.5}], "anchor": f"dir:{self.folder_of('org/anchor')}", "anchor_revision": None}
         with self.assertRaisesRegex(remote.RemoteError, "revision"):

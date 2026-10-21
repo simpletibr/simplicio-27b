@@ -72,6 +72,42 @@ class NormalizeSpecContract(HermeticTestCase):
             with self.subTest(name), self.assertRaisesRegex(api.ApiError, "no revision"):
                 api.normalize_spec(bad)
 
+    def folders(self):
+        """A real folder `x`, a link `latest` to it, another folder `y`, and the root they sit in."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name).resolve()
+        for name in ("x", "y"):
+            (root / name).mkdir()
+        (root / "latest").symlink_to(root / "x")
+        return root
+
+    def spellings_of_x(self, root):
+        return {"a trailing slash": f"dir:{root}/x/", "a dot and a dot-dot": f"dir:{root}/./x/../x", "a double slash": f"dir:{root}//x",
+                "a link to it": f"dir:{root}/latest", "a link and a slash": f"dir:{root}/latest/"}
+
+    def test_two_spellings_of_one_folder_are_one_repo_and_the_checks_for_duplicates_see_it(self):
+        """A donor that is the anchor gives a merge that is the anchor (difference 0.0): for a folder the file system reads every spelling alike."""
+        root = self.folders()
+        for name, spelling in self.spellings_of_x(root).items():
+            with self.subTest(f"donor is the anchor: {name}"), self.assertRaisesRegex(api.ApiError, "is the anchor"):
+                api.normalize_spec({"anchor": f"dir:{root}/x", "donors": [{"repo": spelling, "weight": 0.5}]})
+            with self.subTest(f"donor is the LoRA: {name}"), self.assertRaisesRegex(api.ApiError, "both a donor and the LoRA"):
+                api.normalize_spec({"anchor": f"dir:{root}/y", "donors": [{"repo": f"dir:{root}/x", "weight": 0.5}],
+                                    "lora": {"repo": spelling, "weight": 0.1}})
+            with self.subTest(f"the same donor twice: {name}"), self.assertRaisesRegex(api.ApiError, "listed twice"):
+                api.normalize_spec({"anchor": f"dir:{root}/y", "donors": [{"repo": f"dir:{root}/x", "weight": 0.5}, {"repo": spelling, "weight": 0.5}]})
+        spec = api.normalize_spec({"anchor": f"dir:{root}/x", "donors": [{"repo": f"dir:{root}/y", "weight": 0.5}], "lora": {"repo": f"dir:{root}/other", "weight": 0.1}})
+        self.assertEqual(len(spec["donors"]), 1)                                     # two different folders are two repos
+        api.normalize_spec({"anchor": f"dir:{root}/y", "donors": [{"repo": f"dir:{root}/x", "weight": 0.5}], "lora": {"repo": f"dir:{root}/other", "weight": 0.1}})
+
+    def test_the_case_of_a_folder_counts_and_the_case_of_a_hub_id_does_not(self):
+        from decide.sd import remote
+
+        self.assertNotEqual(remote.repo_key("dir:/models/A"), remote.repo_key("dir:/models/a"))
+        self.assertEqual(remote.repo_key("Org/Repo"), remote.repo_key("org/repo"))
+        self.assertNotEqual(remote.repo_key("dir:/models/org/repo"), remote.repo_key("org/repo"))
+
     def test_a_folder_named_without_a_path_is_refused(self):
         for bad in ("dir:", "dir:   "):
             with self.subTest(bad), self.assertRaises(api.ApiError):

@@ -208,6 +208,36 @@ class ConfigContract(HermeticTestCase):
             with self.subTest(f"a Hub repo without a commit: {entry}"), self.assertRaisesRegex(C.ConfigError, "revision"):
                 C.validate(r)
 
+    def test_two_spellings_of_one_folder_are_one_model_for_the_duplicate_checks(self):
+        import tempfile
+        from pathlib import Path
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name).resolve()
+        (root / "x").mkdir()
+        (root / "y").mkdir()
+        (root / "latest").symlink_to(root / "x")
+        spellings = {"a trailing slash": f"dir:{root}/x/", "a dot and a dot-dot": f"dir:{root}/./x/../x", "a link to it": f"dir:{root}/latest"}
+        for name, spelling in spellings.items():
+            r = self.raw()
+            r["models"]["anchor"] = {"name": "novo", "repo": f"dir:{root}/x"}
+            r["models"]["donors"] = [{"name": "dup", "repo": spelling, "weight": 0.5, "enabled": True}]
+            with self.subTest(f"donor is the anchor: {name}"), self.assertRaisesRegex(C.ConfigError, "is the anchor"):
+                C.validate(r)
+            r = self.raw()
+            r["models"]["anchor"] = {"name": "novo", "repo": f"dir:{root}/y"}
+            r["models"]["donors"] = [{"name": "dup", "repo": f"dir:{root}/x", "weight": 0.5, "enabled": True}]
+            r["models"]["lora"] = {"repo": spelling, "weight": 0.1, "enabled": True}
+            r["models"]["lora"].pop("weight_grid", None)
+            with self.subTest(f"donor is the LoRA: {name}"), self.assertRaisesRegex(C.ConfigError, "both a donor and the LoRA"):
+                C.validate(r)
+        r = self.raw()                                                                  # two different folders pass
+        r["models"]["anchor"] = {"name": "novo", "repo": f"dir:{root}/y"}
+        r["models"]["donors"] = [{"name": "d", "repo": f"dir:{root}/x", "weight": 0.5, "enabled": True}]
+        r["models"]["lora"] = {"repo": "dir:" + str(root / "other"), "weight": 0.1, "enabled": True}
+        C.validate(r)
+
     def test_the_groupings_the_config_accepts_are_the_ones_calibration_fits(self):
         from decide.sd import calibrate
 

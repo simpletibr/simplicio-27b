@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import yaml
 
-from decide.sd.remote import endpoint_problem, is_local
+from decide.sd.remote import endpoint_problem, is_local, repo_key
 
 DEFAULT_PATH = Path(__file__).resolve().parents[1] / "config.yaml"
 OVERLAY_GLOB = "config.*.yaml"          # decide/config.data.yaml, decide/config.rental.yaml, ... (Squad B)
@@ -207,12 +207,12 @@ def validate(raw: Mapping, foreign: Iterable[str] = ()) -> None:
     names = [x["name"] for x in donors]
     need(len(names) == len(set(names)), "duplicate donor names")
     need(all(_number(x.get("weight", 0)) and x.get("weight", 0) >= 0 for x in donors), "donor weights must be numbers >= 0")
-    lora_repo = str((raw["models"].get("lora") or {}).get("repo", "")).lower() if (raw["models"].get("lora") or {}).get("enabled", True) else ""
-    anchor_repo = str(raw["models"].get("anchor", {}).get("repo", "")).lower()
-    for d in donors:
-        need(not (d.get("enabled", True) and lora_repo and str(d.get("repo", "")).lower() == lora_repo),
+    lora_repo = str((raw["models"].get("lora") or {}).get("repo", "")) if (raw["models"].get("lora") or {}).get("enabled", True) else ""
+    anchor_repo = str(raw["models"].get("anchor", {}).get("repo", ""))
+    for d in donors:                                                       # repo_key: a Hub id by its lowercase, a folder (dir:PATH) by its real path
+        need(not (d.get("enabled", True) and lora_repo and repo_key(d.get("repo", "")) == repo_key(lora_repo)),
              f"donor {d.get('name')!r} is both a donor and the LoRA ({lora_repo}): its delta would be counted twice")
-        need(not (d.get("enabled", True) and str(d.get("repo", "")).lower() == anchor_repo),
+        need(not (d.get("enabled", True) and repo_key(d.get("repo", "")) == repo_key(anchor_repo)),
              f"donor {d.get('name')!r} is the anchor ({anchor_repo}): its task vector is zero, so the 'merge' would be the anchor")
         tag = f"{d.get('name', '')} {d.get('repo', '')}".lower()
         need(not (d.get("enabled", True) and any(f in tag for f in FORBIDDEN_DONORS)),

@@ -9,6 +9,7 @@ truncated body is resumed from the byte where it stopped.
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import struct
@@ -568,6 +569,18 @@ def is_local(repo_id: Any) -> bool:
 def local_path(repo_id: str) -> Path:
     """The folder `dir:PATH` names (`~` expanded; not resolved, not checked)."""
     return Path(repo_id[len(LOCAL_PREFIX):].strip()).expanduser()
+
+
+def repo_key(repo_id: Any) -> str:
+    """What two repo ids must agree on to be one repo.
+
+    A Hub id is case-insensitive, and the Hub refuses the other spellings (a trailing slash, `.git`, a URL).  A folder has no such referee: the
+    file system reads `x`, `x/`, `./x/../x` and a link to `x` as the same directory, so its key is the real path, and the case counts (on Linux
+    `A` and `a` are two folders).  A donor that is the anchor gives a merge that is the anchor, and a donor that is the adapter counts its delta twice.
+    """
+    if is_local(repo_id):
+        return LOCAL_PREFIX + os.path.realpath(local_path(repo_id))
+    return str(repo_id).lower()
 
 
 class HubRepo:

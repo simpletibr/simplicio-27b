@@ -115,18 +115,18 @@ def normalize_spec(spec: Any, cfg: Optional[Mapping[str, Any]] = None) -> Dict[s
     for raw in donors_in:
         part = _checked_part(raw, "donor", True)
         repo = _repo(raw.get("repo"), "donor.repo")
-        if repo in seen:
+        if remote.repo_key(repo) in seen:
             raise ApiError(f"donor {repo} is listed twice")
-        seen.add(repo)
+        seen.add(remote.repo_key(repo))
         if part is not None:
             donors.append(part)
     lora = None
     if spec.get("lora"):
         lora = _checked_part(spec["lora"], "lora", False)
     for part in donors:
-        if lora is not None and part["repo"].lower() == lora["repo"].lower():
+        if lora is not None and remote.repo_key(part["repo"]) == remote.repo_key(lora["repo"]):
             raise ApiError(f"{part['repo']} is both a donor and the LoRA: its delta would be counted twice")
-        if part["repo"].lower() == anchor.lower():
+        if remote.repo_key(part["repo"]) == remote.repo_key(anchor):
             raise ApiError(f"donor {part['repo']} is the anchor: its task vector is zero, so the 'merge' would be the anchor")
     method = spec.get("method")
     if method is not None and method not in (*C.METHODS, "anchor"):

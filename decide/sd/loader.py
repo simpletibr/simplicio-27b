@@ -26,7 +26,7 @@ from decide.sd import merge as M
 from decide.sd import nf4
 from decide.sd.config import PROTOCOLS
 from decide.sd.engine import AssembledDecider
-from decide.sd.remote import HubRepo, RemoteError, is_local, local_path
+from decide.sd.remote import HubRepo, RemoteError, is_local, local_path, repo_key
 from decide.sd.vendor.pplx_decider.model import enable_noncausal_full_attention
 from decide.sd.vendor.pplx_decider.protocol import PROTOCOL
 
@@ -300,9 +300,9 @@ def load_decider(spec: Mapping[str, Any], options: Optional[LoadOptions] = None,
     weights = [float(d["weight"]) for d in spec.get("donors", [])]
     lora_spec = spec.get("lora")
     for d in spec.get("donors", []):
-        if lora_spec and d["repo"].lower() == lora_spec["repo"].lower():
+        if lora_spec and repo_key(d["repo"]) == repo_key(lora_spec["repo"]):
             raise LoaderError(f"{d['repo']} is both a donor and the LoRA: its delta would be counted twice")
-        if d["repo"].lower() == spec["anchor"].lower():
+        if repo_key(d["repo"]) == repo_key(spec["anchor"]):
             raise LoaderError(f"donor {d['repo']} is the anchor: its task vector is zero, so the 'merge' would be the anchor")
     lora = LoraAdapter(make_repo(lora_spec["repo"], lora_spec.get("revision")), lora_spec["weight"]) if lora_spec and float(lora_spec["weight"]) else None
     method = spec.get("method") or ("task_arithmetic" if donors else "anchor")
