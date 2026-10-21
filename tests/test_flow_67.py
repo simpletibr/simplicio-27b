@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -74,6 +75,12 @@ def make_raw(root: Path, n_mcq: int = 60, n_cls: int = 30, n_held: int = 25) -> 
     (root / "toy_cls.features.json").write_text(json.dumps({"label": {"names": ["esporte", "politica", "ciencia"], "_type": "ClassLabel"}}), encoding="utf-8")
     write_jsonl(root / "toy_review.jsonl", [{"question": f"Revisao {i} {lorem(2000 + i, 10)}", "choices": ["a1", "b2"], "answer": 0} for i in range(10)])
     write_jsonl(root / "toy_held.jsonl", [{"text": f"{lorem(3000 + i, 20)}", "label": i % 2} for i in range(n_held)])
+
+
+def seal(directory: Path) -> None:
+    """Write the manifest.json that build_corpus and decontaminate write: every part of the directory, with its sha256."""
+    parts = [{"name": f.name, "rows": sum(1 for _ in S.read_corpus(f)), "sha256": S.sha256_file(f)} for f in sorted(directory.glob("*.parquet"))]
+    S.write_manifest(directory / "manifest.json", {"schema_version": S.SCHEMA_VERSION, "kind": "corpus", "parts": parts})
 
 
 @needs_yaml
@@ -164,6 +171,59 @@ class BuildFlow(unittest.TestCase):
         self.assertGreater(len(loop_rows), 8)
         self.assertEqual({r["license"] for r in loop_rows}, {"owner"})
 
+    def clean_run(self, corpus: Path, out: Path) -> dict:
+        suite = write_jsonl(self.root / "suite" / "selected-rows.jsonl.gz", [kit_row("S:1", choice_request(instructions="Nothing in the fixtures looks like this", options=["x", "y"]))])
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = D.main(["--corpus", str(corpus), "--out", str(out), "--reference", str(suite.parent)])
+        self.assertEqual(rc, 0)
+        return json.loads((out / "decontamination.json").read_text(encoding="utf-8"))
+
+    def test_rebuilding_without_review_in_the_same_directory_drops_the_review_parts(self) -> None:
+        # review probe 1: --include-review, then the same --out without it
+        out = self.root / "corpus"
+        self.run_build("--include-review")
+        self.assertTrue(list(out.glob("toy_review-*.parquet")))
+        manifest = self.run_build()
+        self.assertEqual(sorted(manifest["sources"]), ["toy_cls", "toy_mcq"])
+        self.assertEqual({r["source"] for r in S.read_corpus(out)}, {"toy_cls", "toy_mcq"})
+        self.assertEqual(sorted(p.name for p in out.glob("*.parquet")), sorted(p["name"] for p in manifest["parts"]))
+        self.assertFalse(list(out.glob("toy_review*")), "parts and markers of a source that left the build are removed")
+        self.assertTrue(any(n.startswith("toy_review-") for n in manifest["removed_stale"]))
+        self.clean_run(out, self.root / "clean")
+        self.assertEqual({r["source"] for r in S.read_corpus(self.root / "clean")}, {"toy_cls", "toy_mcq"})
+
+    def test_shrinking_the_cap_removes_the_old_shards(self) -> None:
+        # review probe 2: 4 shards of 10 rows, then 2 shards after the cap was halved
+        out = self.root / "corpus"
+        self.assertEqual(self.run_build("--shard-rows", "10")["sources"]["toy_mcq"]["rows"], 40)
+        self.assertEqual(len(list(out.glob("toy_mcq-*.parquet"))), 4)
+        manifest = self.run_build("--shard-rows", "10", "--scale", "0.5")
+        self.assertEqual(manifest["sources"]["toy_mcq"]["rows"], 20)
+        self.assertEqual(sorted(p.name for p in out.glob("toy_mcq-*.parquet")), ["toy_mcq-0000.parquet", "toy_mcq-0001.parquet"])
+        self.assertEqual(sum(1 for r in S.read_corpus(out) if r["source"] == "toy_mcq"), 20)
+        self.assertEqual(self.clean_run(out, self.root / "clean")["rows_in"], manifest["rows"])
+
+    def test_a_stale_part_dropped_into_the_directory_is_ignored(self) -> None:
+        self.run_build("--include-review", out="with-review")
+        out = self.root / "corpus"
+        self.run_build()
+        shutil.copy(self.root / "with-review" / "toy_review-0000.parquet", out / "toy_review-0000.parquet")
+        self.assertEqual({r["source"] for r in S.read_corpus(out)}, {"toy_cls", "toy_mcq"})
+        self.clean_run(out, self.root / "clean")
+        self.assertEqual({r["source"] for r in S.read_corpus(self.root / "clean")}, {"toy_cls", "toy_mcq"})
+
+    def test_a_failed_build_leaves_no_manifest_behind(self) -> None:
+        out = self.root / "corpus"
+        self.run_build()
+        self.assertTrue((out / "manifest.json").exists())
+        write_jsonl(self.raw / "toy_mcq.jsonl", [{"id": "same", "question": f"Pergunta {i}: {lorem(i, 12)}", "choices": ["a", "b", "c"], "answer": i % 3}
+                                                 for i in range(60)])
+        with self.assertRaises(Exception):
+            self.run_build("--scale", "0.5")
+        self.assertFalse((out / "manifest.json").exists(), "the manifest of the previous build no longer describes the directory")
+        with self.assertRaises(S.ManifestError):
+            self.clean_run(out, self.root / "clean")
+
     def test_inspect_prints_conversion(self) -> None:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -227,6 +287,7 @@ class DecontaminationFlow(unittest.TestCase):
         (self.root / "corpus").mkdir()
         S.write_corpus_part(self.root / "corpus" / "toy-0000.parquet", rows[:3])
         S.write_corpus_part(self.root / "corpus" / "toy-0001.parquet", rows[3:])
+        seal(self.root / "corpus")
 
     def run_decon(self, *extra: str) -> dict:
         with contextlib.redirect_stdout(io.StringIO()):
@@ -259,6 +320,48 @@ class DecontaminationFlow(unittest.TestCase):
         self.assertEqual(third["parts_resumed"], 0, "a new reference changes the fingerprint")
         self.assertNotIn("clean:1", {r["example_id"] for r in S.read_corpus(self.root / "clean")}, "clean:1 matches the new reference")
 
+    def stale_row(self):
+        return S.corpus_row(example_id="stale:1", source="toy_review", license="cc-by-sa-4.0", split="train", lang="en",
+                            request=choice_request(instructions="A stale review row", options=["p", "q"], state=lorem(9, 30)), gold={"q1": "A"})
+
+    def test_a_directory_without_manifest_is_refused(self) -> None:
+        (self.root / "corpus" / "manifest.json").unlink()
+        with self.assertRaises(S.ManifestError):
+            self.run_decon()
+        self.assertFalse((self.root / "clean" / "manifest.json").exists())
+
+    def test_stale_parts_next_to_the_manifest_are_neither_screened_nor_kept(self) -> None:
+        S.write_corpus_part(self.root / "corpus" / "stale-0000.parquet", [self.stale_row()])
+        report = self.run_decon()
+        self.assertEqual(report["rows_in"], 6)
+        self.assertNotIn("stale:1", {r["example_id"] for r in S.read_corpus(self.root / "clean")})
+        self.assertFalse(list((self.root / "clean").glob("stale-*")))
+
+    def test_a_part_that_changed_after_the_manifest_is_refused(self) -> None:
+        other = S.write_corpus_part(self.root / "other.parquet", [self.stale_row()])
+        shutil.copy(self.root / "other.parquet", self.root / "corpus" / "toy-0001.parquet")
+        self.assertNotEqual(other["sha256"], S.sha256_file(self.root / "corpus" / "toy-0000.parquet"))
+        with self.assertRaises(S.ManifestError):
+            self.run_decon()
+
+    def test_outputs_of_parts_that_left_the_corpus_are_removed(self) -> None:
+        self.run_decon()
+        clean = self.root / "clean"
+        self.assertTrue((clean / "toy-0001.parquet.done.json").exists())
+        (self.root / "corpus" / "toy-0001.parquet").unlink()
+        seal(self.root / "corpus")
+        report = self.run_decon()
+        self.assertEqual(report["rows_in"], 3)
+        self.assertEqual(sorted(p.name for p in clean.glob("toy-0001*")), [])
+        manifest = json.loads((clean / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual([p["name"] for p in manifest["parts"]], ["toy-0000.parquet"])
+        self.assertEqual({r["example_id"] for r in S.read_corpus(clean)}, {"clean:1", "clean:2"})
+
+    def test_it_never_writes_into_its_own_input(self) -> None:
+        with self.assertRaises(ValueError):
+            D.decontaminate_corpus(self.root / "corpus", self.root / "corpus", D.build_index([self.root / "suite"]))
+        self.assertEqual(len(list((self.root / "corpus").glob("*.parquet"))), 2)
+
     def test_proxy_can_be_a_reference_too(self) -> None:
         proxy = [S.corpus_row(example_id="p:1", source="held", license="mit", split="dev", lang="en",
                               request=choice_request(instructions="Held out question", options=["a", "b"], state=lorem(1, 30)), gold={"q1": "A"})]
@@ -271,6 +374,7 @@ class DecontaminationFlow(unittest.TestCase):
     def test_invalid_rows_are_rejected_not_crashed(self) -> None:
         bad = dict(S.corpus_row(example_id="bad:1", source="toy", license="mit", split="train", lang="en", request=choice_request(), gold={"q1": "A"}), gold='{"q1": "Z"}')
         S.write_corpus_part(self.root / "corpus" / "toy-0002.parquet", [bad])
+        seal(self.root / "corpus")
         report = self.run_decon()
         self.assertEqual(report["reasons"].get("schema"), 1)
 

@@ -123,6 +123,101 @@ class SchemaContract(unittest.TestCase):
             self.assertEqual(list(S.read_teacher(root / "t.parquet"))[0]["codes"], ["A", "B", "C"])
 
 
+@needs_pyarrow
+class ManifestReadingContract(unittest.TestCase):
+    """A directory with a manifest.json is read through it: only the parts it lists, each checked against its sha256.
+
+    Found by the review of PR #74: readers globbed the directory, so a stale part (an old build that had
+    `--include-review`, or shards left behind by a smaller cap) went on training although the manifest did not list it."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def part(self, name: str, tag: str, n: int = 2) -> dict:
+        rows = [S.corpus_row(example_id=f"{tag}:{i}", source=tag, license="mit", split="train", lang="en",
+                             request=choice_request(instructions=f"{tag} question {i}"), gold={"q1": "A"}) for i in range(n)]
+        return S.write_corpus_part(self.root / name, rows)
+
+    def seal(self, *infos: dict, **extra) -> None:
+        S.write_manifest(self.root / "manifest.json", {"schema_version": S.SCHEMA_VERSION, "kind": "corpus", "parts": list(infos), **extra})
+
+    def sources(self) -> set:
+        return {r["source"] for r in S.read_corpus(self.root)}
+
+    def test_only_the_listed_parts_are_read(self) -> None:
+        listed = self.part("good-0000.parquet", "good")
+        self.part("stale-0000.parquet", "stale")
+        self.seal(listed)
+        self.assertEqual([f.name for f in S.corpus_files(self.root)], ["good-0000.parquet"])
+        self.assertEqual(self.sources(), {"good"})
+
+    def test_a_listed_part_whose_bytes_changed_is_refused(self) -> None:
+        listed = self.part("good-0000.parquet", "good")
+        self.seal(listed)
+        self.part("good-0000.parquet", "other")           # same name, other content
+        with self.assertRaises(S.ManifestError) as caught:
+            list(S.read_corpus(self.root))
+        self.assertIn("sha256", str(caught.exception))
+
+    def test_a_listed_part_that_is_missing_is_refused(self) -> None:
+        listed = self.part("good-0000.parquet", "good")
+        self.seal(listed)
+        (self.root / "good-0000.parquet").unlink()
+        with self.assertRaises(S.ManifestError):
+            S.corpus_files(self.root)
+
+    def test_manifest_entries_cannot_leave_the_directory(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        info = S.write_corpus_part(outside / "x.parquet", [])
+        inner = self.root / "inner"
+        inner.mkdir()
+        S.write_manifest(inner / "manifest.json", {"kind": "corpus", "parts": [dict(info, name="../outside/x.parquet")]})
+        with self.assertRaises(S.ManifestError):
+            S.corpus_files(inner)
+        S.write_manifest(inner / "manifest.json", {"kind": "corpus", "parts": [dict(info, name=str(outside / "x.parquet"))]})
+        with self.assertRaises(S.ManifestError):
+            S.corpus_files(inner)
+
+    def test_an_entry_without_sha256_is_refused(self) -> None:
+        listed = self.part("good-0000.parquet", "good")
+        self.seal({k: v for k, v in listed.items() if k != "sha256"})
+        with self.assertRaises(S.ManifestError):
+            S.corpus_files(self.root)
+
+    def test_a_directory_without_manifest_is_globbed_unless_a_manifest_is_required(self) -> None:
+        self.part("a-0000.parquet", "a")
+        self.part("b-0000.parquet", "b")
+        self.assertEqual([f.name for f in S.corpus_files(self.root)], ["a-0000.parquet", "b-0000.parquet"])
+        with self.assertRaises(S.ManifestError) as caught:
+            S.corpus_files(self.root, require_manifest=True)
+        self.assertIn("manifest.json", str(caught.exception))
+
+    def test_an_empty_part_list_is_an_empty_dataset(self) -> None:
+        self.part("stale-0000.parquet", "stale")
+        self.seal()
+        self.assertEqual(S.corpus_files(self.root), [])
+        self.assertEqual(list(S.read_corpus(self.root)), [])
+
+    def test_a_single_file_entry_is_a_listed_part(self) -> None:
+        info = self.part("proxy.parquet", "p")
+        self.part("stale-0000.parquet", "stale")
+        S.write_manifest(self.root / "manifest.json", {"kind": "proxy", "file": info})
+        self.assertEqual([f.name for f in S.corpus_files(self.root)], ["proxy.parquet"])
+
+    def test_a_file_path_is_returned_as_it_is(self) -> None:
+        self.part("a-0000.parquet", "a")
+        self.assertEqual(S.corpus_files(self.root / "a-0000.parquet"), [self.root / "a-0000.parquet"])
+
+    def test_unreadable_manifest_is_refused(self) -> None:
+        self.part("a-0000.parquet", "a")
+        (self.root / "manifest.json").write_text("{not json", encoding="utf-8")
+        with self.assertRaises(S.ManifestError):
+            S.corpus_files(self.root)
+
+
 @needs_yaml
 class PolicyContract(unittest.TestCase):
     def test_shipped_registry_passes_policy(self) -> None:
