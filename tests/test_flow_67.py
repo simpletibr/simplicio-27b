@@ -369,6 +369,12 @@ class DecontaminationFlow(unittest.TestCase):
         manifest = json.loads((self.root / "clean" / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["rows"], 2)
 
+    def test_the_clean_manifest_lists_the_sources_it_still_holds(self) -> None:
+        # found on real data: the manifest of the clean corpus had no `sources`, so a proxy built with it checked nothing
+        self.run_decon()
+        manifest = json.loads((self.root / "clean" / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["sources"], {"toy": {"rows": 2}})
+
     def test_resume_skips_finished_parts_and_notices_new_references(self) -> None:
         self.run_decon()
         again = self.run_decon()
@@ -499,6 +505,14 @@ class ProxyFlow(unittest.TestCase):
         self.assertEqual(self.build()["corpus_leak_check"], {"checked": False, "skipped": True})
         only_sources = self.build(corpus_manifest={"sources": {"toy_mcq": {}}})
         self.assertEqual(only_sources["corpus_leak_check"], {"checked": False, "sources_only": True})
+
+    def test_a_manifest_that_lists_no_sources_proves_nothing(self) -> None:
+        # found on real data: the manifest of a decontaminated corpus listed no sources and the check passed on nothing
+        for manifest in ({"kind": "corpus", "rows": 2, "parts": []}, {"sources": ["toy_mcq"]}, {"sources": None}):
+            with self.assertRaises(ValueError, msg=str(manifest)) as caught:
+                self.build(corpus_manifest=manifest)
+            self.assertIn("sources", str(caught.exception))
+        self.assertEqual(self.build(corpus_manifest={"sources": {}})["corpus_leak_check"], {"checked": False, "sources_only": True})
 
     def test_proxy_example_ids_are_unique(self) -> None:
         self.build()
