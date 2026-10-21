@@ -122,6 +122,7 @@ MUTANTS: Tuple[Mutant, ...] = (
     Mutant('T04', TRACES, 'request_sha256=S.request_digest(S.parse_row(row)[0])', 'request_sha256=""', 'traces cannot be tied to the request they answer'),
     Mutant('G18', GATES, 'if min_rows and sum(1 for _, _, gold, _ in requests if any(key is not None for key in gold.values())) < min_rows:', 'if False:', 'G4 passes on a handful of rows'),
     Mutant('G19', GATES, 'if expected_rows is not None and len(requests) != expected_rows:', 'if False:', 'G4 scores a part of the proxy that its manifest declares whole'),
+    Mutant('G20', GATES, 'if min_rows and sum(1 for _, _, gold, _ in requests if any(key is not None for key in gold.values())) < min_rows:', 'if min_rows and len(requests) < min_rows:', 'rows without a gold answer count toward the minimum that G4 asks for'),
     Mutant('F01', PREFLIGHT, 'if not (_number(margin) and margin > 0):', 'if False:', 'a G4 margin of 0 is accepted: a checkpoint that is no better passes'),
     Mutant('F02', PREFLIGHT, 'MIN_LABEL_COVERAGE = 0.9', 'MIN_LABEL_COVERAGE = 0.0', 'a label coverage of 1 percent is accepted as the F3 gate'),
     Mutant('F03', PREFLIGHT, 'if hub.get(first) and hub.get(first) == hub.get(second):', 'if False:', 'the backup of the day, with the private proxy, may go to the repo of the weights'),

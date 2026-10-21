@@ -1063,6 +1063,16 @@ class G4Contract(unittest.TestCase):
         self.assertEqual(got["min_rows"], 100)
         self.assertEqual(got["questions"], 2)
 
+    def test_rows_without_a_gold_answer_do_not_count_toward_the_minimum(self) -> None:
+        requests, new, base = self.fixture(3, 3, 0)                                  # six rows with a gold answer
+        blind = [(f"blind:{i}", {"state": f"blind {i}", "questions": {"q1": {"type": "choice", "instructions": "pick", "criteria": {k: k.lower() for k in self.keys}}}},
+                  {"q1": None}, "alpha") for i in range(10)]                         # ten more rows nobody can score
+        got = self.verdict(requests + blind, new, base, min_rows=10)
+        self.assertEqual(got["rows"], 16)
+        self.assertIn("too_few_rows", got["reasons"], "sixteen rows, six of them scorable: under a floor of ten")
+        self.assertEqual(got["status"], "INVALID")
+        self.assertNotIn("too_few_rows", self.verdict(requests + blind, new, base, min_rows=6)["reasons"], "six scorable rows meet a floor of six")
+
     def test_exactly_the_minimum_number_of_questions_is_enough(self) -> None:
         requests, new, base = self.fixture(50, 40, 20)                       # 100 questions
         self.assertEqual(self.verdict(requests, new, base, min_rows=100)["status"], "PASS")
