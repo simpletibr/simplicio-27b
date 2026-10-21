@@ -2111,5 +2111,209 @@ class DatasetInputsContract(unittest.TestCase):
         self.assertIn("corpus-limpo", str(caught.exception))
 
 
+class ModelSpecContract(unittest.TestCase):
+    """``NAME=dir:PATH`` and ``NAME=hub:REPO@COMMIT``: the two ways ``proxy_eval`` is told which model to run."""
+
+    def test_a_folder_and_a_pinned_hub_model(self) -> None:
+        from decide.rental import proxy_eval as PE
+
+        folder = PE.parse_model("flash=dir:work/flash")
+        self.assertEqual((folder.name, folder.path, folder.repo), ("flash", Path("work/flash"), None))
+        hub = PE.parse_model("pplx=hub:perplexity-ai/pplx-decider-v1.2@" + "c" * 40)
+        self.assertEqual((hub.name, hub.repo, hub.revision, hub.path), ("pplx", "perplexity-ai/pplx-decider-v1.2", "c" * 40, None))
+
+    def test_anything_else_is_a_usage_error_that_says_how_to_write_it(self) -> None:
+        from decide.rental import proxy_eval as PE
+
+        for bad in ("flash", "flash=work/flash", "=dir:x", "a/b=dir:x", "flash=dir:", "flash=hub:org/repo", "flash=hub:org/repo@main",
+                    "flash=hub:org/repo@" + "c" * 39, "flash=hub:@" + "c" * 40, "flash=ftp:x"):
+            with self.assertRaises(ValueError, msg=bad) as caught:
+                PE.parse_model(bad)
+            self.assertIn("NAME=", str(caught.exception), bad)
+
+    def test_name_and_folder_pairs(self) -> None:
+        from decide.rental import proxy_eval as PE
+
+        self.assertEqual(PE.parse_pair("flash=work/g2/flash"), ("flash", Path("work/g2/flash")))
+        for bad in ("flash", "=x", "flash=", "a b=x"):
+            with self.assertRaises(ValueError, msg=bad):
+                PE.parse_pair(bad)
+
+
+@needs_pyarrow
+class ProxyEvalContract(unittest.TestCase):
+    """The measurement behind G1, G2 and G4 as four commands: the proxy as requests, a model run, the score of runs, the comparison of two."""
+
+    SOURCES = ("alpha", "beta")
+
+    class Kit:
+        """Answers by a fixed rule: the first ``rates[name]`` of every four examples get the gold option."""
+
+        def __init__(self, rates=None, status="complete") -> None:
+            self.rates, self.status, self.calls = rates or {}, status, []
+
+        def run(self, model, requests, out, *, budget=None):
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+
+            self.calls.append((model, str(requests), str(out)))
+            rows = []
+            for line in Path(requests).read_text(encoding="utf-8").splitlines():
+                item = json.loads(line)
+                index = int(item["example_id"].rsplit(":", 1)[1])
+                favoured = 0 if index % 4 < self.rates.get(model.name, 2) else 1
+                rows.append({"run_id": item["example_id"], "question_id": "q1", "probs": [0.7 if i == favoured else 0.1 for i in range(4)], "status": "ok"})
+            Path(out).mkdir(parents=True, exist_ok=True)
+            pq.write_table(pa.Table.from_pylist(rows), str(Path(out) / "results.parquet"))
+            return {"rows": len(rows), "tokens": 10 * len(rows), "seconds": 2.0, "status": self.status}
+
+    def setUp(self) -> None:
+        from decide.data import schema as S
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        rows = [S.corpus_row(example_id=f"{source}:{i}", source=source, license="mit", split="dev", lang="en",
+                             request={"state": f"case {i}", "questions": {"q1": {"type": "choice", "instructions": "pick", "criteria": {k: k.lower() for k in "ABCD"}}}},
+                             gold={"q1": "A"}) for source in self.SOURCES for i in range(40)]
+        S.write_corpus_part(self.root / "proxy" / "proxy.parquet", rows)
+        S.seal_directory(self.root / "proxy", kind="proxy")
+        self.proxy = self.root / "proxy"
+
+    def main(self, *argv, kit=None):
+        import contextlib
+        import io
+
+        from decide.rental import proxy_eval as PE
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = PE.main([str(a) for a in argv], kit=kit)
+            except SystemExit as exc:
+                code = exc.code
+        return code, out.getvalue(), err.getvalue()
+
+    def make_runs(self, kit=None, **rates):
+        kit = kit or self.Kit(rates)
+        self.assertEqual(self.main("requests", "--proxy", self.proxy, "--out", self.root / "requests.jsonl")[0], 0)
+        for name in rates:
+            code, _, err = self.main("run", "--requests", self.root / "requests.jsonl", "--model", f"{name}=dir:{self.root / name}", "--out", self.root / "runs" / name, kit=kit)
+            self.assertEqual(code, 0, err)
+        return kit
+
+    def test_requests_are_the_proxy_without_any_reasoning_block(self) -> None:
+        code, out, _ = self.main("requests", "--proxy", self.proxy, "--out", self.root / "r" / "requests.jsonl")
+        self.assertEqual(code, 0)
+        lines = (self.root / "r" / "requests.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 80)
+        self.assertEqual(sorted(json.loads(lines[0])), ["example_id", "gold", "request", "source"])
+        self.assertIn("80", out)
+
+    def test_run_hands_the_kit_the_model_the_requests_and_the_folder(self) -> None:
+        kit = self.Kit({"flash": 2})
+        self.main("requests", "--proxy", self.proxy, "--out", self.root / "requests.jsonl")
+        code, out, _ = self.main("run", "--requests", self.root / "requests.jsonl", "--model", "flash=dir:" + str(self.root), "--out", self.root / "runs" / "flash", kit=kit)
+        self.assertEqual(code, 0)
+        (model, requests, out_dir), = kit.calls
+        self.assertEqual((model.name, model.path, requests, out_dir), ("flash", self.root, str(self.root / "requests.jsonl"), str(self.root / "runs" / "flash")))
+        self.assertIn("complete", out)
+
+    def test_a_run_the_kit_did_not_finish_is_an_error_that_says_to_run_it_again(self) -> None:
+        self.main("requests", "--proxy", self.proxy, "--out", self.root / "requests.jsonl")
+        code, _, err = self.main("run", "--requests", self.root / "requests.jsonl", "--model", "m=dir:" + str(self.root), "--out", self.root / "runs" / "m",
+                                 kit=self.Kit(status="paused"))
+        self.assertEqual(code, 1)
+        self.assertIn("paused", err)
+        self.assertIn("again", err)
+
+    def test_a_bad_model_spec_is_a_usage_error(self) -> None:
+        code, _, err = self.main("run", "--requests", "x.jsonl", "--model", "nope", "--out", self.root / "o", kit=self.Kit())
+        self.assertEqual(code, 2)
+        self.assertIn("NAME=", err)
+
+    def test_score_prints_each_model_and_writes_what_proxy_private_validate_reads(self) -> None:
+        self.make_runs(flash=2, novo=3)
+        code, out, _ = self.main("score", "--proxy", self.proxy, "--results", f"flash={self.root / 'runs' / 'flash'}", f"novo={self.root / 'runs' / 'novo'}",
+                                 "--out", self.root / "scores.json")
+        self.assertEqual(code, 0, out)
+        scores = json.loads((self.root / "scores.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(scores), ["flash", "novo"])
+        self.assertAlmostEqual(scores["flash"], (0.5 - 0.25) / 0.75, places=9)        # the skill, 0 to 1, as proxy_private.score_proxy returns it
+        self.assertAlmostEqual(scores["novo"], (0.75 - 0.25) / 0.75, places=9)
+        for name in ("flash", "novo"):
+            self.assertIn(name, out)
+
+    def test_a_run_with_missing_rows_is_not_scored_as_if_it_were_whole(self) -> None:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        self.make_runs(flash=2, novo=3)
+        table = pq.read_table(self.root / "runs" / "novo" / "results.parquet")
+        pq.write_table(table.slice(0, 70), str(self.root / "runs" / "novo" / "results.parquet"))
+        code, out, err = self.main("score", "--proxy", self.proxy, "--results", f"flash={self.root / 'runs' / 'flash'}", f"novo={self.root / 'runs' / 'novo'}",
+                                   "--out", self.root / "scores.json")
+        self.assertEqual(code, 3)
+        self.assertIn("novo", out + err)
+        self.assertIn("10", out + err)                                                  # the 10 questions that have no row
+        self.assertFalse((self.root / "scores.json").exists(), "nothing is written when one of the runs is incomplete")
+
+    def test_a_folder_without_a_result_table_says_what_is_missing(self) -> None:
+        (self.root / "empty").mkdir()
+        code, _, err = self.main("score", "--proxy", self.proxy, "--results", f"x={self.root / 'empty'}")
+        self.assertEqual(code, 1)
+        self.assertIn("results.parquet", err)
+
+    def test_compare_passes_a_clear_gain_and_writes_the_verdict(self) -> None:
+        self.make_runs(flash=2, novo=3)
+        code, out, _ = self.main("compare", "--proxy", self.proxy, "--new", self.root / "runs" / "novo", "--baseline", self.root / "runs" / "flash",
+                                 "--margin", "1.0", "--resamples", 50, "--out", self.root / "verdict.json")
+        self.assertEqual(code, 0, out)
+        verdict = json.loads((self.root / "verdict.json").read_text(encoding="utf-8"))
+        self.assertEqual(verdict["status"], "PASS")
+        self.assertAlmostEqual(verdict["delta_points"], 100 * (0.50 / 0.75 - 0.25 / 0.75), places=6)
+        self.assertEqual(verdict["margin_points"], 1.0)
+        self.assertIn("PASS", out)
+
+    def test_compare_fails_below_the_margin_and_exits_3(self) -> None:
+        self.make_runs(flash=2, novo=3)
+        code, out, _ = self.main("compare", "--proxy", self.proxy, "--new", self.root / "runs" / "novo", "--baseline", self.root / "runs" / "flash",
+                                 "--margin", "50", "--resamples", 50)
+        self.assertEqual(code, 3)
+        self.assertIn("FAIL", out)
+        self.assertIn("delta_below_margin", out)
+
+    def test_compare_of_a_loss_fails(self) -> None:
+        self.make_runs(flash=2, novo=1)
+        code, out, _ = self.main("compare", "--proxy", self.proxy, "--new", self.root / "runs" / "novo", "--baseline", self.root / "runs" / "flash",
+                                 "--margin", "0", "--resamples", 50)
+        self.assertEqual(code, 3)
+        self.assertIn("FAIL", out)
+
+    def test_compare_is_invalid_when_a_side_is_incomplete(self) -> None:
+        import pyarrow.parquet as pq
+
+        self.make_runs(flash=2, novo=3)
+        table = pq.read_table(self.root / "runs" / "flash" / "results.parquet")
+        pq.write_table(table.slice(0, 40), str(self.root / "runs" / "flash" / "results.parquet"))
+        code, out, _ = self.main("compare", "--proxy", self.proxy, "--new", self.root / "runs" / "novo", "--baseline", self.root / "runs" / "flash",
+                                 "--margin", "1.0", "--resamples", 50)
+        self.assertEqual(code, 3)
+        self.assertIn("INVALID", out)
+        self.assertIn("baseline_missing_rows", out)
+
+    def test_the_margin_has_no_default_so_a_gate_is_never_run_with_a_number_nobody_chose(self) -> None:
+        code, _, err = self.main("compare", "--proxy", self.proxy, "--new", self.root, "--baseline", self.root)
+        self.assertEqual(code, 2)
+        self.assertIn("--margin", err)
+
+    def test_there_is_no_way_to_skip_the_comparison(self) -> None:
+        from decide.rental import proxy_eval as PE
+
+        text = PE.build_parser().format_help() + " ".join(action.dest for action in PE.build_parser()._actions)
+        for word in ("--skip", "--force", "--ignore", "--override"):
+            self.assertNotIn(word, text)
+
+
 if __name__ == "__main__":
     unittest.main()
