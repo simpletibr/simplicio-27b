@@ -31,6 +31,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -109,11 +110,35 @@ class DayResult:
 
 # --------------------------------------------------------------------------- child processes
 
+#: A variable whose name has a credential word as a whole part (``OPENAI_API_KEY``, ``GITHUB_TOKEN``, ``db_password``, ``SSH_AUTH_SOCK``,
+#: ``GOOGLE_APPLICATION_CREDENTIALS``; not ``TOKENIZERS_PARALLELISM`` or ``MONKEY_PATCH``), or ending in one of ``token``, ``secret``, ``password``,
+#: ``passwd`` with nothing in between, and perhaps a number after (``MYTOKEN``, ``TOKEN2``, ``SLACKTOKEN_2``, ``PGPASSWORD``), or any ``AWS_*`` / ``AZURE_*`` one, or ``GIT_CONFIG_*`` (git's ``-c`` as
+#: variables: a count, keys and values, and a value can be an ``Authorization`` header), or ``PGPASS*`` / ``MYSQL_PWD``, is a credential of the machine and a
+#: training step needs none of them.  A list of what to drop, not of what to keep: a variable that a GPU run needs and that the list forgot would only
+#: show on a rented GPU (UNVERIFIED), and the day log names every variable that was left out.
+#: **What still passes** (the RUNBOOK says so): a name without these words (``HUB_LOGIN``), a variable that names a credential *file* (``KUBECONFIG``,
+#: ``NETRC``, ``DOCKER_CONFIG``), a name with a hyphen or a dot, and a secret in the *value* of a variable with an innocent name
+#: (``PIP_INDEX_URL=https://user:password@host``).
+CREDENTIAL_NAME = re.compile(r"(?:^|_)(?:api_?keys?|access_?keys?|private_?keys?|keys?|tokens?|secrets?|passw(?:or)?ds?|passphrases?|credentials?|auth|cookies?|bearer)(?:_|$)"
+                             r"|(?:token|secret|passw(?:or)?d)s?(?:_?\d+)?$"
+                             r"|^(?:aws|azure)_|^git_config_|^pgpass|^mysql_pwd$", re.IGNORECASE)
+#: Credential-looking names that stay.  This one tells the Hub client not to read a token file; it is only kept as the parent had it, ``child_env`` does not
+#: set it (the child runs offline, so there is no request to send a token with).
+KEEP_NAMES = frozenset({"HF_HUB_DISABLE_IMPLICIT_TOKEN"})
+
+
+def dropped_names(cfg: Mapping[str, Any], environ: Optional[Mapping[str, str]] = None) -> List[str]:
+    """The names (never the values) of the variables of ``environ`` that a step does not get, sorted."""
+    configured = {cfg["hub"]["token_env"], cfg["thinker"]["api_key_env"], *HUB_TOKEN_NAMES}
+    return sorted(name for name in (os.environ if environ is None else environ)
+                  if name in configured or (name not in KEEP_NAMES and CREDENTIAL_NAME.search(name)))
+
+
 def child_env(cfg: Mapping[str, Any], environ: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
-    """The environment of a step: no Hub token, no thinker key (the trainer needs neither), offline, the repo on the path."""
+    """The environment of a step: no Hub token, no thinker key and no other credential of the machine (the trainer needs none), offline, the repo on the path."""
     env = dict(os.environ if environ is None else environ)
-    for name in (cfg["hub"]["token_env"], cfg["thinker"]["api_key_env"], *HUB_TOKEN_NAMES):
-        env.pop(name, None)
+    for name in dropped_names(cfg, env):
+        del env[name]
     env["PYTHONUNBUFFERED"] = "1"
     env["HF_HUB_OFFLINE"] = "1"
     env["TRANSFORMERS_OFFLINE"] = "1"
@@ -175,6 +200,7 @@ class Day:
         self._preflight: Dict[str, Any] = {}
         self._backup_warnings: List[str] = []
         self._digests: Dict[str, str] = {}
+        self._env_noted = False
 
     # ------------------------------------------------------------------ small things
 
@@ -230,6 +256,10 @@ class Day:
         self.log(text)
 
     def _execute(self, name: str, argv: List[str]) -> None:
+        if not self._env_noted:
+            left_out = dropped_names(self.cfg)
+            self._say("child environment: " + (f"{len(left_out)} variables left out ({', '.join(left_out)}), their values are not logged" if left_out else "nothing left out"))
+            self._env_noted = True
         self._say(f"run {name}: {' '.join(argv[:6])} ...")
         code = self.executor.run(argv, log_path=self.paths.logs / f"{name}.log", env=child_env(self.cfg))
         if code != 0:
