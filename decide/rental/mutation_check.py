@@ -15,7 +15,7 @@ changed).  Running the mutants takes a long time (each one runs the contract tes
 tiny model); the measured time is in the pull request of F6.
 
 The mutants sit where a wrong line would cost money or leak something: the gates (label coverage before any GPU hour, the GT report
-before the thinker's traces, G4 before the public round and the upload), what the children and the Hub can see (the token), what a
+before the thinker's traces, G4 before the public round and the upload, and the scorer they call, ``decide/data/proxy_private.py``), what the children and the Hub can see (the token), what a
 rerun trusts (the state and the fingerprints of the outputs), the order and the arguments of the commands of the day, and the checks that
 the data was screened (decontaminated, sealed, tied to the request it answers).
 """
@@ -52,6 +52,7 @@ PREFLIGHT = 'decide/rental/preflight.py'
 KIT = 'decide/rental/kit.py'
 PROXY_EVAL = 'decide/rental/proxy_eval.py'
 TRACES = 'decide/rental/traces.py'
+PRIVATE = 'decide/data/proxy_private.py'
 
 MUTANTS: Tuple[Mutant, ...] = (
     Mutant('G01', GATES, 'passed = round(coverage, 12) >= minimum', 'passed = round(coverage, 12) > minimum', 'a corpus with exactly the minimum share of labeled rows is refused'),
@@ -132,6 +133,14 @@ MUTANTS: Tuple[Mutant, ...] = (
     Mutant('G19', GATES, 'if expected_rows is not None and len(requests) != expected_rows:', 'if False:', 'G4 scores a part of the proxy that its manifest declares whole'),
     Mutant('G20', GATES, 'if min_rows and sum(1 for _, _, gold, _ in requests if any(key is not None for key in gold.values())) < min_rows:', 'if min_rows and len(requests) < min_rows:', 'rows without a gold answer count toward the minimum that G4 asks for'),
     Mutant('G21', GATES, 'DEFAULT_MIN_ROWS = 100\n', 'DEFAULT_MIN_ROWS = 50\n', 'the default floor of G2 drifts from the one of G4'),
+    Mutant('D01', PRIVATE, 'if key in table and table[key] != values:', 'if False:', 'two different answers to one question are not noticed: the last one is scored, in silence'),
+    Mutant('D02', PRIVATE, 'table[key] != values', 'table[key] == values', 'the same row twice (a run appended to itself) makes the run invalid, and two different ones do not'),
+    Mutant('D03', PRIVATE, '            if (eid, qid) in conflicting:\n                bad += 1', '            if False:\n                bad += 1', 'score_rows scores the last of two different answers'),
+    Mutant('D04', PRIVATE, '                bad += 1\n                clashes += 1', '                missing += 1\n                clashes += 1', 'a question answered twice with different numbers is reported as having no row'),
+    Mutant('D05', PRIVATE, '                clashes += 1', '                clashes += 0', 'the verdict does not say how many questions were answered twice with different numbers'),
+    Mutant('D06', GATES, '(eid, qid) in conflicting or probs is None', 'probs is None', 'the bootstrap scores the last of two different answers while score_rows refuses them (the two disagree)'),
+    Mutant('D07', GATES, '"conflicting": scored["conflicting"],', '"conflicting": 0,', 'the verdict hides the questions answered twice with different numbers'),
+    Mutant('D08', PROXY_EVAL, 'answered twice with different numbers)" if scored["conflicting"] else "")', 'answered twice with different numbers)" if False else "")', 'the score command says only "invalid" for a question answered twice with different numbers'),
     Mutant('F01', PREFLIGHT, 'if not (_number(margin) and margin > 0):', 'if False:', 'a G4 margin of 0 is accepted: a checkpoint that is no better passes'),
     Mutant('F02', PREFLIGHT, 'MIN_LABEL_COVERAGE = 0.9', 'MIN_LABEL_COVERAGE = 0.0', 'a label coverage of 1 percent is accepted as the F3 gate'),
     Mutant('F03', PREFLIGHT, 'if _same_repo(hub.get(first), hub.get(second)):', 'if False:', 'the backup of the day, with the private proxy, may go to the repo of the weights'),

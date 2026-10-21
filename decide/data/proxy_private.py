@@ -4,7 +4,8 @@
   It refuses to run if the corpus manifest shares a source with the proxy, and (with ``corpus``) if any corpus
   request leaks a proxy request (``LeakError``).
 * ``score_rows`` / ``score_proxy`` score a per-row probabilities file: chance-corrected accuracy per source,
-  averaged over sources, plus NLL and Brier.  It is *not* the Jev metric (each Jev benchmark has its own).
+  averaged over sources, plus NLL and Brier.  It is *not* the Jev metric (each Jev benchmark has its own).  A question answered twice
+  with different numbers is ``bad`` (no row is picked); the same row twice is one answer.
 * ``validate_against_board`` is gate G1: Spearman between the proxy scores of >= 6 open models and their Full
   score on the board (``index.json``, field ``models[].v03.v``).  Also reported against ``new_domains``,
   ``same_skills`` and ``pub``.
@@ -18,7 +19,7 @@ import math
 import random
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
 from . import decontaminate as D
 from . import schema as S
@@ -237,17 +238,31 @@ def _row_id(row: Mapping[str, Any]) -> Optional[str]:
     return None
 
 
-def score_rows(requests: Iterable[Tuple[str, Mapping[str, Any], Mapping[str, Any], str]], results: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
-    """Score ``results`` against ``requests`` = (example_id, request, gold, source) tuples."""
+def result_table(results: Iterable[Mapping[str, Any]]) -> Tuple[Dict[Tuple[str, str], List[float]], Set[Tuple[str, str]]]:
+    """``(run_id, question_id) -> probabilities`` of the rows that have an id, a question and probabilities, and the keys that two rows
+    answer with different numbers.  The same row twice (a run appended to itself) is one answer; two different ones are not: neither the
+    first nor the last is picked, the caller counts the question as invalid."""
     table: Dict[Tuple[str, str], List[float]] = {}
+    conflicting: Set[Tuple[str, str]] = set()
     for r in results:
         rid, qid = _row_id(r), r.get("question_id")
         probs = r.get("probs", r.get("probabilities"))
         if rid is not None and qid is not None and probs is not None:
-            table[(rid, str(qid))] = [float(p) for p in probs]
+            key, values = (rid, str(qid)), [float(p) for p in probs]
+            if key in table and table[key] != values:
+                conflicting.add(key)
+            table[key] = values
+    return table, conflicting
+
+
+def score_rows(requests: Iterable[Tuple[str, Mapping[str, Any], Mapping[str, Any], str]], results: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Score ``results`` against ``requests`` = (example_id, request, gold, source) tuples.
+
+    A question answered twice with different numbers counts as ``bad`` (and in ``conflicting``); a malformed answer is ``bad``; none is ``missing``."""
+    table, conflicting = result_table(results)
     per: Dict[str, Dict[str, float]] = {}
     nll = brier = 0.0
-    n = missing = bad = 0
+    n = missing = bad = clashes = 0
     for eid, request, gold, source in requests:
         for qid, key in gold.items():
             if key is None:
@@ -255,6 +270,10 @@ def score_rows(requests: Iterable[Tuple[str, Mapping[str, Any], Mapping[str, Any
             question = request["questions"][qid]
             keys = S.option_keys(question)
             probs = table.get((eid, qid))
+            if (eid, qid) in conflicting:
+                bad += 1
+                clashes += 1
+                continue
             if probs is None:
                 missing += 1
                 continue
@@ -276,7 +295,7 @@ def score_rows(requests: Iterable[Tuple[str, Mapping[str, Any], Mapping[str, Any
         acc, chance = agg["correct"] / agg["n"], agg["chance"] / agg["n"]
         per_source[source] = {"n": int(agg["n"]), "accuracy": acc, "chance": chance, "skill": (acc - chance) / (1 - chance) if chance < 1 else 0.0}
     skills = [v["skill"] for v in per_source.values()]
-    return {"n": n, "missing": missing, "bad": bad, "proxy": sum(skills) / len(skills) if skills else None,
+    return {"n": n, "missing": missing, "bad": bad, "conflicting": clashes, "proxy": sum(skills) / len(skills) if skills else None,
             "nll": nll / n if n else None, "brier": brier / n if n else None, "per_source": per_source}
 
 
