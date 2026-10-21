@@ -366,8 +366,10 @@ def decontaminate_corpus(corpus_in: os.PathLike, out_dir: os.PathLike, index: Re
     }
     S.write_manifest(out / "decontamination.json", report)
     manifest_parts = [{"name": p["part"], "rows": p["rows_out"], "sha256": p["output_sha256"]} for p in parts_report if p["rows_out"]]
+    # `sources` so that proxy_private can still check, on this manifest, that the proxy shares no source with the corpus
+    sources = {key: {"rows": counts["kept"]} for key, counts in sorted(by_source.items()) if counts["kept"]}
     S.write_manifest(out / "manifest.json", {"schema_version": S.SCHEMA_VERSION, "kind": "corpus", "rows": report["rows_out"],
-                                             "parts": manifest_parts, "decontamination": "decontamination.json"})
+                                             "parts": manifest_parts, "sources": sources, "decontamination": "decontamination.json"})
     return report
 
 

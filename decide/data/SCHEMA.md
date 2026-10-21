@@ -134,6 +134,8 @@ Parquet com uma linha por (pedido, pergunta): `example_id` (aceita também `requ
   `--skip-leak-check` dito de propósito; o manifest do privado registra o que foi checado (`sources_only`, `skipped`).
   Ordem usual: (1) corpus bruto; (2) privado com `--corpus-manifest` do bruto; (3) descontaminar o corpus contra a suíte
   **e** o privado; (4) rodar o build do privado de novo com `--corpus` = corpus limpo (determinístico, serve de portão).
+  O `manifest.json` do `build_corpus` e o do `decontaminate` listam `sources` (fonte -> linhas); um manifest sem `sources`
+  é recusado, porque a checagem de fontes passaria sem provar nada.
 - `manifest.json` do proxy: fontes, contagens por fonte/idioma/tipo, sha256 do arquivo, parâmetros.
 - Pontuação: acurácia corrigida pelo acaso, `(acc − chance) / (1 − chance)`, média simples entre fontes, mais NLL e
   Brier. Não é a métrica do Jev (cada benchmark do Jev tem a sua); o G1 diz se a ordem é parecida.

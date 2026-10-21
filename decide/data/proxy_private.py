@@ -307,7 +307,11 @@ def build_proxy(out_dir: Path, *, sources: Mapping[str, SRC.Source], reader: Any
         raise ValueError("no held-out sources: mark some sources 'role: heldout' in sources.yaml")
     if corpus_manifest is not None:
         manifest = corpus_manifest if isinstance(corpus_manifest, Mapping) else json.loads(Path(corpus_manifest).read_text(encoding="utf-8"))
-        assert_disjoint(manifest.get("sources", {}), [s.key for s in chosen])
+        corpus_sources = manifest.get("sources")
+        if not isinstance(corpus_sources, Mapping):
+            raise ValueError("the corpus manifest lists no `sources`, so it cannot show that the proxy shares none with the corpus "
+                             "(use the manifest.json written by build_corpus or decontaminate)")
+        assert_disjoint(corpus_sources, [s.key for s in chosen])
     rows: List[Dict[str, Any]] = []
     stats: Dict[str, Any] = {}
     for source in chosen:
