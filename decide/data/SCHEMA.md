@@ -24,10 +24,10 @@ e o privado) devolvem exatamente as partes de `parts` (ou o `file` do privado), 
 pelo sha256; parte listada que falta, mudou ou sai da pasta é `ManifestError`. Um `*.parquet` ao lado que o manifest não
 lista (uma rodada antiga com `--include-review`, shards que um cap menor deixou) **não é dado** e é ignorado.
 **`read_corpus` nunca faz glob:** pasta sem manifest é build interrompido (ou pasta montada à mão) e dá `ManifestError`;
-o que se pode passar sem manifest é um arquivo `*.parquet` que o chamador nomeia. Só os rótulos de professor e os traços
-feitos à mão (`read_teacher`, uma pasta onde o aluguel ou o Modal despejou as partes) ainda são lidos por glob;
-`schema.seal_directory(pasta)` grava o manifest de uma pasta assim (`parts` com `name`, `rows`, `sha256`). A construção dos
-alvos e o treino exigem o manifest (`require_manifest`). `build_corpus` e `decontaminate` apagam o manifest ao começar,
+o que se pode passar sem manifest é um arquivo `*.parquet` que o chamador nomeia. `read_teacher` em si ainda lê por glob
+(uma pasta onde o aluguel ou o Modal despejou as partes), mas a construção dos alvos exige o manifest do corpus, dos rótulos
+e dos traços, e o treino o dos alvos (`require_manifest`); `schema.seal_directory(pasta, kind="labels")` (ou `"traces"`)
+grava o manifest de uma pasta assim (`parts` com `name`, `rows`, `sha256`). `build_corpus` e `decontaminate` apagam o manifest ao começar,
 escrevem outro ao terminar e apagam partes, marcadores e rejeitados que a rodada não lista (`removed_stale`):
 **uma pasta `--out` por corpus**, e `--only` gera um corpus parcial.
 
@@ -37,9 +37,12 @@ de `build_targets` e de `seal_directory` levam o carimbo `"tool"` (`build_corpus
 ferramenta, feito à mão ou ilegível não é apagado nem trocado, a rodada falha com `ManifestError` (`TargetError` em
 `build_targets`) e a pasta fica como estava. `decontaminate` e `build_targets` recusam `--out` que seja um arquivo, que seja
 uma entrada (corpus, rótulos, traços), que esteja dentro dela ou que a contenha (uma entrada de um arquivo só,
-`--corpus x/c.parquet --out x`, também), e só apagam o que as suas próprias marcações `<parte>.done.json` e o manifest da
-última rodada concluída nomeiam, mais os `.tmp` de nomes que elas mesmas escrevem. Qualquer outro arquivo em `--out` fica
-onde está (e, fora do manifest, nunca é lido).
+`--corpus x/c.parquet --out x`, também; `--out` é julgado por onde ele realmente está: symlink e `..` são resolvidos antes), e só
+apagam o que as suas próprias marcações `<parte>.done.json` e o manifest da última rodada concluída nomeiam, mais os `.tmp`
+de nomes que elas mesmas escrevem. O manifest só pode nomear arquivos simples da própria pasta (um nome com `/`, `..` ou
+caminho absoluto é de manifest forjado: `build_targets` recusa antes de apagar qualquer coisa). Qualquer outro arquivo em
+`--out` fica onde está (e, fora do manifest, nunca é lido): um arquivo com o nome de uma parte que a ferramenta não escreveu
+(sem marcador e fora do manifest anterior) faz a rodada falhar em vez de ser sobrescrito.
 
 ## 2. Pedido (request)
 
@@ -232,7 +235,7 @@ as marcas `<think>` e `</think>`. Vale para o pedido inteiro (todas as perguntas
 {"state": "…", "questions": {"q1": {"type": "choice", "criteria": {"A": "…", "B": "…"}}}, "reasoning": "O estado diz … logo B."}
 ```
 
-**No prompt.** O raciocínio é uma parte nova, depois do estado e antes da primeira pergunta. As partes continuam
+**No prompt.** O raciocínio entra **dobrado no estado**, depois do estado e antes da primeira pergunta. As partes continuam
 separadas por uma linha em branco:
 
 ```
@@ -249,10 +252,32 @@ Question 0:
 O rótulo é exatamente `Raciocínio:` (com acento) e faz parte do contrato entre o treino e a inferência. O texto passa
 pela mesma neutralização de tokens especiais do estado. Um pedido sem `reasoning` gera o prompt do v1.2 sem mudar um byte.
 
-**Forma dobrada.** Para um motor que só conhece `state`, `decide.train.protocol.fold_reasoning(pedido)` devolve o mesmo
-pedido sem a chave e com o estado em texto: `describe(estado) + "\n\nRaciocínio:\n" + raciocínio`. As duas formas geram o
-mesmo prompt (teste em `tests/test_contract_69.py`). O corpus (seção 3) nunca guarda `reasoning` no `request`: o
-raciocínio fica nos traços abaixo e entra no pedido só na hora do treino ou da decisão.
+**Uma só definição: `decide.train.protocol.fold_reasoning(pedido, max_chars=8000)`.** Devolve o pedido sem a chave
+`reasoning` e com o estado dobrado, `describe(estado).rstrip() + "\n\nRaciocínio:\n" + bloco` (estado vazio: só o rótulo e o
+bloco). O `bloco` é o raciocínio depois de:
+
+1. fins de linha CRLF e CR viram LF;
+2. espaços e tabs no fim de cada linha saem (`rstrip(" \t")`);
+3. uma linha que seja o próprio rótulo (Unicode NFC, espaços nas pontas ignorados) vira `Raciocínio :`, mantendo o recuo,
+   para que o estado dobrado tenha uma única linha de rótulo, a que abre o bloco;
+4. três ou mais linhas em branco seguidas viram uma só, e as quebras de linha das pontas saem;
+5. corte em **caracteres**: no máximo 8000 (`REASONING_MAX_CHARS`). Acima disso fica o **fim** do texto (é lá que está a
+   conclusão), a partir de uma quebra de linha quando há uma, atrás de uma linha `[... N caracteres omitidos ...]`.
+   Um texto que já cabe (um já cortado, por exemplo) não é cortado de novo.
+
+Um estado que já tem uma linha de rótulo é recusado (`RequestError`), nunca sobrescrito; `build_targets` não anexa o traço a
+uma linha assim (`reasoning_state_has_block` no relatório) e o treino e a avaliação a usam sem raciocínio. `messages()` monta o
+prompt a partir do pedido dobrado, então as duas formas geram o mesmo prompt **por construção**. O lado do pensador
+(`decide/think/trace.py`) implementa a mesma função; o contrato entre os dois lados é o arquivo dourado
+`tests/fold_reasoning_cases.json` (10 casos: estado com espaço no fim, rótulo dentro do raciocínio, CRLF, três ou mais
+linhas em branco, estado vazio, estado como objeto, corte), que os dois lados têm de reproduzir. **Isto tem de estar resolvido
+antes de qualquer treino com `--reasoning`:** o `Encoder` do pplx-decider v1.2 ignora a chave `reasoning` em silêncio, então
+um motor que só conhece `state` (o `api.run_requests` do kit) chama `fold_reasoning` antes de mandar o pedido, ou recusa a
+chave. O pedido também recusa `images` (`RequestError`): o protocolo é só texto e o v1.2 leria o pedido como texto sem avisar.
+
+**Forma dobrada.** Para um motor que só conhece `state`, `fold_reasoning(pedido)` é o pedido a mandar. O corpus (seção 3)
+nunca guarda `reasoning` no `request`: o raciocínio fica nos traços abaixo e entra no pedido só na hora do treino ou da
+decisão.
 
 **Traços do pensador (parquet).** O passo "gerar traços do pensador" do dia alugado grava uma pasta de partes
 `traces/<pensador>/part-NNNN.parquet` (mais `manifest.json`, como na seção 1). Uma linha por exemplo e por pensador:
@@ -264,9 +289,15 @@ raciocínio fica nos traços abaixo e entra no pedido só na hora do treino ou d
 | `reasoning` | string | texto do raciocínio, não vazio; quem gera não grava linha sem raciocínio |
 | `tokens` | int32 | tokens de pensamento gerados (≥ 0) |
 | `finish_reason` | string | `stop` (fechou o pensamento dentro do orçamento) ou `length` (o orçamento cortou) |
+| `request_sha256` | string | `schema.request_digest` do `request` do corpus para o qual o raciocínio foi escrito (64 hex minúsculos) |
 
-Um raciocínio cortado (`length`) é mantido: na hora de decidir ele é cortado pelo mesmo orçamento.
-`decide.data.traces` valida, escreve e lê esse formato; `decide.train.build_targets --traces` junta pelo `example_id`.
+Um raciocínio cortado (`length`) é mantido: na hora de decidir ele é cortado pelo mesmo orçamento (item 5 acima).
+`decide.data.traces` valida, escreve e lê esse formato; `decide.train.build_targets --traces` junta pelo `example_id` e
+**recusa** o traço cujo `request_sha256` não é o do pedido do corpus (`TargetError` com o `example_id`): um raciocínio nunca é
+anexado a um pedido para o qual não foi escrito. A pasta de traços tem `manifest.json` (`seal_directory(pasta, kind="traces")`).
+Limite conhecido (ADR 0004, item 6): a descontaminação por n-grama roda sobre o `request` do corpus, não sobre a coluna
+`reasoning`; os traços de exemplos que a descontaminação rejeitou não entram porque a junção parte do corpus limpo, mas um
+trecho de suíte pública que o pensador cite no próprio raciocínio não é filtrado. Fica como pendência (issue de acompanhamento).
 
 ## 11. Dataset de alvos (saída de `decide.train.build_targets`)
 
@@ -276,7 +307,17 @@ Um raciocínio cortado (`length`) é mantido: na hora de decidir ele é cortado 
 Cada parte pronta deixa um marcador `<parte>.done.json` com a mesma entrada. O trainer lê **só** as partes do manifest,
 com o sha256 conferido (`ManifestError` se uma mudou ou sumiu). `build_targets` apaga o manifest e o relatório ao
 começar e escreve os novos ao terminar, apaga partes e marcadores que a rodada não lista (`removed_stale`) e exige que
-`--corpus` seja um build terminado (pasta com manifest): **uma pasta `--out` por conjunto de alvos**.
+`--corpus` seja a saída da descontaminação: **uma pasta `--out` por conjunto de alvos**.
+
+**De onde vêm as linhas.** O `manifest.json` do corpus tem de dizer `tool: "decontaminate"` e nomear `decontamination.json`,
+que leva o mesmo carimbo. Um corpus bruto (`build_corpus`), uma pasta selada à mão (`seal_directory`), um parquet solto e um
+carimbo sem o relatório são recusados (`TargetError` que diz o que fazer): o manifest prova que a lista de partes está
+inteira, não que as linhas foram triadas contra as suítes públicas e os privados. A saída explícita é
+`--allow-undecontaminated`. De um jeito ou de outro o manifest e o `report.json` dos alvos levam
+`corpus: {tool, manifest_sha256, decontamination_sha256, allow_undecontaminated}` (`null` no que não existe;
+`allow_undecontaminated` é o que a rodada recebeu), a proveniência entra na impressão digital de cada parte (mudá-la refaz as
+partes), e o treino a copia para `training.corpus` do `decision_config.json` do checkpoint e para o evento `training_started`.
+Rótulos e traços também são lidos pelo manifest da pasta.
 
 | coluna | tipo | conteúdo |
 |---|---|---|
@@ -292,4 +333,9 @@ começar e escreve os novos ao terminar, apaga partes e marcadores que a rodada 
 
 Uma linha só sai se alguma pergunta tem alvo (ouro ou professores). Uma pergunta sem alvo dentro de uma linha que sai
 fica com peso 0 no treino. Política de professor faltando (`--missing`): `drop` (padrão: a pergunta fica só com o ouro),
-`renormalize` (combina os que existem) ou `error`.
+`renormalize` (combina os que existem) ou `error` (recusa também a pergunta que nenhum professor rotulou, nomeando-a).
+
+O `report.json` conta `questions` (perguntas das linhas lidas) e `unlabeled_questions` (as que ficaram sem distribuição de
+professor, seja porque ninguém as rotulou, seja porque `drop` descartou uma combinação incompleta): a conta do gate F3
+("pelo menos 95 % rotulado") é `1 - unlabeled_questions / questions`. Os demais contadores: `dropped_unlabeled` (linhas sem
+nenhum alvo), `reasoning_rows`, `reasoning_truncated`, `reasoning_state_has_block`, `traces_unmatched`, `missing_teacher`.

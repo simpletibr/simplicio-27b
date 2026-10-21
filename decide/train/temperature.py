@@ -56,7 +56,7 @@ def calibration_fields(plain: Mapping[str, Any], reasoning: Optional[Mapping[str
         "temperature_by_type": {kind: float(fit[kind]) for kind in TYPES if kind in fit},
         "temperature_fallback": list(fit.get("fallback", [])),
         "temperature_is_placeholder": False,
-        "calibration": {"split": "dev", "examples": plain["examples"], "questions": plain["questions"],
+        "calibration": {"split": "dev", "examples": plain["examples"], "questions": plain["questions"], "skipped_too_long": plain.get("skipped_too_long", 0),
                         "questions_by_type": {kind: counts[kind] for kind in TYPES if kind in counts}},
     }
     thinking = (reasoning or {}).get("temperature") or {}

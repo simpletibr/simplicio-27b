@@ -95,6 +95,8 @@ class FoldReasoningContract(unittest.TestCase):
             self.PR.fold_reasoning(request)
         with self.assertRaises(self.PR.RequestError):
             self.PR.messages(request, self.codes)
+        with self.assertRaises(self.PR.RequestError):
+            self.PR.validate(request, self.codes)
 
     def test_schema_md_defines_the_normalization(self) -> None:
         text = (ROOT / "decide" / "data" / "SCHEMA.md").read_text(encoding="utf-8")
@@ -182,6 +184,13 @@ class CorpusProvenance(TargetsFixture):
         (self.root / "corpus" / "decontamination.json").unlink()
         self.assertIn("decontamination.json", self.refused())
 
+    def test_a_manifest_of_another_tool_is_refused_even_next_to_a_good_report(self) -> None:
+        decontaminated(self.root / "corpus")
+        manifest = json.loads((self.root / "corpus" / "manifest.json").read_text(encoding="utf-8"))
+        manifest["tool"] = "build_corpus"                      # the report is there and carries the stamp, the manifest is not decontaminate's
+        self.S.write_manifest(self.root / "corpus" / "manifest.json", manifest)
+        self.assertIn("build_corpus", self.refused())
+
     def test_a_report_that_decontaminate_did_not_write_is_refused(self) -> None:
         decontaminated(self.root / "corpus")
         self.S.write_manifest(self.root / "corpus" / "decontamination.json", {"tool": "somebody", "rows_out": 7})
@@ -208,7 +217,10 @@ class CorpusProvenance(TargetsFixture):
     def test_the_real_decontaminate_output_is_accepted(self) -> None:
         from decide.data import decontaminate as D
 
-        D.decontaminate_corpus(self.root / "corpus", self.root / "clean", D.ReferenceIndex())
+        self.S.seal_directory(self.root / "corpus")                    # decontaminate reads its input through a manifest too
+        index = D.ReferenceIndex()
+        index.freeze()
+        D.decontaminate_corpus(self.root / "corpus", self.root / "clean", index)
         report = self.build(corpus=self.root / "clean")
         self.assertEqual(report["corpus"]["tool"], "decontaminate")
         self.assertEqual(report["corpus"]["decontamination_sha256"], sha256(self.root / "clean" / "decontamination.json"))
@@ -308,6 +320,16 @@ class TargetsHardening(TargetsFixture):
         report = self.build(traces_path=self.root / "traces")
         self.assertEqual(report["reasoning_rows"], 1)
 
+    def test_only_the_trace_parts_the_manifest_lists_are_read(self) -> None:
+        from decide.data import traces as TR
+
+        self.write_trace("alpha", [("s:0", "think", 3, "stop")])
+        TR.write_trace_part(self.root / "traces" / "alpha" / "part-0001.parquet",
+                            [TR.trace_row(example_id="s:1", thinker="alpha", reasoning="stray", tokens=3, finish_reason="stop",
+                                          request_sha256=self.S.request_digest(self.requests["s:1"]))])       # a part nobody sealed
+        report = self.build(traces_path=self.root / "traces")
+        self.assertEqual((report["reasoning_rows"], report["traces_unmatched"]), (1, 0))
+
     def test_a_row_whose_state_already_holds_the_label_line_does_not_take_the_trace(self) -> None:
         from decide.data import schema as S
 
@@ -330,7 +352,7 @@ class TargetsHardening(TargetsFixture):
         self.assertEqual((report["questions"], report["unlabeled_questions"]), (7, 2))
         self.write_teacher("t2", range(7))
         both = self.BT.build(self.root / "corpus", [self.root / "labels" / "t1", self.root / "labels" / "t2"], self.root / "t12",
-                             combiner_path=self.combiner())
+                             combiner_path=self.combiner(), missing="renormalize")
         self.assertEqual(both["unlabeled_questions"], 0)
 
     def combiner(self) -> str:
@@ -463,6 +485,26 @@ class HeldoutIsNotInSample(unittest.TestCase):
         self.assertEqual(len(fit_side | score_side), 12)
         order = {example.example_id: n for n, example in enumerate(examples)}
         self.assertEqual({n for example_id, n in order.items() if by_parity(example_id) == 0}, fit_side)
+
+
+    def test_the_reasoning_report_leaves_out_the_examples_whose_state_has_the_block(self) -> None:
+        from decide.train import evaluate as EV
+        from decide.train.codes import ANSWER_CODES
+        from decide.train.data import Example
+        from decide.train.protocol import RequestEncoder
+
+        encoder = RequestEncoder(FakeTokenizer(), ANSWER_CODES)
+        examples = []
+        for i, state in enumerate(["plain state", "plain state two", "s\n\nRaciocínio:\nalready here", "plain state four"]):
+            examples.append(Example(example_id=f"r:{i}", source="r", split="dev", lang="en", request=choice_request(f"Question {i}?", ["a", "b", "c"], keys=["x", "y", "z"], state=state),
+                                    gold_index={"q1": i % 3}, combined={"q1": None}, teachers=(), reasoning="a thought"))
+        examples.append(Example(example_id="r:9", source="r", split="dev", lang="en", request=choice_request("Question 9?", ["a", "b", "c"], keys=["x", "y", "z"]),
+                                gold_index={"q1": 0}, combined={"q1": None}, teachers=(), reasoning=None))
+        with mock.patch.object(EV, "question_logits", lambda model, items, pad_id, **kwargs: [[[0.0, 1.0, 2.0]] for _ in items]):
+            shown = EV.evaluate_examples(None, encoder, examples, reasoning=True, minimum=1)
+            plain = EV.evaluate_examples(None, encoder, examples, reasoning=False, minimum=1)
+        self.assertEqual(shown["examples"], 3, "three have a reasoning and a state that can take it")
+        self.assertEqual(plain["examples"], 5)
 
 
 # ------------------------------------------------------------------------------------------------------------- the checkpoint a run started from

@@ -49,3 +49,15 @@ pplx-decider-v1.2
 Derived from Qwen/Qwen3.8-27B, revision
 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0, under Apache License 2.0.
 ----------------------------------------------------------------------------------------------------
+
+Original NOTICE of pplx-decider-flash-v1.2 (revision 9ff7cf98 of its repository; the 4B checkpoint F4 starts from):
+
+----------------------------------------------------------------------------------------------------
+pplx-decider-flash-v1.2
+
+Derived from Qwen/Qwen3.5-4B, revision
+851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a, under Apache License 2.0.
+----------------------------------------------------------------------------------------------------
+
+A checkpoint written by this code (decide.train.train, decide.train.soup) carries the LICENSE and the NOTICE of the checkpoint
+it started from, followed by a "Modifications:" line (see notices.py, Apache License 2.0, section 4(a), 4(b) and 4(d)).

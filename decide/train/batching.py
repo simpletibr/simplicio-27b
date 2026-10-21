@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .data import Example
 from .permute import permute_request, permute_targets
-from .protocol import Encoded, RequestEncoder
+from .protocol import Encoded, RequestEncoder, has_reasoning_block
 
 REASONING_MODES = ("off", "mixed", "always")
 
@@ -77,7 +77,8 @@ def make_item(example: Example, encoder: RequestEncoder, *, seed: int, epoch: in
               reasoning: Optional[ReasoningPolicy] = None, max_length: Optional[int] = None) -> Item:
     """Build the item of one example for one epoch.  Raises :class:`TooLong` when it cannot fit ``max_length``."""
     policy = reasoning or ReasoningPolicy()
-    show = policy.uses(example.example_id, example.reasoning is not None, seed=seed, epoch=epoch)
+    # a state that already holds a `Raciocínio:` block cannot take a second one (fold_reasoning refuses it): that example trains without
+    show = policy.uses(example.example_id, example.reasoning is not None and not has_reasoning_block(example.request["state"]), seed=seed, epoch=epoch)
     targets = {question_id: example.target(question_id, alpha=alpha) for question_id in example.request["questions"]}
     fell_back = False
     while True:

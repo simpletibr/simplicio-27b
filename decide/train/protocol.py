@@ -8,13 +8,18 @@ validated against decide/data/SCHEMA.md; the splitting of over-length requests i
 One sequence per request holds the state and every question.  Each question is followed by its options and a
 ``<|fim_suffix|>`` marker; the readout head is applied to the hidden state at each marker.
 
-Addition of this repository (not in v1.2): an optional ``reasoning`` string in the request becomes a
-part headed ``Raciocínio:`` between the state and the first question.  Without it the prompt is the v1.2 one.
+Addition of this repository (not in v1.2): an optional ``reasoning`` string in the request is folded into the state
+(:func:`fold_reasoning`: ``<state>`` + blank line + ``Raciocínio:`` + the cleaned, clipped reasoning), so the prompt of a
+request with reasoning is, by construction, the prompt of the same request folded by an engine that only knows ``state``.
+Without it the prompt is the v1.2 one.  ``images`` are refused: this protocol is text only and v1.2 would read the
+request as text without telling.
 """
 from __future__ import annotations
 
 import copy
 import json
+import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
@@ -38,6 +43,8 @@ SYSTEM_PROMPT = (
 DEFAULT_INSTRUCTIONS = "Choose the best matching option."
 #: Label of the optional reasoning block (decide/data/SCHEMA.md, section 10).  Part of the train/inference contract.
 REASONING_LABEL = "Racioc\u00ednio:"
+#: Most characters of reasoning that go under the label (the end is kept); the budget of the thinker side (``decide/think/trace.py``).
+REASONING_MAX_CHARS = 8000
 QUESTION_TYPES = ("choice", "noul", "score")
 
 
@@ -64,8 +71,12 @@ def options(question: Mapping[str, Any]) -> Tuple[List[str], List[Any]]:
 def validate(request: Any, codes: Sequence[str]) -> None:
     if not isinstance(request, dict) or "state" not in request or "questions" not in request:
         raise RequestError("A request needs 'state' and 'questions'")
+    if request.get("images"):
+        raise RequestError("'images' are not supported: this protocol is text only and would read the request without them")
     if "reasoning" in request and (not isinstance(request["reasoning"], str) or not request["reasoning"].strip()):
         raise RequestError("'reasoning' must be a non-empty string")
+    if "reasoning" in request and has_reasoning_block(request["state"]):
+        raise RequestError(f"the state already holds a {REASONING_LABEL} block, so the request cannot also carry a 'reasoning'")
     questions = request["questions"]
     if not isinstance(questions, dict) or not questions:
         raise RequestError("A request needs at least one question")
@@ -97,9 +108,8 @@ def _neutralize(text: str, special_tokens: Sequence[str]) -> str:
 def messages(request: Mapping[str, Any], codes: Sequence[str], special_tokens: Sequence[str] = ()) -> List[Dict[str, Any]]:
     """Chat messages of a request (system prompt + one user turn holding the state and every question)."""
     escapes = sorted(set(special_tokens), key=len, reverse=True)
+    request = fold_reasoning(request)
     parts = ["State:\n" + _neutralize(describe(request["state"]), escapes)]
-    if request.get("reasoning") is not None:
-        parts.append(f"{REASONING_LABEL}\n" + _neutralize(describe(request["reasoning"]), escapes))
     for index, question in enumerate(request["questions"].values()):
         _, descriptions = options(question)
         instructions = question.get("instructions") or DEFAULT_INSTRUCTIONS
@@ -109,17 +119,69 @@ def messages(request: Mapping[str, Any], codes: Sequence[str], special_tokens: S
             {"role": "user", "content": [{"type": "text", "text": "\n\n".join(parts)}]}]
 
 
-def fold_reasoning(request: Mapping[str, Any]) -> Dict[str, Any]:
+def _is_label_line(line: str) -> bool:
+    return unicodedata.normalize("NFC", line).strip() == REASONING_LABEL
+
+
+def has_reasoning_block(state: Any) -> bool:
+    """True when a line of the state is the ``Raciocínio:`` label (Unicode NFC, surrounding spaces ignored)."""
+    return any(_is_label_line(line) for line in describe(state).split("\n"))
+
+
+def _clean_reasoning(text: str) -> str:
+    """CR and CRLF become LF, spaces and tabs at the end of a line go, three or more blank lines become one, and a line that is the
+    label becomes ``Raciocínio :`` (so the folded state has exactly one label line, the one that starts the block)."""
+    lines = []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = line.rstrip(" \t")
+        if _is_label_line(line):
+            line = line[:len(line) - len(line.lstrip())] + REASONING_LABEL[:-1] + " :"
+        lines.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip("\n")
+
+
+def _clip_reasoning(text: str, max_chars: int) -> str:
+    """At most ``max_chars`` characters: the end of the text, from a line boundary when there is one, behind a one-line notice of how
+    many characters were dropped.  A text that already fits (a clipped text, for one) is returned as it is."""
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    reserve = len("[...  caracteres omitidos ...]") + len(str(len(text))) + 1          # the notice and its newline, worst case
+    budget = max_chars - reserve
+    if budget <= 0:
+        return text[-max_chars:]
+    tail = text[-budget:]
+    if text[-budget - 1] != "\n" and "\n" in tail:
+        rest = tail.split("\n", 1)[1]
+        if rest:
+            tail = rest
+    return f"[... {len(text) - len(tail)} caracteres omitidos ...]\n{tail}"
+
+
+def fold_reasoning(request: Mapping[str, Any], *, max_chars: int = REASONING_MAX_CHARS) -> Dict[str, Any]:
     """A copy of the request without the ``reasoning`` key and with the reasoning appended to the state text.
 
-    For engines that only know ``state``: the prompt is the same as the one ``messages`` builds from the original.
+    The one definition of the ``Raciocínio:`` block (decide/data/SCHEMA.md, section 10): the state loses the whitespace at its end,
+    then comes one blank line, the label line and the reasoning after :func:`_clean_reasoning` and clipped to ``max_chars``.  A state
+    that already has a label line is refused (:class:`RequestError`), never overwritten.  :func:`messages` builds its prompt from
+    this copy, and an engine that only knows ``state`` calls this before it sends the request; the golden cases both sides must
+    reproduce are in ``tests/fold_reasoning_cases.json``.  A request without ``reasoning`` is returned as it is (a copy).
     """
     folded = copy.deepcopy(dict(request))
     reasoning = folded.pop("reasoning", None)
-    if reasoning is not None:
-        if not isinstance(reasoning, str) or not reasoning.strip():
-            raise RequestError("'reasoning' must be a non-empty string")
-        folded["state"] = describe(folded["state"]) + "\n\n" + REASONING_LABEL + "\n" + reasoning
+    if reasoning is None:
+        return folded
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        raise RequestError("'reasoning' must be a non-empty string")
+    state = describe(folded["state"])
+    if has_reasoning_block(state):
+        raise RequestError(f"the state already holds a {REASONING_LABEL} block, so the request cannot also carry a 'reasoning'")
+    body = _clip_reasoning(_clean_reasoning(reasoning), max_chars)
+    if not body.strip():
+        raise RequestError("'reasoning' is empty after cleaning and clipping")
+    head = state.rstrip()
+    folded["state"] = (head + "\n\n" if head else "") + REASONING_LABEL + "\n" + body
     return folded
 
 

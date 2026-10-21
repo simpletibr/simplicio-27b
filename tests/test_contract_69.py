@@ -879,7 +879,8 @@ class CalibrationConfigContract(unittest.TestCase):
         self.assertEqual(fields["temperature_by_type"], {"choice": 1.8, "noul": 1.5, "score": 1.7})
         self.assertEqual(fields["temperature_fallback"], ["score"])
         self.assertIs(fields["temperature_is_placeholder"], False)
-        self.assertEqual(fields["calibration"], {"split": "dev", "examples": 12, "questions": 140, "questions_by_type": {"choice": 100, "noul": 40, "score": 3}})
+        self.assertEqual(fields["calibration"], {"split": "dev", "examples": 12, "questions": 140, "skipped_too_long": 0,
+                                                     "questions_by_type": {"choice": 100, "noul": 40, "score": 3}})
         self.assertNotIn("temperature_with_reasoning", fields)
 
     def test_the_fit_with_reasoning_is_kept_apart(self) -> None:
@@ -1198,6 +1199,7 @@ class BuildTargetsContract(unittest.TestCase):
         self.assertTrue((self.root / "targets" / "report.json").is_file())
         self.S.write_teacher_part(self.root / "labels" / "t1" / "part-0001.parquet", [
             {"example_id": "s:3", "question_id": "q1", "teacher": "t1", "codes": ["A", "B", "C"], "probs": [0.1, 0.1, 0.8], "temperature": 1.3}])   # differs from part-0000
+        self.S.seal_directory(self.root / "labels" / "t1", kind="labels")                       # and the folder is sealed again, so the manifest lists it
         argv = ["--corpus", str(self.root / "corpus"), "--labels", str(self.root / "labels" / "t1"), "--out", str(self.root / "targets")]
         with contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(self.BT.TargetError):
@@ -1316,7 +1318,7 @@ class BuildTargetsContract(unittest.TestCase):
         extra = self.S.corpus_row(example_id="s:7", source="s", license="mit", split="train", lang="en",
                                   request=choice_request("Question number 7?", ["a", "b", "c"], keys=["x", "y", "z"]), gold={"q1": "x"})
         self.S.write_corpus_part(self.root / "corpus" / "s-0001.parquet", [extra])
-        self.S.seal_directory(self.root / "corpus")
+        decontaminated(self.root / "corpus")
 
     def test_a_part_the_previous_manifest_lists_is_removed_when_it_leaves_the_corpus(self) -> None:
         # a marker can be lost (a copy that skipped it, a cleanup): the manifest the builder wrote still names the part
@@ -1326,7 +1328,7 @@ class BuildTargetsContract(unittest.TestCase):
         self.assertEqual([p["name"] for p in json.loads((targets / "manifest.json").read_text(encoding="utf-8"))["parts"]], ["s-0000.parquet", "s-0001.parquet"])
         (targets / "s-0001.parquet.done.json").unlink()
         (self.root / "corpus" / "s-0001.parquet").unlink()
-        self.S.seal_directory(self.root / "corpus")
+        decontaminated(self.root / "corpus")
         again = self.build()
         self.assertEqual(again["removed_stale"], ["s-0001.parquet"])
         self.assertEqual(sorted(p.name for p in targets.glob("s-0001*")), [])
@@ -1337,7 +1339,7 @@ class BuildTargetsContract(unittest.TestCase):
         targets = self.root / "targets"
         (targets / "manifest.json").unlink()                           # what a run that died after starting leaves behind
         (self.root / "corpus" / "s-0001.parquet").unlink()
-        self.S.seal_directory(self.root / "corpus")
+        decontaminated(self.root / "corpus")
         again = self.build()
         self.assertEqual(sorted(again["removed_stale"]), ["s-0001.parquet", "s-0001.parquet.done.json"])
 

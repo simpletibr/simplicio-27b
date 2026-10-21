@@ -7,7 +7,9 @@ one is given: it is a placeholder, a soup must be re-calibrated (``python -m dec
 
 Memory: one output shard (bf16, about 5 GB for the 27B) plus a few fp32 copies of the largest tensor.  Nothing is
 written to the final path until every check passed and every shard was written; an interrupted run leaves only a
-``<out>.souping`` folder, which the next run deletes.
+``<out>.souping`` folder, which the next run deletes if it holds the marker file this tool puts in it (a folder with that name
+that the soup did not make is left alone and the run stops).  The soup carries the ``LICENSE`` and the ``NOTICE`` of the first
+input, with a ``Modifications:`` line added (``decide.train.notices``).
 
     python -m decide.train.soup --inputs run1/final run2/final --out soup
 """
@@ -23,9 +25,14 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-#: Top-level files that describe one specific input and must not be copied into the average.
+from .notices import carry_notices
+
+#: Top-level files that describe one specific input and must not be copied into the average (LICENSE and NOTICE are written by
+#: ``notices.carry_notices`` instead, with the line that says what was modified).
 NOT_COPIED = {"decision_config.json", "model.safetensors.index.json", "readout.safetensors", "release-manifest.json",
               "README.md", "LICENSE", "NOTICE"}
+#: First file of the ``<out>.souping`` folder: it is how the next run knows the folder is the soup's own and may be deleted.
+WORK_MARKER = ".simplicio-souping"
 
 
 #: Keys of an input's ``decision_config.json`` that describe that one run (its calibration and training record); a soup drops them.
@@ -164,8 +171,11 @@ def average_checkpoints(inputs: Sequence[os.PathLike], out: os.PathLike, weights
     # ---- write into a sibling folder, move into place at the end
     work = destination.with_name(destination.name + ".souping")
     if work.exists():
+        if not (work.is_dir() and (work / WORK_MARKER).is_file()):
+            raise SoupError(f"{work} exists and the soup did not make it (it has no {WORK_MARKER} inside): it will not delete it; move it away")
         shutil.rmtree(work)
     work.mkdir(parents=True)
+    (work / WORK_MARKER).write_text("made by decide.train.soup; the next soup deletes this folder\n", encoding="utf-8")
     handles: Dict[Tuple[int, str], Any] = {}
 
     def fetch(index: int, shard: str, name: str):
@@ -229,6 +239,10 @@ def average_checkpoints(inputs: Sequence[os.PathLike], out: os.PathLike, weights
         "temperature_is_placeholder": temperature is None,
     }
     (work / "decision_config.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    carry_notices(directories[0], work, f"weights averaged (soup) over {len(directories)} checkpoints ({', '.join(d.name for d in directories)}) "
+                                        "by decide.train.soup, in fp32, stored in the dtype of the inputs; decision_config.json rewritten, "
+                                        "the temperature to be re-calibrated.")
+    (work / WORK_MARKER).unlink()
     if destination.exists():
         destination.rmdir()
     os.replace(work, destination)

@@ -44,6 +44,7 @@ def setUpModule() -> None:
     root = Path(tmp.name)
     make_tiny_checkpoint(root / "base", FakeTokenizer())
     make_targets_dataset(root / "data", train=8, dev=6)
+    make_targets_dataset(root / "mixed", train=8, dev=6, long_every=4)         # examples 0, 4 (train) and 8, 12 (dev) have 144 tokens, the rest 104
     from safetensors import safe_open
 
     from decide.train import build_targets as BT
@@ -52,7 +53,8 @@ def setUpModule() -> None:
     from decide.train import temperature as TEMPERATURE
     from decide.train import train as TRAIN
 
-    _STATE.update(tmp=tmp, root=root, base=root / "base", data=root / "data", targets=root / "data" / "targets", runs={}, safe_open=safe_open,
+    _STATE.update(tmp=tmp, root=root, base=root / "base", data=root / "data", targets=root / "data" / "targets", mixed=root / "mixed" / "targets", runs={},
+                  safe_open=safe_open,
                   BT=BT, MODEL=MODEL, SOUP=SOUP, TEMPERATURE=TEMPERATURE, TRAIN=TRAIN)
 
 
@@ -79,9 +81,9 @@ def train(name: str, *extra: str, targets: "Path | None" = None, cache: bool = T
     return runs[name]
 
 
-def resume(name: str, *extra: str) -> int:
+def resume(name: str, *extra: str, targets: "Path | None" = None) -> int:
     with contextlib.redirect_stdout(io.StringIO()):
-        return _STATE["TRAIN"].main(argv_of(name, *extra, "--resume"), tokenizer=FakeTokenizer())
+        return _STATE["TRAIN"].main(argv_of(name, *extra, "--resume", targets=targets), tokenizer=FakeTokenizer())
 
 
 def events(out: Path) -> list:
@@ -215,6 +217,17 @@ class DroppedTooLong(unittest.TestCase):
         self.assertEqual(config(out / "final")["training"]["dropped_too_long"], 24)
         self.assertEqual([e["dropped_too_long"] for e in events(out) if e["kind"] == "training_step"], [8, 8, 8])
 
+    def test_a_resumed_run_counts_what_the_part_before_the_stop_dropped(self) -> None:
+        limit = ("--max-length", "120")                  # the examples with 144 tokens go: two of the eight, once per epoch
+        whole = train("mixed_whole", *ARGS, *FULL, *limit, targets=_STATE["mixed"], cache=False)
+        cut = train("mixed_cut", *ARGS, *FULL, *limit, "--max-steps", "5", targets=_STATE["mixed"], cache=False)
+        self.assertEqual(resume("mixed_cut", *ARGS, *FULL, *limit, targets=_STATE["mixed"]), 0)
+        for out in (whole, cut):
+            done = summary(out)
+            self.assertEqual((done["dropped_too_long"], done["dropped_too_long_examples"]), (12, 2), out.name)
+            self.assertEqual(done["evaluation"]["plain"]["skipped_too_long"], 2, "two of the six dev examples are long")
+            self.assertEqual(config(out / "final")["calibration"]["skipped_too_long"], 2)
+
     def test_a_run_that_drops_nothing_says_zero(self) -> None:
         out = train("dropped_none", *SHORT, *FULL)
         self.assertEqual((summary(out)["dropped_too_long"], summary(out)["dropped_too_long_examples"]), (0, 0))
@@ -324,7 +337,7 @@ class DocsSayWhatTheCodeDoes(unittest.TestCase):
     def test_the_package_doc_is_the_plan_of_adr_0004(self) -> None:
         import decide.train as package
 
-        self.assertNotIn("ensemble", package.__doc__.lower(), "ADR 0004, decision 1: the target is the gold label mixed with one teacher")
+        self.assertNotIn("distillation of a teacher ensemble", package.__doc__.lower(), "ADR 0004, decision 1: no ensemble; the target is the gold label mixed with one teacher")
         self.assertIn("ADR 0004", package.__doc__)
 
     def test_the_model_doc_says_which_layers_lora_adapts_and_why(self) -> None:

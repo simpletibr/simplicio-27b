@@ -372,7 +372,8 @@ class SoupAndTemperatureFlow(unittest.TestCase):
         cfg = config(soup)
         self.assertFalse(cfg["temperature_is_placeholder"])
         self.assertEqual(cfg["temperature"], report["fields"]["temperature"])
-        self.assertEqual(cfg["calibration"], {"split": "dev", "examples": 6, "questions": 6, "questions_by_type": {"choice": 6}, "with_reasoning": {"examples": 6, "questions": 6}})
+        self.assertEqual(cfg["calibration"], {"split": "dev", "examples": 6, "questions": 6, "skipped_too_long": 0, "questions_by_type": {"choice": 6},
+                                         "with_reasoning": {"examples": 6, "questions": 6}})
         self.assertIn("temperature_with_reasoning", cfg, "the dev examples carry thinker traces")
         self.assertFalse(cfg["soup"]["temperature_is_placeholder"])
         self.assertEqual({p.name: p.read_bytes() for p in soup.iterdir() if p.is_file() and p.name != "decision_config.json"}, before, "weights and tokenizer files untouched")

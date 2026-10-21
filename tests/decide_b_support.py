@@ -252,7 +252,7 @@ def make_tiny_checkpoint(directory: Path, tokenizer: "FakeTokenizer", seed: int 
     return directory
 
 
-def make_targets_dataset(root: Path, *, train: int = 8, dev: int = 6, traces_for: Sequence[int] = ()) -> Path:
+def make_targets_dataset(root: Path, *, train: int = 8, dev: int = 6, traces_for: Sequence[int] = (), long_every: int = 0) -> Path:
     """A small corpus with one teacher and gold labels, built into a targets dataset by ``decide.train.build_targets``.
 
     Every request is a 3-option choice question whose right option is the one named in the state, so a model can learn it.
@@ -267,7 +267,8 @@ def make_targets_dataset(root: Path, *, train: int = 8, dev: int = 6, traces_for
     for i in range(train + dev):
         right = i % 3
         options = [names[(i + k) % len(names)] for k in range(3)]
-        request = choice_request(f"Which one is the odd one number {i}?", options, state=f"The answer is {options[right]} for case {i}.", keys=["x", "y", "z"])
+        state = f"The answer is {options[right]} for case {i}." + (" lantern" * 40 if long_every and i % long_every == 0 else "")      # every long_every-th one is longer
+        request = choice_request(f"Which one is the odd one number {i}?", options, state=state, keys=["x", "y", "z"])
         example_id = f"toy:{i}"
         requests[example_id] = request
         rows.append(S.corpus_row(example_id=example_id, source="toy", license="mit", split="train" if i < train else "dev", lang="en", request=request,

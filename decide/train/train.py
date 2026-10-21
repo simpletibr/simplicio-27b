@@ -14,7 +14,11 @@ resumed run (``--resume``) continues exactly where it stopped.  The optimizer ke
 (``optim.CPUOffloadAdamW``) and only rank 0 steps it; the other ranks receive the new trainable weights.
 
 Output folder: ``run.json`` (arguments and fingerprint), ``events.jsonl`` (progress), ``resume.pt`` (resume state),
-``final/`` (checkpoint with LoRA merged and the fitted temperature) and ``summary.json``.
+``final/`` (checkpoint with LoRA merged and the fitted temperature) and ``summary.json``.  ``final/`` is written as ``final.tmp``
+and renamed when whole, so a kill during the save never leaves a half checkpoint under the name ``final`` (a ``--resume`` removes a
+stale ``final.tmp``, trains the steps after its last resume state again and saves).  The checkpoint carries the LICENSE and the NOTICE of
+the one the run started from, a ``Modifications:`` line, and ``training`` in its ``decision_config.json``: the method, the steps, the
+precision, the corpus provenance of the targets (``corpus``, from ``build_targets``) and the number of requests the length limit dropped.
 """
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ import json
 import math
 import os
 import random
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -47,6 +52,7 @@ from .schedule import epoch_order, learning_rate_factor, microbatches, plan_step
 from .temperature import CalibrationError, calibration_fields
 
 DEFAULT_LR = {"lora": 2e-5, "full": 2e-6}
+DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
 DEFAULT_SEED = 20261021
 
 
@@ -74,7 +80,9 @@ def build_parser() -> argparse.ArgumentParser:
     add("--alpha", type=float, default=0.5, help="weight of the gold label in the target (1 = gold only, 0 = teachers only)")
     add("--no-permute", action="store_true", help="do not shuffle the options of choice questions")
     add("--seed", type=int, default=DEFAULT_SEED)
-    add("--reasoning", choices=("off", "mixed", "always"), default="off", help="show the thinker's reasoning when the example has one")
+    add("--reasoning", choices=("off", "mixed", "always"), default="off",
+        help="show the thinker's reasoning when the example has one (folded into the state by protocol.fold_reasoning, SCHEMA.md section 10; "
+             "the thinker side must reproduce tests/fold_reasoning_cases.json before any training that uses it)")
     add("--reasoning-fraction", type=float, default=0.5, help="with --reasoning mixed: the share of examples that show it")
     add("--max-train", type=int, default=0, help="use only the first N training examples (pilot runs)")
     add("--max-steps", type=int, default=0, help="stop after N optimizer steps (the schedule still spans the whole run)")
@@ -84,6 +92,9 @@ def build_parser() -> argparse.ArgumentParser:
     add("--resume", action="store_true", help="continue the run in --out from its resume.pt")
     add("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=None, help="default: on when CUDA is available")
     add("--device", default="auto")
+    add("--dtype", choices=("auto", "bf16", "fp16", "fp32"), default="auto",
+        help="precision of the model: auto = bf16 on a GPU, fp32 on a CPU.  A T4 has no native bf16 (fp16 or fp32 there; fp16 has no loss scaling "
+             "here, so a nonfinite loss or gradient stops the run); part of the fingerprint of a run, so --resume cannot change it")
     add("--cpu-threads", type=int, default=8)
     add("--dry-run", action="store_true", help="read the data, print the plan and stop (no model is loaded)")
     return parser
@@ -117,11 +128,31 @@ def digest_of(path: Path) -> str:
     return hashlib.sha256(json.dumps(entries).encode("utf-8")).hexdigest()
 
 
+#: Small files of a checkpoint that decide what the model is and how a request is read; the weights are added by name.
+DIGEST_FILES = ("decision_config.json", "joint_config.json", "config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja",
+                "model.safetensors.index.json")
+
+
 def checkpoint_digest(checkpoint: Path) -> str:
-    digest = hashlib.sha256()
-    for name in ("decision_config.json", "readout.safetensors"):
-        digest.update((checkpoint / name).read_bytes())
-    return digest.hexdigest()
+    """Fingerprint of the checkpoint a run starts from: the small files above and every ``*.safetensors`` file (the backbone shards
+    and the readout), each by name and sha256 of its content.  Documentation (README.md) is not part of it.  The 27B checkpoint is
+    about 54 GB, so this reads it once at the start of a run and of a resume (time UNVERIFIED on the rented disk)."""
+    names = [name for name in DIGEST_FILES if (checkpoint / name).is_file()] + sorted(file.name for file in checkpoint.glob("*.safetensors"))
+    return hashlib.sha256(json.dumps([(name, S.sha256_file(checkpoint / name)) for name in names]).encode("utf-8")).hexdigest()
+
+
+def targets_provenance(targets: Path) -> Optional[Dict[str, Any]]:
+    """The ``corpus`` block of the manifest of the targets (where the rows came from, ``build_targets``), or None if there is none."""
+    try:
+        manifest = json.loads((targets / S.MANIFEST_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    corpus = manifest.get("corpus") if isinstance(manifest, dict) else None
+    return corpus if isinstance(corpus, dict) else None
+
+
+def resolve_dtype(requested: str, cuda: bool) -> str:
+    return ("bf16" if cuda else "fp32") if requested == "auto" else requested
 
 
 def pick_device(requested: str) -> str:
@@ -130,9 +161,9 @@ def pick_device(requested: str) -> str:
     return requested
 
 
-def save_resume(path: Path, step: int, optimizer: CPUOffloadAdamW, fingerprint: Dict[str, Any]) -> None:
+def save_resume(path: Path, step: int, optimizer: CPUOffloadAdamW, fingerprint: Dict[str, Any], dropped: Dict[str, Any]) -> None:
     pending = path.with_name(path.name + ".pending")
-    torch.save({"format": 1, "step": step, "fingerprint": fingerprint, "optimizer": optimizer.state_dict()}, pending)
+    torch.save({"format": 1, "step": step, "fingerprint": fingerprint, "optimizer": optimizer.state_dict(), "dropped": dropped}, pending)
     with pending.open("rb") as stream:
         os.fsync(stream.fileno())
     os.replace(pending, path)
@@ -181,6 +212,8 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
         raise ValueError(f"{out} already holds a run; pass --resume to continue it or choose a new --out")
     if args.resume and not (out / "resume.pt").is_file():
         raise ValueError(f"--resume: {out / 'resume.pt'} does not exist")
+    if args.resume and (out / "final").exists():
+        raise ValueError(f"--resume: {out / 'final'} already exists, so the run is finished; there is nothing to continue")
     if distributed.primary:
         out.mkdir(parents=True, exist_ok=True)
     distributed.barrier()
@@ -189,8 +222,10 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
     tokenizer = tokenizer if tokenizer is not None else load_tokenizer(checkpoint)
     check_codes(tokenizer, config)
     encoder = RequestEncoder(tokenizer, ANSWER_CODES)
+    dtype_name = resolve_dtype(args.dtype, cuda)
+    provenance = targets_provenance(targets)
     fingerprint = {
-        "targets": digest_of(targets), "checkpoint": checkpoint_digest(checkpoint), "world_size": distributed.world_size,
+        "targets": digest_of(targets), "checkpoint": checkpoint_digest(checkpoint), "world_size": distributed.world_size, "dtype": dtype_name,
         **{key: getattr(args, key) for key in ("mode", "lora_rank", "lora_alpha", "lora_dropout", "epochs", "effective_batch", "batch_rows", "token_budget",
                                                 "max_length", "warmup_ratio", "weight_decay", "grad_clip", "brier_weight", "alpha", "no_permute", "seed",
                                                 "reasoning", "reasoning_fraction", "max_train")},
@@ -202,10 +237,11 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
     started = time.monotonic()
     model = JointModel.load(checkpoint, mode=args.mode, device=device, lora=LoraSpec(args.lora_rank, args.lora_alpha if args.lora_alpha is not None else float(args.lora_rank),
                                                                                   args.lora_dropout),
-                            gradient_checkpointing=gradient_checkpointing)
+                            gradient_checkpointing=gradient_checkpointing, dtype=DTYPES[dtype_name])
     optimizer = CPUOffloadAdamW(model.trainable(), lr=lr, weight_decay=args.weight_decay) if distributed.primary else None
     trainable = [parameter for _, parameter in model.trainable()]
     step = 0
+    dropped_requests, dropped_examples = 0, set()          # the requests the length limit left out, by request and by distinct example
     if args.resume:
         state = torch.load(out / "resume.pt", map_location="cpu", weights_only=True) if distributed.primary else None
         saved = distributed.broadcast({key: state[key] for key in ("format", "step", "fingerprint")} if state is not None else None)
@@ -213,6 +249,8 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
             differing = sorted(key for key in set(fingerprint) | set(saved["fingerprint"]) if fingerprint.get(key) != saved["fingerprint"].get(key))
             raise ValueError(f"--resume: the saved run differs in {', '.join(differing)}")
         step = int(saved["step"])
+        if state is not None and isinstance(state.get("dropped"), dict):
+            dropped_requests, dropped_examples = int(state["dropped"]["requests"]), set(state["dropped"]["examples"])
         if optimizer is not None:
             optimizer.load_state_dict(state["optimizer"])      # also copies the saved weights into the trainable parameters
         distributed.broadcast_parameters(model)                # the other ranks get them from rank 0
@@ -222,7 +260,8 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
     distributed.barrier()
     training_model = distributed.wrap(model)
     if distributed.primary:
-        events.record("training_started", plan=summary_plan, step=step, trainable_parameters=sum(p.numel() for p in trainable), world_size=distributed.world_size)
+        events.record("training_started", plan=summary_plan, step=step, trainable_parameters=sum(p.numel() for p in trainable), world_size=distributed.world_size,
+                      dtype=dtype_name, corpus=provenance)
 
     order_cache: Dict[int, List[int]] = {}
 
@@ -251,6 +290,8 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
                                        reasoning=policy, max_length=args.max_length))
             except TooLong:
                 too_long += 1
+                dropped_examples.add(train[index].example_id)
+        dropped_requests += too_long
         items.sort(key=lambda item: item.length)
         masses = {id(item): sum(target is not None for target in item.targets) for item in items}
         total_mass = sum(masses.values())
@@ -304,9 +345,10 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
         if args.eval_every and step % args.eval_every == 0 and step < stop and dev:
             distributed.on_primary(lambda: evaluate("periodic"))
         if optimizer is not None and (step % args.resume_every == 0 or step == stop) and step < plan.total_steps:
-            save_resume(out / "resume.pt", step, optimizer, fingerprint)
+            save_resume(out / "resume.pt", step, optimizer, fingerprint, {"requests": dropped_requests, "examples": sorted(dropped_examples)})
 
     summary: Dict[str, Any] = {"steps": step, "planned_steps": plan.total_steps, "complete": step == plan.total_steps, "plan": summary_plan,
+                               "dropped_too_long": dropped_requests, "dropped_too_long_examples": len(dropped_examples), "dtype": dtype_name,
                                "elapsed_seconds": time.monotonic() - started}
 
     def finish() -> None:
@@ -316,7 +358,8 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
             model.merge()
             report = evaluate("final") if dev else {}
             extra: Dict[str, Any] = {"training": {"method": args.mode, "steps": step, "examples": len(train), "alpha": args.alpha, "seed": args.seed,
-                                                  "reasoning": args.reasoning, "run_fingerprint": fingerprint}}
+                                                  "reasoning": args.reasoning, "dtype": dtype_name, "corpus": provenance,
+                                                  "dropped_too_long": dropped_requests, "run_fingerprint": fingerprint}}
             temperature = None
             try:       # the same fit, and the same keys, as ``python -m decide.train.temperature --write``
                 fields = calibration_fields(report.get("plain", {}), report.get("reasoning"))
@@ -324,7 +367,12 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
                 extra.update(fields)
             except CalibrationError:
                 pass   # no dev question with a gold label: the checkpoint keeps the temperature it started with
-            saved = model.save(out / "final", temperature=temperature, extra=extra)
+            shutil.rmtree(out / "final.tmp", ignore_errors=True)        # what a killed save left
+            model.save(out / "final.tmp", temperature=temperature, extra=extra,
+                       modification=f"fine-tuned with decide.train.train ({args.mode}, {step} steps, seed {args.seed}, {dtype_name}); backbone and readout "
+                                    "weights and decision_config.json (temperature, calibration, training record) changed.")
+            os.replace(out / "final.tmp", out / "final")                # whole or not at all
+            saved = out / "final"
             summary.update({"checkpoint": str(saved), "temperature": temperature, "evaluation": {k: brief(v) for k, v in report.items()}})
             events.record("checkpoint_saved", path=str(saved), temperature=temperature)
         (out / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")

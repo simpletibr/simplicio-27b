@@ -17,7 +17,7 @@ from . import calibrate
 from .batching import Item, ReasoningPolicy, TooLong, make_item
 from .data import Example
 from .model import JointModel, collate
-from .protocol import RequestEncoder
+from .protocol import RequestEncoder, has_reasoning_block
 from .schedule import microbatches
 
 
@@ -76,8 +76,8 @@ def evaluate_examples(model: JointModel, encoder: RequestEncoder, examples: Sequ
     items: List[Item] = []
     too_long = 0
     for example in examples:
-        if reasoning and example.reasoning is None:
-            continue
+        if reasoning and (example.reasoning is None or has_reasoning_block(example.request["state"])):
+            continue                  # nothing to show, or a state that already holds a block and cannot take a second one
         if all(index is None for index in example.gold_index.values()):
             continue
         try:

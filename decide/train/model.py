@@ -4,7 +4,15 @@ Adapted from ``pplx_decider/model.py`` of perplexity-ai/pplx-decider-v1.2 and ``
 pplx-decider-v1.1-27b (Apache License 2.0; see LICENSE, NOTICE).  Changes: the checkpoint is always a v1.2 joint
 checkpoint (``joint_config.json`` must declare the version-3 protocol); the batch is built from already tokenized
 ``Encoded`` requests; LoRA (peft) is an alternative to full fine-tuning; the output keeps the layout of the input
-checkpoint so the result loads in the pplx ``Decider`` and in the Squad A engines; no image path.
+checkpoint so the result loads in the pplx ``Decider`` and in the Squad A engines, with the ``LICENSE`` and the ``NOTICE`` of
+the input checkpoint and a ``Modifications:`` line (``decide.train.notices``); no image path.
+
+Which layers LoRA adapts (``LORA_TARGETS``; a choice of this repository, not of the plan in decide/PLAN.md, which only fixes the
+rank): the attention projections ``q_proj``, ``k_proj``, ``v_proj``, ``o_proj`` of the full-attention layers, the MLP
+``gate_proj``, ``up_proj``, ``down_proj`` and, because most layers of Qwen3.5 are DeltaNet (linear attention) layers, their
+``in_proj_qkv``, ``in_proj_z`` and ``out_proj``.  The tiny gates ``in_proj_a`` and ``in_proj_b`` of the DeltaNet layers, the
+embeddings and the vision tower stay frozen.  Leaving the DeltaNet projections out would adapt only the few full-attention layers.
+Whether that is the best set is UNVERIFIED (no ablation was run).
 
 One forward pass reads one left-padded batch of joint sequences and returns the masked logits of every question
 (``MAX_OPTIONS`` columns; options a question does not have get ``loss.MASK_VALUE``).
@@ -25,6 +33,7 @@ from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5Model
 
 from .codes import ANSWER_CODES, MAX_OPTIONS
 from .loss import mask_logits
+from .notices import carry_notices
 from .protocol import PROTOCOL, Encoded
 from .soup import NOT_COPIED
 
@@ -208,8 +217,10 @@ class JointModel(torch.nn.Module):
             self.mode = "merged"
 
     # ------------------------------------------------------------------ saving
-    def save(self, directory: "str | Path", *, temperature: Optional[float] = None, extra: Optional[Dict[str, Any]] = None) -> Path:
-        """Write a checkpoint with the layout of the one this model was loaded from (never into a non-empty folder)."""
+    def save(self, directory: "str | Path", *, temperature: Optional[float] = None, extra: Optional[Dict[str, Any]] = None,
+             modification: str = "weights, readout and decision_config.json changed by decide.train.model") -> Path:
+        """Write a checkpoint with the layout of the one this model was loaded from (never into a non-empty folder), with the
+        ``LICENSE`` and the ``NOTICE`` of that one and a ``Modifications:`` line saying ``modification``."""
         if self.mode == "lora":
             raise RuntimeError("merge() the LoRA adapters before saving")
         destination = Path(directory)
@@ -229,5 +240,6 @@ class JointModel(torch.nn.Module):
         config.update(extra or {})
         config["temperature"] = scale
         (destination / "decision_config.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        carry_notices(self.source, destination, modification)
         self.temperature = scale
         return destination
