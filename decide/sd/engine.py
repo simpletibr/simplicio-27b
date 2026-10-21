@@ -110,6 +110,10 @@ def _check_request(request: Mapping[str, Any], types: Sequence[str] = SUPPORTED_
             raise Unsupported(f"question {key!r}: this engine serves only {tuple(types)} questions (the kit scores {SUPPORTED_TYPES})")
     if request.get("images"):
         raise Unsupported("this engine loads the text tower only; image requests are not supported")
+    if request.get("reasoning") is not None:
+        raise Unsupported("this engine does not render 'reasoning': the v1.2 joint prompt has no place for it, and dropping it would answer a "
+                          "different question than the one asked.  It is served once the thinking track passes its gate and the training "
+                          "protocol's fold_reasoning() is integrated")
 
 
 class DecisionEngine(Engine):

@@ -9,6 +9,11 @@ A `spec` names a model by recipe, never by file: the anchor checkpoint, the dono
 an optional LoRA adapter, the merge method.  Nothing is written to disk; the loader merges while it streams the weights
 (`loader.py`).  Heads are never merged.
 
+Requests are the Decision Index's: a state text and questions (choice, noul).  A request with a `reasoning` key is refused with
+`Unsupported` (a `unsupported` row), never answered without it: the v1.2 joint prompt has no place for the text, and the engine
+would otherwise answer a question that is not the one asked.  Reasoning is served once the thinking track passes its gate and the
+training protocol's `fold_reasoning()` is integrated here.
+
 Importing this module does not import torch: the pure helpers (`normalize_spec`, `spec_for`, `parse_device`,
 `quant_settings`) work anywhere, and `load_engine` imports the heavy parts when it is called.
 """

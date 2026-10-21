@@ -252,6 +252,10 @@ MUTATIONS: Tuple[Mutation, ...] = (
              'head = (donors[0] if donors else anchor).shard("readout.safetensors").read_tensor("weight")', LOADER_TESTS,
              "the readout head comes from a donor that ships one (heads are never merged or lent)"),
 
+    # ---- a question that carries more than the prompt can hold is refused, not answered without the rest
+    Mutation("engine", "reasoning-silently-dropped", E, 'if request.get("reasoning") is not None:', 'if False and request.get("reasoning") is not None:', ENGINE_TESTS,
+             "a request with a reasoning text is answered as if the text were not there, and scored as if it had been read"),
+
     # ---- the loader: which tensors are merged with which weights
     Mutation("loader", "donor-weights-misaligned", L, "[weights[i] for i in plan.donors]", "[weights[i] for i in reversed(plan.donors)]",
              ("test_flow_65.LoaderFlow",), "donor i is merged with the weight of donor j"),

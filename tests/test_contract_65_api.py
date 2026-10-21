@@ -44,6 +44,10 @@ class NormalizeSpecContract(HermeticTestCase):
                 with self.subTest(f"{where}: {bad!r}"), self.assertRaisesRegex(api.ApiError, "revision"):
                     api.normalize_spec(make(bad))
 
+    def test_the_module_documents_that_reasoning_is_refused_for_now(self):
+        self.assertIn("`reasoning`", api.__doc__)
+        self.assertIn("fold_reasoning()", api.__doc__)
+
     def test_a_repo_cannot_be_a_donor_and_the_lora_or_a_donor_and_the_anchor(self):
         base = {"anchor": "org/a", "anchor_revision": A}
         both = {**base, "donors": [{"repo": "org/Simplicio-27B", "weight": 0.5, "revision": D}], "lora": {"repo": "org/simplicio-27b", "weight": 0.1, "revision": L}}

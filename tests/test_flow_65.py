@@ -546,6 +546,18 @@ class EngineFlow(HermeticTestCase):
         self.assertIsInstance(out[0], self.E.Unsupported)
         self.assertIsInstance(out[1], tuple)                     # the other request still ran
 
+    def test_a_request_with_reasoning_is_refused_not_answered_without_it(self):
+        # the joint prompt of v1.2 has no place for a reasoning text; the vendored encoder would drop the key without a word,
+        # and an answer that never saw the reasoning would be scored as if it had
+        eng = self.engine()
+        with_reasoning = {**self.tm.REQUEST, "reasoning": "The customer already paid, so booking is safe."}
+        with self.assertRaisesRegex(self.E.Unsupported, "reasoning"):
+            eng(**with_reasoning)
+        out = eng.batch([self.tm.REQUEST, with_reasoning, self.tm.REQUEST])
+        self.assertEqual([type(o).__name__ for o in out], ["tuple", "Unsupported", "tuple"])
+        self.assertIn("thinking track", str(out[1]))
+        self.assertIsInstance(eng.batch([{**self.tm.REQUEST, "reasoning": None}])[0], tuple)         # an empty key says nothing to leave out
+
     def test_over_length_requests_are_unsupported_not_truncated(self):
         eng = self.engine(self.decider(max_length=20))
         with self.assertRaises(self.E.Unsupported) as ctx:
