@@ -12,6 +12,11 @@ sides with the same payload hash.  The headline is the field (question) agreemen
 request equal) is reported next to it, with a cluster bootstrap interval over groups.  Disagreements where the published
 top two options were within `near_tie` of each other are counted apart: a coin-flip is not a distortion.
 
+A row is compared only when both sides carry a `payload_sha256` and the two are equal: a row without one cannot be shown to be the
+same request, so it is counted as `unmatched` and left out, like a row with another hash.  The gate gives no verdict (`insufficient`)
+on a run that stopped early or that has a request ending in `error`: agreement over the rows that happened to answer says nothing about
+the loader that failed on the others.  Requests that were `unsupported` or `abstained` stay out of the agreement and are counted in the reason.
+
 Nothing here imports torch.
 """
 from __future__ import annotations
@@ -23,12 +28,13 @@ import os
 import random
 import re
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from decide.sd import evaluate
 from decide.sd import sample as sample_mod
-from decide.sd.remote import COMMIT_SHA, HttpTransport, RemoteError
+from decide.sd.remote import COMMIT_SHA, HttpTransport, RemoteError, dataset_problem, endpoint_problem, run_name_problem
 
 ENDPOINT = "https://huggingface.co"
 RESULTS_FILE = "results.jsonl.gz"
@@ -50,8 +56,18 @@ def pinned(revision: Any) -> str:
     return revision
 
 
+def check_names(dataset: Any, run: Any) -> None:
+    """The dataset is `org/name` and the run one plain folder name.  A name with `..` would be resolved by the HTTP client before the request leaves,
+    and the commit in the URL would not be the one that is read."""
+    for what, problem in (("dataset", dataset_problem(dataset)), ("run", run_name_problem(run))):
+        if problem:
+            raise FidelityError(f"published {what} {problem}")
+
+
 def published_url(dataset: str, run: str, filename: str = RESULTS_FILE, *, revision: str, endpoint: str = ENDPOINT) -> str:
-    return f"{endpoint.rstrip('/')}/datasets/{dataset}/resolve/{pinned(revision)}/runs/{run}/{filename}"
+    revision = pinned(revision)
+    check_names(dataset, run)                                     # the URL is only as good as these two names
+    return f"{endpoint.rstrip('/')}/datasets/{dataset}/resolve/{revision}/runs/{run}/{filename}"
 
 
 def published_entries(cfg: Mapping[str, Any]) -> Dict[str, Dict[str, str]]:
@@ -71,6 +87,9 @@ def published_entry(cfg: Mapping[str, Any], name: str) -> Dict[str, str]:
     for key in ("dataset", "run"):
         if not isinstance(entry.get(key), str) or not entry[key].strip():
             raise FidelityError(f"fidelity.published.{name}.{key} is missing")
+    for key, problem in (("dataset", dataset_problem(entry["dataset"])), ("run", run_name_problem(entry["run"]))):
+        if problem:
+            raise FidelityError(f"fidelity.published.{name}.{key} {problem}")
     try:
         revision = pinned(entry.get("revision"))
     except FidelityError as exc:
@@ -110,6 +129,10 @@ def fetch_published(dataset: str, run: str, dest_dir: Union[str, os.PathLike], *
                     transport: Any = None) -> Path:
     """Download `runs/<run>/results.jsonl.gz` of a public results dataset (about 47 MB) at the commit `revision` and check it against its SHA256SUMS."""
     pinned(revision)                                              # before anything is asked of the network
+    check_names(dataset, run)                                     # and before the folder for the download exists
+    problem = endpoint_problem(endpoint)                          # the token goes to this host: https, or plain http to this machine only
+    if problem:
+        raise FidelityError(f"endpoint {problem}")
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
     target = dest / RESULTS_FILE
@@ -181,6 +204,14 @@ def load_published(path: Union[str, os.PathLike], wanted: Optional[Iterable[str]
 
 # --------------------------------------------------------------------------- the comparison
 
+def payload_state(mine: Any, theirs: Any) -> str:
+    """`same` or `different` when both rows carry a hash of their request; `unknown` when either lacks one, because then nothing shows
+    that the two rows answered one request."""
+    if not mine or not theirs:
+        return "unknown"
+    return "same" if mine == theirs else "different"
+
+
 def _view(answer: Any) -> Optional[Tuple[str, List[str], List[float], str]]:
     """(type, option keys, probabilities, argmax key) of one answer, or None when it is not a well-formed answer."""
     if not isinstance(answer, Mapping):
@@ -213,7 +244,7 @@ def compare(ours: Mapping[str, Mapping[str, Any]], published: Mapping[str, Mappi
             replicates: int = 500, seed: int = 0, level: float = 0.95, examples: int = 20) -> Dict[str, Any]:
     """Agreement of the argmax of every question between two sets of result rows (see the module docstring)."""
     counters = {"rows": 0, "agree_rows": 0, "fields": 0, "agree_fields": 0, "not_ok": 0, "missing_in_published": 0,
-                "payload_mismatch": 0, "structure_mismatch": 0, "disagree_near_tie": 0, "disagree_clear": 0}
+                "payload_mismatch": 0, "unmatched": 0, "structure_mismatch": 0, "disagree_near_tie": 0, "disagree_clear": 0}
     per_benchmark: Dict[str, Dict[str, int]] = {}
     per_group: Dict[Any, List[int]] = {}
     sum_abs = sum_tv = 0.0
@@ -228,8 +259,9 @@ def compare(ours: Mapping[str, Mapping[str, Any]], published: Mapping[str, Mappi
         if mine.get("status") != "ok" or theirs.get("status") != "ok":
             counters["not_ok"] += 1
             continue
-        if mine.get("payload_sha256") and theirs.get("payload_sha256") and mine["payload_sha256"] != theirs["payload_sha256"]:
-            counters["payload_mismatch"] += 1
+        same = payload_state(mine.get("payload_sha256"), theirs.get("payload_sha256"))
+        if same != "same":
+            counters["payload_mismatch" if same == "different" else "unmatched"] += 1
             continue
         mine_answers = (mine.get("response") or {}).get("answers") or {}
         their_answers = (theirs.get("response") or {}).get("answers") or {}
@@ -297,17 +329,47 @@ def compare(ours: Mapping[str, Mapping[str, Any]], published: Mapping[str, Mappi
     }
 
 
-def gate(result: Mapping[str, Any], *, threshold: float, min_rows: int = 500) -> Dict[str, Any]:
-    """G0: field agreement at or above `threshold` over at least `min_rows` rows.  `firm` = the interval's lower end clears it too."""
+def coverage_of(requested: Sequence[str], ours: Mapping[str, Mapping[str, Any]], complete: bool) -> Dict[str, Any]:
+    """What became of the requests the run was asked to answer: `ok`, `unsupported`, `abstained`, `error` (any other result) or no result yet."""
+    seen = [ours[run_id] for run_id in requested if run_id in ours]
+    status = Counter(row.get("status") for row in seen)
+    return {"requested": len(requested), "ok": status["ok"], "error": len(seen) - status["ok"] - status["unsupported"] - status["abstained"],
+            "unsupported": status["unsupported"], "abstained": status["abstained"], "missing": len(requested) - len(seen), "complete": bool(complete)}
+
+
+def _coverage_text(coverage: Mapping[str, Any]) -> str:
+    details = [f"{coverage[key]} {label}" for key, label in (("error", "request(s) ended in error"), ("unsupported", "unsupported"), ("abstained", "abstained"),
+                                                               ("missing", "not run")) if coverage[key]]
+    return f"coverage: {coverage['ok']} of {coverage['requested']} requested rows answered ok" + (f" ({', '.join(details)})" if details else "")
+
+
+def gate(result: Mapping[str, Any], *, threshold: float, min_rows: int = 500, coverage: Mapping[str, Any]) -> Dict[str, Any]:
+    """G0: field agreement at or above `threshold` over at least `min_rows` rows.  `firm` = the interval's lower end clears it too.
+
+    `coverage` (see `coverage_of`) is required: a verdict is given only for a run that finished and has no request ending in `error`;
+    otherwise the status is `insufficient` and the reason says what is missing.  `unsupported` and `abstained` requests stay out of the
+    agreement and are counted in the reason.
+    """
     rows, value, ci = int(result.get("rows") or 0), result.get("field_agreement"), result.get("ci")
-    out: Dict[str, Any] = {"value": value, "threshold": threshold, "rows": rows, "min_rows": min_rows, "ci": ci, "firm": False}
+    out: Dict[str, Any] = {"value": value, "threshold": threshold, "rows": rows, "min_rows": min_rows, "ci": ci, "firm": False, "coverage": dict(coverage)}
+    text = _coverage_text(coverage)
+    held = []
+    if not coverage["complete"]:
+        held.append("the run stopped before the end")
+    if coverage["error"]:
+        held.append(f"{coverage['error']} request(s) ended in error")
+    if coverage["missing"]:
+        held.append(f"{coverage['missing']} request(s) have no result")
     if rows < min_rows or value is None:
-        out.update(status="insufficient", reason=f"{rows} comparable rows; the gate needs at least {min_rows}")
+        held.append(f"{rows} comparable rows; the gate needs at least {min_rows}")
+    if held:
+        so_far = f" (agreement so far {value:.4f} over {rows} rows)" if value is not None else ""
+        out.update(status="insufficient", reason=f"no verdict: {'; '.join(held)}{so_far}; {text}")
         return out
     out["status"] = "pass" if value >= threshold else "fail"
     out["firm"] = bool(ci and ci[0] >= threshold)
     out["reason"] = (f"field agreement {value:.4f} {'>=' if value >= threshold else '<'} {threshold} over {rows} rows"
-                     + (f" (95% interval {ci[0]:.4f}..{ci[1]:.4f})" if ci else ""))
+                     + (f" (95% interval {ci[0]:.4f}..{ci[1]:.4f})" if ci else "") + f"; {text}")
     return out
 
 
@@ -331,17 +393,19 @@ def check_fidelity(engine: Any, requests_path: Union[str, os.PathLike], publishe
     items = evaluate.read_items(requests_path)
     published = load_published(published_path, {i.run_id for i in items})
     usable = []
-    skipped = {"not_published": 0, "published_not_ok": 0, "payload_mismatch": 0}
+    skipped = {"not_published": 0, "published_not_ok": 0, "payload_mismatch": 0, "unmatched": 0}
     for item in items:
         theirs = published.get(item.run_id)
         if theirs is None:
             skipped["not_published"] += 1
         elif theirs.get("status") != "ok":
             skipped["published_not_ok"] += 1
-        elif item.meta.get("payload_sha256") and theirs.get("payload_sha256") and item.meta["payload_sha256"] != theirs["payload_sha256"]:
-            skipped["payload_mismatch"] += 1
         else:
-            usable.append(item)
+            same = payload_state(item.meta.get("payload_sha256"), theirs.get("payload_sha256"))
+            if same == "same":
+                usable.append(item)
+            else:
+                skipped["payload_mismatch" if same == "different" else "unmatched"] += 1
     if not usable:
         raise FidelityError(f"none of the {len(items)} requests has a published answer with the same payload: {skipped}")
     if limit:
@@ -353,13 +417,15 @@ def check_fidelity(engine: Any, requests_path: Union[str, os.PathLike], publishe
             handle.write(json.dumps(_row_of(item), ensure_ascii=False) + "\n")
     run = evaluate.run_requests(engine, subset, out / "run", budget=budget, resume=True, chunk=chunk, state=state,
                                 state_prefix=f"fidelity/{name or out.name}", log=log)
-    result = compare(evaluate.read_results(out / "run"), {i.run_id: published[i.run_id] for i in usable}, near_tie=near_tie,
-                     replicates=replicates, seed=seed)
+    ours = evaluate.read_results(out / "run")
+    result = compare(ours, {i.run_id: published[i.run_id] for i in usable}, near_tie=near_tie, replicates=replicates, seed=seed)
+    coverage = coverage_of([i.run_id for i in usable], ours, run["status"] == "complete")
     report = {"name": name or out.name, "complete": run["status"] == "complete", "run": {k: run[k] for k in ("rows", "total", "tokens", "seconds", "status", "counts")},
               "requests": {"in_file": len(items), "compared_candidates": len(usable), "skipped": skipped},
               "engine": dict(getattr(engine, "provenance", {}) or {}), "compare": result,
-              "gate": gate(result, threshold=threshold, min_rows=min_rows), "published": Path(published_path).name,
+              "gate": gate(result, threshold=threshold, min_rows=min_rows, coverage=coverage), "published": Path(published_path).name,
               "note": ("Agreement is measured per question (argmax; noul: side of 0.5) over rows that are ok on both sides with the same payload hash. "
+                       "The gate gives a verdict only for a finished run with no request in error (see gate.coverage). "
                        "The published results come from the authors' bf16 runtime on other hardware, so some disagreement is expected even from a perfect port.")}
     evaluate._atomic_json(out / REPORT_NAME, report)
     say(f"[fidelity] {report['gate']['status']}: {report['gate']['reason']}")
@@ -378,8 +444,7 @@ def common_sample(rows: Sequence[Mapping[str, Any]], published: Mapping[str, Map
         good = True
         for row in members:
             theirs = published.get(row["_evaluation"]["run_id"])
-            mine = row["_evaluation"].get("payload_sha256")
-            if theirs is None or theirs.get("status") != "ok" or (mine and theirs.get("payload_sha256") and mine != theirs["payload_sha256"]):
+            if theirs is None or theirs.get("status") != "ok" or payload_state(row["_evaluation"].get("payload_sha256"), theirs.get("payload_sha256")) != "same":
                 good = False
                 break
         if good:

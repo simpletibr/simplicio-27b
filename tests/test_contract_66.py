@@ -8,9 +8,11 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import posixpath
 import random
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 
 from decide_support import FakeHub, HermeticTestCase, needs_requests
@@ -140,6 +142,21 @@ class CompareContract(unittest.TestCase):
         self.assertEqual(out["payload_mismatch"], 1)               # d: not the same request, so not compared
         self.assertEqual(out["missing_in_ours"], 1)                # e
 
+    def test_a_row_without_a_payload_hash_on_either_side_is_not_compared_it_is_unmatched(self):
+        for mine_hash, their_hash in ((None, "h"), ("h", None), (None, None), ("", "h"), ("h", "")):
+            with self.subTest(ours=mine_hash, published=their_hash):
+                ours = {"a": row("a", {"q": noul(0.9)}, payload=mine_hash), "b": row("b", {"q": noul(0.9)})}
+                pub = {"a": row("a", {"q": noul(0.1)}, payload=their_hash), "b": row("b", {"q": noul(0.9)})}
+                out = fid.compare(ours, pub, replicates=5)
+                self.assertEqual((out["rows"], out["fields"], out["unmatched"], out["payload_mismatch"]), (1, 1, 1, 0))
+                self.assertEqual(out["field_agreement"], 1.0)      # "a" disagrees (0.9 against 0.1): compared, it would pull the number down
+
+    def test_a_row_with_two_equal_hashes_is_compared_and_one_with_two_different_hashes_is_not(self):
+        ours = {"a": row("a", {"q": noul(0.9)}, payload="x"), "b": row("b", {"q": noul(0.9)}, payload="x")}
+        pub = {"a": row("a", {"q": noul(0.9)}, payload="x"), "b": row("b", {"q": noul(0.9)}, payload="y")}
+        out = fid.compare(ours, pub, replicates=5)
+        self.assertEqual((out["rows"], out["unmatched"], out["payload_mismatch"]), (1, 0, 1))
+
     def test_other_option_sets_or_types_are_mismatches_and_count_as_disagreements(self):
         ours = {"a": row("a", {"q": choice(["A", "B"], [0.6, 0.4])}), "b": row("b", {"q": noul(0.9)})}
         pub = {"a": row("a", {"q": choice(["A", "C"], [0.6, 0.4])}), "b": row("b", {"q": choice(["A", "B"], [0.6, 0.4])})}
@@ -200,25 +217,78 @@ class GateContract(unittest.TestCase):
         return {"rows": rows, "fields": fields, "agree_fields": agree, "field_agreement": agree / fields if fields else None,
                 "ci": [agree / fields - 0.02, min(1.0, agree / fields + 0.02)] if fields else None}
 
+    def covered(self, requested, **changes):
+        """What a run that answered every request `ok` reports; `changes` says what went otherwise."""
+        coverage = {"requested": requested, "ok": requested, "error": 0, "unsupported": 0, "abstained": 0, "missing": 0, "complete": True}
+        coverage.update(changes)
+        return coverage
+
     def test_pass_fail_and_insufficient(self):
-        ok = fid.gate(self.result(600, 590), threshold=0.98, min_rows=500)
+        ok = fid.gate(self.result(600, 590), threshold=0.98, min_rows=500, coverage=self.covered(600))
         self.assertEqual((ok["status"], ok["rows"], ok["threshold"]), ("pass", 600, 0.98))
-        bad = fid.gate(self.result(600, 560), threshold=0.98, min_rows=500)
+        bad = fid.gate(self.result(600, 560), threshold=0.98, min_rows=500, coverage=self.covered(600))
         self.assertEqual(bad["status"], "fail")
-        few = fid.gate(self.result(499, 499), threshold=0.98, min_rows=500)
+        few = fid.gate(self.result(499, 499), threshold=0.98, min_rows=500, coverage=self.covered(499))
         self.assertEqual(few["status"], "insufficient")
         self.assertIn("500", few["reason"])
 
     def test_the_threshold_is_inclusive_and_the_interval_is_reported(self):
-        edge = fid.gate(self.result(1000, 950), threshold=0.95, min_rows=500)
+        edge = fid.gate(self.result(1000, 950), threshold=0.95, min_rows=500, coverage=self.covered(1000))
         self.assertEqual(edge["status"], "pass")
         self.assertFalse(edge["firm"])                              # the interval's lower end is below the threshold
-        firm = fid.gate(self.result(1000, 999), threshold=0.95, min_rows=500)
+        firm = fid.gate(self.result(1000, 999), threshold=0.95, min_rows=500, coverage=self.covered(1000))
         self.assertTrue(firm["firm"])
 
     def test_no_comparable_rows_is_insufficient_not_a_crash(self):
-        out = fid.gate({"rows": 0, "fields": 0, "agree_fields": 0, "field_agreement": None, "ci": None}, threshold=0.95, min_rows=500)
+        out = fid.gate({"rows": 0, "fields": 0, "agree_fields": 0, "field_agreement": None, "ci": None}, threshold=0.95, min_rows=500,
+                       coverage=self.covered(0))
         self.assertEqual(out["status"], "insufficient")
+
+    def test_the_gate_cannot_be_asked_without_saying_what_the_run_covered(self):
+        with self.assertRaises(TypeError):
+            fid.gate(self.result(600, 600), threshold=0.98, min_rows=500)               # type: ignore[call-arg]
+
+    def test_requests_that_ended_in_error_are_no_verdict_even_when_the_rest_agrees(self):
+        out = fid.gate(self.result(600, 600), threshold=0.98, min_rows=500, coverage=self.covered(1000, ok=600, error=400))
+        self.assertEqual(out["status"], "insufficient")
+        self.assertFalse(out["firm"])
+        for text in ("400", "error", "600 of 1000"):
+            self.assertIn(text, out["reason"])
+        self.assertEqual((out["coverage"]["requested"], out["coverage"]["ok"], out["coverage"]["error"]), (1000, 600, 400))
+
+    def test_a_single_error_is_enough_to_withhold_the_verdict(self):
+        out = fid.gate(self.result(2000, 2000), threshold=0.98, min_rows=500, coverage=self.covered(2001, ok=2000, error=1))
+        self.assertEqual((out["status"], out["firm"]), ("insufficient", False))
+
+    def test_a_run_that_stopped_early_is_never_a_pass_and_never_firm(self):
+        out = fid.gate(self.result(600, 600), threshold=0.98, min_rows=500, coverage=self.covered(1000, ok=600, missing=400, complete=False))
+        self.assertEqual((out["status"], out["firm"]), ("insufficient", False))
+        for text in ("stopped", "600 of 1000", "400 not run"):
+            self.assertIn(text, out["reason"])
+        flagged = fid.gate(self.result(1000, 1000), threshold=0.98, min_rows=500, coverage=self.covered(1000, complete=False))
+        self.assertEqual(flagged["status"], "insufficient")                             # the flag alone is enough
+
+    def test_requests_that_were_never_run_are_no_verdict(self):
+        out = fid.gate(self.result(997, 997), threshold=0.98, min_rows=500, coverage=self.covered(1000, ok=997, missing=3))
+        self.assertEqual(out["status"], "insufficient")
+        self.assertIn("3 not run", out["reason"])
+
+    def test_unsupported_and_abstained_requests_stay_out_of_the_agreement_but_are_counted_in_the_reason(self):
+        out = fid.gate(self.result(600, 600), threshold=0.98, min_rows=500, coverage=self.covered(1000, ok=600, unsupported=300, abstained=100))
+        self.assertEqual(out["status"], "pass")
+        for text in ("300 unsupported", "100 abstained", "600 of 1000"):
+            self.assertIn(text, out["reason"])
+        self.assertEqual((out["coverage"]["unsupported"], out["coverage"]["abstained"]), (300, 100))
+
+    def test_a_complete_clean_run_says_so_in_the_reason_too(self):
+        out = fid.gate(self.result(600, 600), threshold=0.98, min_rows=500, coverage=self.covered(600))
+        self.assertIn("600 of 600", out["reason"])
+
+    def test_the_interim_agreement_of_a_run_without_a_verdict_is_still_shown(self):
+        out = fid.gate(self.result(600, 300), threshold=0.98, min_rows=500, coverage=self.covered(1000, ok=600, missing=400, complete=False))
+        self.assertEqual(out["status"], "insufficient")
+        self.assertIn("0.5000", out["reason"])
+        self.assertEqual(out["value"], 0.5)
 
 
 class PublishedContract(HermeticTestCase):
@@ -317,6 +387,79 @@ class PublishedContract(HermeticTestCase):
             fid.fetch_published("org/pub", "mini", self.dir / "dl")              # type: ignore[call-arg]
 
 
+    BAD_RUNS = {"dotdot": "..", "up and across": "../main", "a deep climb": "../../../../org/pub/resolve/main/runs/mini", "a slash": "a/b",
+                "a backslash": "a\\b", "percent-encoded dots": "%2e%2e", "an encoded slash": "a%2fb", "a control character": "mini\x00",
+                "a newline": "mini\n", "a tab": "a\tb", "empty": "", "blank": " ", "a space": "a b", "a dot": ".", "dots inside": "a..b",
+                "a number": 5, "none": None}
+    BAD_DATASETS = {"a climb in the name": "org/..", "a climb in the org": "../pub", "no org": "pub", "three parts": "org/pub/extra", "a leading slash": "/pub",
+                    "a trailing slash": "org/", "a backslash": "org\\pub", "percent-encoded": "org/pub%2e", "empty": "", "none": None,
+                    "a space": "org/pu b", "an empty part": "org//pub", "dots inside": "or..g/pub", "a newline": "org/pub\n"}
+
+    def test_a_run_name_that_climbs_or_escapes_is_refused_before_a_url_exists(self):
+        for name, run in self.BAD_RUNS.items():
+            with self.subTest(name):
+                with self.assertRaisesRegex(fid.FidelityError, "run"):
+                    fid.published_url("org/pub", run, revision=PIN)
+
+    def test_a_dataset_that_is_not_org_slash_name_is_refused_before_a_url_exists(self):
+        for name, dataset in self.BAD_DATASETS.items():
+            with self.subTest(name):
+                with self.assertRaisesRegex(fid.FidelityError, "dataset"):
+                    fid.published_url(dataset, "mini", revision=PIN)
+
+    def test_a_good_name_gives_a_url_that_needs_no_resolving_and_stays_on_the_pinned_commit(self):
+        url = fid.published_url("org/pub", "d3-mini.v2_x", endpoint="https://hub.example", revision=PIN)
+        path = urllib.parse.urlsplit(url).path
+        self.assertEqual(posixpath.normpath(path), path)                         # an HTTP client that resolves the dots would change nothing
+        self.assertEqual(path, f"/datasets/org/pub/resolve/{PIN}/runs/d3-mini.v2_x/results.jsonl.gz")
+        self.assertEqual(urllib.parse.urlsplit(url).netloc, "hub.example")
+
+    @needs_requests
+    def test_a_name_that_climbs_asks_the_network_for_nothing_and_leaves_nothing_behind(self):
+        with FakeHub() as hub:
+            for name, run in self.BAD_RUNS.items():
+                with self.subTest(name):
+                    with self.assertRaisesRegex(fid.FidelityError, "run"):
+                        fid.fetch_published("org/pub", run, self.dir / "dl", endpoint=hub.base_url, revision=PIN, sleep=lambda s: None)
+            for name, dataset in self.BAD_DATASETS.items():
+                with self.subTest(name):
+                    with self.assertRaisesRegex(fid.FidelityError, "dataset"):
+                        fid.fetch_published(dataset, "mini", self.dir / "dl", endpoint=hub.base_url, revision=PIN, sleep=lambda s: None)
+            self.assertEqual(hub.requested, set())
+            self.assertFalse((self.dir / "dl").exists())                          # not even the folder for the download
+
+    def test_an_endpoint_that_would_send_the_token_in_the_clear_is_refused_before_anything_is_asked(self):
+        class Spy:
+            def __init__(self):
+                self.asked = []
+
+            def get(self, url):
+                self.asked.append(url)
+                return b""
+
+        for endpoint in ("http://hub.example", "http://huggingface.co", "http://localhost.example.com", "ftp://hub.example", "hub.example", "", None):
+            with self.subTest(repr(endpoint)):
+                spy = Spy()
+                with self.assertRaisesRegex(fid.FidelityError, "endpoint"):
+                    fid.fetch_published("org/pub", "mini", self.dir / "dl", revision=PIN, token="hf_secret", endpoint=endpoint, transport=spy)
+                self.assertEqual(spy.asked, [])
+        cfg = {"fidelity": {"published": {"mini": {"dataset": "org/pub", "run": "mini", "revision": PIN}}}, "hub": {"endpoint": "http://hub.example"}}
+        spy = Spy()
+        with self.assertRaisesRegex(fid.FidelityError, "endpoint"):
+            fid.fetch_configured(cfg, "mini", self.dir / "dl", token="hf_secret", transport=spy)
+        self.assertEqual(spy.asked, [])
+
+    def test_an_https_endpoint_and_a_loopback_one_are_not_refused_for_their_scheme(self):
+        class Gone:
+            def get(self, url):
+                raise fid.RemoteError("nothing here")
+
+        for endpoint in ("https://hub.example", "http://127.0.0.1:9999", "http://localhost:9999"):
+            with self.subTest(endpoint):
+                with self.assertRaisesRegex(fid.FidelityError, "cannot read SHA256SUMS"):
+                    fid.fetch_published("org/pub", "mini", self.dir / "dl", revision=PIN, endpoint=endpoint, transport=Gone())
+
+
 class ConfiguredContract(HermeticTestCase):
     """The config names, for each published run, the dataset, the run and the commit it is read at; the fetch uses those and no other."""
 
@@ -353,6 +496,27 @@ class ConfiguredContract(HermeticTestCase):
             fid.published_entry({"fidelity": {"published": {"x": {"run": "mini", "revision": PIN}}}}, "x")
         with self.assertRaisesRegex(fid.FidelityError, "run"):
             fid.published_entry({"fidelity": {"published": {"x": {"dataset": "org/pub", "revision": PIN}}}}, "x")
+
+    def test_a_run_or_dataset_that_climbs_is_refused_with_the_name_of_the_key(self):
+        for key, bad in (("run", ".."), ("run", "../main"), ("run", "a/b"), ("run", "a\\b"), ("run", "%2e%2e"), ("run", "x\x00"), ("dataset", "org/.."),
+                         ("dataset", "pub"), ("dataset", "../pub"), ("dataset", "org/pub/extra")):
+            with self.subTest(f"{key}: {bad!r}"):
+                entry = {"dataset": "org/pub", "run": "mini", "revision": PIN, key: bad}
+                with self.assertRaisesRegex(fid.FidelityError, rf"fidelity\.published\.x\.{key}"):
+                    fid.published_entry({"fidelity": {"published": {"x": entry}}}, "x")
+
+    def test_the_config_refuses_a_published_run_or_dataset_that_climbs_before_any_check_runs(self):
+        import yaml
+
+        for key, bad in (("run", ".."), ("run", "../main"), ("run", "a/b"), ("run", "a\\b"), ("run", "%2e%2e"), ("run", ""), ("run", "x\x00"),
+                         ("dataset", "org/.."), ("dataset", "pub"), ("dataset", "../pub"), ("dataset", "org/pub/extra")):
+            for name in ("d3", "d3_mini"):
+                with self.subTest(f"{name}.{key}: {bad!r}"):
+                    raw = yaml.safe_load(sd_config.DEFAULT_PATH.read_text())
+                    raw["fidelity"]["published"][name][key] = bad
+                    with self.assertRaisesRegex(sd_config.ConfigError, rf"fidelity\.published\.{name}\.{key}"):
+                        sd_config.validate(raw)
+        sd_config.validate(yaml.safe_load(sd_config.DEFAULT_PATH.read_text()))          # the shipped names pass
 
     @needs_requests
     def test_the_endpoint_comes_from_the_config_unless_one_is_given(self):

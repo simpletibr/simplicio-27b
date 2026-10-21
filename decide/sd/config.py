@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import yaml
 
-from decide.sd.remote import endpoint_problem, is_local, repo_key
+from decide.sd.remote import dataset_problem, endpoint_problem, is_local, repo_key, run_name_problem
 
 DEFAULT_PATH = Path(__file__).resolve().parents[1] / "config.yaml"
 OVERLAY_GLOB = "config.*.yaml"          # decide/config.data.yaml, decide/config.rental.yaml, ... (Squad B)
@@ -228,6 +228,8 @@ def validate(raw: Mapping, foreign: Iterable[str] = ()) -> None:
     for label, entry in dataset_entries(raw):
         need(is_revision(entry.get("revision")), f"{label}.revision must be a full 40-hex commit hash, got {entry.get('revision')!r}: "
                                                  "the rows it is compared with must not change under the check")
+        for key, problem in (("dataset", dataset_problem(entry.get("dataset"))), ("run", run_name_problem(entry.get("run")))):
+            need(problem is None, f"{label}.{key} {problem}: the URL it makes must stay on the commit above")
     lora = raw["models"].get("lora") or {}
     need(_number(lora.get("weight", 0)) and lora.get("weight", 0) >= 0, "lora.weight must be a number >= 0")
     weights = lora.get("weight_grid", [])

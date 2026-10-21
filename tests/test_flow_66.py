@@ -239,8 +239,11 @@ class FidelityFlow(HermeticTestCase):
         self.assertLess(report["compare"]["prob"]["max_abs"], 1e-4)
         self.assertEqual(report["gate"]["status"], "pass")
         self.assertTrue(report["complete"])
+        self.assertEqual(report["gate"]["coverage"], {"requested": 10, "ok": 10, "error": 0, "unsupported": 0, "abstained": 0, "missing": 0, "complete": True})
+        self.assertIn("10 of 10", report["gate"]["reason"])
         saved = json.loads((self.out / "fid" / "fidelity.json").read_text(encoding="utf-8"))
         self.assertEqual(saved["gate"]["status"], "pass")
+        self.assertEqual(saved["gate"]["coverage"], report["gate"]["coverage"])
         self.assertEqual(saved["engine"]["tta"], {"views": 1, "mode": "reverse"})
 
     def test_a_model_with_another_head_disagrees_and_the_gate_fails(self):
@@ -256,8 +259,96 @@ class FidelityFlow(HermeticTestCase):
         seen, original = [], self.engine.batch
         with mock.patch.object(self.engine, "batch", side_effect=lambda requests: (seen.extend(r["state"] for r in requests), original(requests))[1]):
             report = self.check(published, threshold=0.9, min_rows=5)
-        self.assertEqual(report["requests"]["skipped"], {"not_published": 1, "published_not_ok": 0, "payload_mismatch": 1})
+        self.assertEqual(report["requests"]["skipped"], {"not_published": 1, "published_not_ok": 0, "payload_mismatch": 1, "unmatched": 0})
         self.assertEqual((report["compare"]["rows"], report["run"]["total"], len(seen)), (8, 8, 8))
+
+    def test_a_row_with_no_payload_hash_on_the_published_side_is_left_out_before_any_work_and_counted(self):
+        published = self.publish(change=lambda r: {k: v for k, v in r.items() if k != "payload_sha256"} if r["run_id"].endswith((":2", ":6")) else r)
+        seen, original = [], self.engine.batch
+        with mock.patch.object(self.engine, "batch", side_effect=lambda requests: (seen.extend(r["state"] for r in requests), original(requests))[1]):
+            report = self.check(published, threshold=0.9, min_rows=5)
+        self.assertEqual(report["requests"]["skipped"], {"not_published": 0, "published_not_ok": 0, "payload_mismatch": 0, "unmatched": 2})
+        self.assertEqual((report["compare"]["rows"], report["run"]["total"], len(seen)), (8, 8, 8))
+
+    def test_a_row_with_no_payload_hash_on_our_side_is_left_out_too(self):
+        rows = [dict(r, _evaluation={k: v for k, v in r["_evaluation"].items() if k != "payload_sha256"}) if i < 3 else r for i, r in enumerate(self.rows)]
+        req = self.out / "unhashed.jsonl"
+        req.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        report = self.fid.check_fidelity(self.engine, req, self.publish(), self.out / "fid-unhashed", threshold=0.9, min_rows=5, chunk=4, log=None, replicates=10)
+        self.assertEqual(report["requests"]["skipped"]["unmatched"], 3)
+        self.assertEqual((report["compare"]["rows"], report["run"]["total"]), (7, 7))
+
+    def test_requests_that_end_in_error_withhold_the_verdict_even_when_the_rest_agrees(self):
+        original, failed = self.engine.batch, []
+
+        def flaky(requests):
+            if len(requests) > 1:
+                raise RuntimeError("the batch broke")                  # the run then asks again one request at a time
+            if len(failed) < 4:
+                failed.append(1)
+                raise RuntimeError("this request broke")
+            return original(requests)
+
+        with mock.patch.object(self.engine, "batch", side_effect=flaky):
+            report = self.check(self.publish(), threshold=0.98, min_rows=5)
+        self.assertEqual((report["compare"]["rows"], report["compare"]["field_agreement"]), (6, 1.0))           # the 6 that answered all agree
+        self.assertEqual(report["gate"]["status"], "insufficient")
+        self.assertFalse(report["gate"]["firm"])
+        self.assertEqual(report["gate"]["coverage"], {"requested": 10, "ok": 6, "error": 4, "unsupported": 0, "abstained": 0, "missing": 0, "complete": True})
+        self.assertIn("4 request(s) ended in error", report["gate"]["reason"])
+        self.assertIn("6 of 10", report["gate"]["reason"])
+        saved = json.loads((self.out / "fid" / "fidelity.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["gate"]["coverage"]["error"], 4)
+
+    def test_a_second_call_retries_the_errors_and_then_gives_the_verdict(self):
+        original, failed = self.engine.batch, []
+
+        def flaky(requests):
+            if len(requests) > 1 or len(failed) < 4:
+                failed.append(1)
+                raise RuntimeError("broken")
+            return original(requests)
+
+        published = self.publish()
+        with mock.patch.object(self.engine, "batch", side_effect=flaky):
+            first = self.check(published, threshold=0.98, min_rows=5)
+        self.assertEqual(first["gate"]["status"], "insufficient")
+        second = self.check(published, threshold=0.98, min_rows=5)
+        self.assertEqual((second["gate"]["status"], second["gate"]["coverage"]["error"], second["compare"]["rows"]), ("pass", 0, 10))
+
+    def test_a_run_stopped_by_its_budget_has_no_verdict_whatever_the_rows_it_did_answer_say(self):
+        class OneChunk:
+            def __init__(self):
+                self.calls = 0
+
+            def ok(self, next_cost=0.0):
+                self.calls += 1
+                return self.calls <= 1
+
+        report = self.check(self.publish(), budget=OneChunk(), threshold=0.98, min_rows=3)
+        self.assertEqual((report["complete"], report["compare"]["rows"], report["compare"]["field_agreement"]), (False, 4, 1.0))
+        self.assertEqual(report["gate"]["status"], "insufficient")
+        self.assertFalse(report["gate"]["firm"])
+        self.assertEqual(report["gate"]["coverage"], {"requested": 10, "ok": 4, "error": 0, "unsupported": 0, "abstained": 0, "missing": 6, "complete": False})
+        self.assertIn("stopped", report["gate"]["reason"])
+        self.assertIn("4 of 10", report["gate"]["reason"])
+
+    def test_requests_the_engine_would_not_take_stay_out_of_the_agreement_and_are_counted(self):
+        original, taken = self.engine.batch, []
+
+        def picky(requests):
+            if len(requests) > 1:
+                raise RuntimeError("the batch broke")
+            if len(taken) < 3:
+                taken.append(1)
+                raise self.ev.Unsupported("over the limit")
+            return original(requests)
+
+        with mock.patch.object(self.engine, "batch", side_effect=picky):
+            report = self.check(self.publish(), threshold=0.98, min_rows=5)
+        self.assertEqual((report["gate"]["status"], report["compare"]["rows"]), ("pass", 7))
+        self.assertEqual(report["gate"]["coverage"]["unsupported"], 3)
+        self.assertIn("3 unsupported", report["gate"]["reason"])
 
     def test_a_published_row_that_is_not_ok_is_not_compared(self):
         report = self.check(self.publish(change=lambda r: dict(r, status="error") if r["run_id"].endswith(":4") else r), min_rows=5)
@@ -302,6 +393,17 @@ class FidelityFlow(HermeticTestCase):
         self.assertEqual(len(ids), 8)
         self.assertNotIn("29:T:T:3", ids)
         self.assertNotIn("29:T:T:2", ids)                           # the other row of the same group: a group is all or nothing
+
+    def test_common_sample_drops_a_group_with_a_row_that_has_no_hash_on_either_side(self):
+        loaded = self.fid.load_published(self.publish(change=lambda r: {k: v for k, v in r.items() if k != "payload_sha256"} if r["run_id"].endswith(":5") else r))
+        selection = self.fid.common_sample(self.rows, loaded, per_benchmark=10, seed=1, edition="0.3")
+        ids = {r["_evaluation"]["run_id"] for r in selection.rows}
+        self.assertEqual(len(ids), 8)
+        self.assertNotIn("29:T:T:5", ids)
+        self.assertNotIn("29:T:T:4", ids)                           # the other row of the same group: a group is all or nothing
+        unhashed = [dict(r, _evaluation={k: v for k, v in r["_evaluation"].items() if k != "payload_sha256"}) if i == 0 else r for i, r in enumerate(self.rows)]
+        selection = self.fid.common_sample(unhashed, self.fid.load_published(self.publish()), per_benchmark=10, seed=1, edition="0.3")
+        self.assertEqual(len({r["_evaluation"]["run_id"] for r in selection.rows}), 8)
 
     def test_common_sample_drops_a_group_whose_published_row_was_not_ok(self):
         published = self.fid.load_published(self.publish(change=lambda r: {**r, "status": "error"} if r["run_id"].endswith(":5") else r))
