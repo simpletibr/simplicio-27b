@@ -13,6 +13,7 @@ import json
 import math
 import os
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -745,6 +746,7 @@ class BuildTargetsContract(unittest.TestCase):
             gold = {"q1": None if i in (4, 6) else ["x", "y", "z"][i % 3]}
             rows.append(S.corpus_row(example_id=f"s:{i}", source="s", license="mit", split="dev" if i == 5 else "train", lang="en", request=req, gold=gold))
         S.write_corpus_part(self.root / "corpus" / "s-0000.parquet", rows)
+        S.seal_directory(self.root / "corpus")                       # as build_corpus / decontaminate leave it
         self.write_teacher("t1", [(f"s:{i}", [0.6, 0.3, 0.1]) for i in range(5)], 1.3)
         self.write_teacher("t2", [(f"s:{i}", [0.2, 0.2, 0.6]) for i in (0, 1, 2, 3)], 1.0)
 
@@ -852,6 +854,88 @@ class BuildTargetsContract(unittest.TestCase):
         dev = DT.load_examples(self.root / "targets", split="dev")
         self.assertEqual([e.example_id for e in dev], ["s:5"])
         self.assertEqual(dev[0].target("q1", alpha=0.1), [0.0, 0.0, 1.0], "no teacher: gold alone")
+
+    # ---------------------------------------------------------------- manifests (review of PR #74: only listed parts are data)
+    def test_the_manifest_lists_the_parts_like_the_corpus_one(self) -> None:
+        report = self.build()
+        manifest = json.loads((self.root / "targets" / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual((manifest["kind"], manifest["rows"], manifest["schema_version"]), ("targets", report["rows_out"], self.S.SCHEMA_VERSION))
+        self.assertEqual(manifest["columns"], list(self.BT.TARGET_COLUMNS))
+        self.assertIsInstance(manifest["parts"], list)
+        entry = manifest["parts"][0]
+        self.assertEqual(entry["name"], "s-0000.parquet")
+        self.assertEqual(entry["sha256"], self.S.sha256_file(self.root / "targets" / "s-0000.parquet"))
+        self.assertEqual((entry["rows"], entry["stats"]["rows_out"]), (6, 6))
+        self.assertTrue(entry["fingerprint"])
+        self.assertEqual([f.name for f in self.S.corpus_files(self.root / "targets", require_manifest=True)], ["s-0000.parquet"])
+
+    def test_a_part_that_is_not_listed_is_not_data_and_the_next_build_removes_it(self) -> None:
+        from decide.train import data as DT
+
+        self.build()
+        targets = self.root / "targets"
+        shutil.copy(targets / "s-0000.parquet", targets / "old-0000.parquet")
+        shutil.copy(targets / "s-0000.parquet.done.json", targets / "old-0000.parquet.done.json")
+        self.assertEqual(len(DT.load_examples(targets)), 6, "the stray copy is ignored by the reader")
+        again = self.build()
+        self.assertEqual(sorted(again["removed_stale"]), ["old-0000.parquet", "old-0000.parquet.done.json"])
+        self.assertFalse((targets / "old-0000.parquet").exists())
+        self.assertEqual(again["parts_resumed"], 1)
+
+    def test_the_trainer_refuses_a_part_that_changed_after_the_build(self) -> None:
+        from decide.train import data as DT
+
+        self.build()
+        part = self.root / "targets" / "s-0000.parquet"
+        rows = self.S._read_rows(part, self.BT.TARGET_COLUMNS)
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        pq.write_table(pa.Table.from_pylist(list(rows)[:2], schema=self.BT.target_arrow_schema()), part)
+        with self.assertRaises(self.S.ManifestError):
+            DT.load_examples(self.root / "targets")
+
+    def test_a_failed_build_leaves_no_manifest_for_the_trainer_to_trust(self) -> None:
+        from decide.train import data as DT
+
+        self.build()
+        self.S.write_teacher_part(self.root / "labels" / "t1" / "part-0001.parquet", [
+            {"example_id": "s:3", "question_id": "q1", "teacher": "t1", "codes": ["A", "B", "C"], "probs": [0.1, 0.1, 0.8], "temperature": 1.3}])   # differs from part-0000
+        argv = ["--corpus", str(self.root / "corpus"), "--labels", str(self.root / "labels" / "t1"), "--out", str(self.root / "targets")]
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(self.BT.TargetError):
+                self.BT.main(argv)
+        self.assertFalse((self.root / "targets" / "manifest.json").exists())
+        with self.assertRaises(self.S.ManifestError):
+            DT.load_examples(self.root / "targets")
+
+    def test_the_corpus_folder_must_be_a_finished_build(self) -> None:
+        (self.root / "corpus" / "manifest.json").unlink()
+        argv = ["--corpus", str(self.root / "corpus"), "--labels", str(self.root / "labels" / "t1"), "--out", str(self.root / "nomanifest")]
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(self.BT.TargetError) as caught:
+                self.BT.main(argv)
+        self.assertIn("manifest", str(caught.exception))
+        self.assertFalse((self.root / "nomanifest" / "manifest.json").exists())
+
+    def test_a_corpus_part_the_manifest_does_not_list_never_reaches_the_targets(self) -> None:
+        # e.g. the output of an earlier run with --include-review in the same folder
+        extra = self.S.corpus_row(example_id="review:1", source="review", license="cc-by-sa-4.0", split="train", lang="en",
+                                  request=choice_request("A review-licensed question?", ["a", "b", "c"], keys=["x", "y", "z"]), gold={"q1": "x"})
+        self.S.write_corpus_part(self.root / "corpus" / "review-0000.parquet", [extra])
+        self.build()
+        self.assertNotIn("review:1", self.read_out())
+
+    def test_the_trainer_fingerprint_follows_the_manifest(self) -> None:
+        if not have("torch"):
+            self.skipTest("torch is not installed")
+        from decide.train import train as TRAIN
+
+        self.build()
+        first = TRAIN.digest_of(self.root / "targets")
+        self.assertEqual(TRAIN.digest_of(self.root / "targets"), first)
+        self.build(("t1", "t2"), "--combiner", self.combiner(method="mean", teachers={"t1": {}, "t2": {}}))
+        self.assertNotEqual(TRAIN.digest_of(self.root / "targets"), first, "the rebuilt part has other bytes, so another sha256")
 
     # ---------------------------------------------------------------- thinker traces (SCHEMA.md, section 10)
     def write_trace(self, thinker: str, items, part: str = "part-0000.parquet") -> None:

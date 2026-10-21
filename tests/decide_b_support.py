@@ -258,6 +258,7 @@ def make_targets_dataset(root: Path, *, train: int = 8, dev: int = 6, traces_for
         probs[right] = 0.8
         teacher_rows.append({"example_id": example_id, "question_id": "q1", "teacher": "toy-teacher", "codes": ["A", "B", "C"], "probs": probs, "temperature": 1.0})
     S.write_corpus_part(root / "corpus" / "toy-0000.parquet", rows)
+    S.seal_directory(root / "corpus")
     S.write_teacher_part(root / "labels" / "toy-teacher" / "part-0000.parquet", teacher_rows)
     argv = ["--corpus", str(root / "corpus"), "--labels", str(root / "labels"), "--out", str(root / "targets")]
     if traces_for:
