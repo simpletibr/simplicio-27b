@@ -6,7 +6,7 @@
 - **Relacionadas:** #64 (épico), #75 (F2b, gate GT), [ADR 0003](0003-simplicio-decide-27b.md), [ADR 0004](0004-pensar-sob-demanda.md).
 - **Escopo:** o plano atual (base Qwen3.8-27B, ponto de partida pplx-decider-v1.2, gates G0 a G5) **continua como está**. Esta ADR só diz o que fazer, e quando, se ele falhar, e o que o Sage-A1.5 poderia ser sem virar decisor.
 
-Regra de evidência: só número medido entra como fato, com a fonte ao lado. Projeção ou estimativa leva a marca **UNVERIFIED** e não decide nada sozinha. Todas as leituras abaixo foram feitas em 2026-10-21 (o planejador as fez primeiro; a squad de dados e treino as repetiu na mesma data, e onde a releitura diferiu a diferença está dita).
+Regra de evidência: só número medido entra como fato, com a fonte ao lado. Projeção ou estimativa leva a marca **UNVERIFIED** e não decide nada sozinha. Todas as leituras abaixo foram feitas em 2026-10-21 (o planejador as fez primeiro; a squad de dados e treino as repetiu na mesma data, e onde a releitura diferiu a diferença está dita). O artigo foi lido pelo coordenador depois, a partir do PDF que o dono anexou.
 
 ## Contexto
 
@@ -28,7 +28,21 @@ Regra de evidência: só número medido entra como fato, com a fonte ao lado. Pr
 
    O total de parâmetros é o mesmo, byte a byte, do Qwen3.5-35B-A3B e do Qwen3.6-35B-A3B (API, mesmo campo, mesma data): 35.951.822.704. **Divergência de leitura:** a primeira leitura do planejador registrou a base como "não informada"; o card, relido pela squad de dados e treino, traz o nome da base no primeiro parágrafo. Vale o card.
 
-   **Não medido (UNVERIFIED):** os ~3 bilhões de parâmetros ativos (vêm do "A3B" do nome da base, não de um número do card); o artigo completo (o HTML do arXiv recusou a leitura com 429, e a squad de dados e treino não o leu); GPQA Diamond e HLE **sem ferramentas**, que são o que o board mede (o card só traz "HLE w/ tools", 55,1, com ferramentas e fora do ambiente do board); o comportamento do modelo como decisor de uma passada.
+   **O artigo (arXiv 2610.28578), lido depois.** O dono anexou o PDF; o coordenador leu as 40 páginas pelo texto extraído e esta squad reconferiu cada citação abaixo nesse mesmo texto. Isso troca parte do que antes era UNVERIFIED:
+
+   | item | o que o artigo diz | onde |
+   |---|---|---|
+   | parâmetros | **35B no total e 3B ativos** (confirmado) | legenda da Fig. 9: "MoE with 35B total and 3B active parameters" |
+   | base | "Sage-A1.5, a 35B MoE agent model **built on Agents-A1**" | §1 (Introdução) |
+   | professores | os de ciência e de busca são SFT sobre **Qwen3.5-35B-A3B**; o de MLE parte do **Qwen3.6-35B-A3B** | Tabs. 2 e 3; Tab. 6 |
+   | treino | SFT multi-domínio (Eq. 3), depois RL com recompensa de resultado (Eqs. 4 e 5) e destilação on-policy de vários professores com KL reversa (Eq. 6) | §2.6, Estágios I e II |
+   | orçamentos citados | saída máxima de 64K e thinking de 32K tokens (ALE-CLI) | §3.1, "General Benchmarks" |
+
+   **Divergência de leitura (base).** O card diz Qwen3.6-35B-A3B; o artigo diz "built on Agents-A1" e só cita o Qwen3.6 como base do professor de MLE. O texto lido não diz qual é a base direta do Agents-A1: **UNVERIFIED**.
+
+   **O que o artigo mede (e o que não mede).** A avaliação científica e de busca é agentic ou "w/ tools" (HLE w/ tools 55,1, Tab. 1). A busca por texto no artigo não acha GPQA, MMLU-Pro nem HLE sem ferramentas. Por isso **nenhuma nota do artigo é comparável ao gate GT** (sem ferramentas). O único benchmark que o texto descreve sem ferramentas é o ChemCOTBench ("without additional demonstrations or tools", saída máxima de 65.536 tokens): Sage-A1.5 66,5 contra 64,0 do Agents-A1 (Tab. 1); o artigo não mede o Qwen base nele. O sinal mais próximo de raciocínio puro é o FrontierScience-Olympiad: Sage-A1.5 81,0 (Tab. 1) contra 64,5 do Qwen3.5-35B-A3B (Tab. 2), +16,5, mas o Agents-A1 já tem 79,0 na mesma Tab. 1 (então o ganho de 81,0 sobre 79,0 é de +2,0, e o resto vem da etapa anterior) e o texto lido não diz se o FS-O usou ferramentas: **UNVERIFIED**. Nada no artigo trata de classificação, logits, probabilidades ou decisão em uma passada.
+
+   **Continua não medido (UNVERIFIED):** o comportamento do Sage-A1.5 como decisor de uma passada; a base direta do Agents-A1; se o FS-O foi com ferramentas.
 
 3. **O que o placar diz sobre bases MoE (medido).** Fonte: `index.json` do board, gerado em 2026-10-20T14:13:56Z (campos `models[].v03.v`, o Full, e `models[].meta.base_model`), baixado de novo em 2026-10-21. Os oito modelos de decisão com base de 30 a 35B-A3B:
 
@@ -57,7 +71,7 @@ Regra de evidência: só número medido entra como fato, com a fonte ao lado. Pr
 4. **Gatilhos.** Decididos pelo planejador, não medidos:
    - **B1** só se as duas condições valerem: (a) o gate GT (F2b, #75) falhar e (b) a receita do Qwen3.8-27B estagnar abaixo de 66 no privado caseiro (G1) depois do dia econômico de aluguel (F6).
    - **B2** só por pedido explícito do dono. Teste mínimo: a mesma receita, o mesmo subconjunto (~20 mil linhas) e a mesma semente no Sage e no Qwen3.8, avaliados no `proxy_private` (1.500 linhas). O Sage morre se ficar **mais de 2 pontos** abaixo do Qwen3.8 nesse teste.
-5. **O Sage-A1.5 como pensador, não como decisor (uso útil, não medido).** Com ~3B ativos (**UNVERIFIED**) ele pode ser um gerador barato dos traços `Raciocínio:` do gate GT. Só depois de a PR #78 (kit do GT) estar na `main`, e como um `--model` alternativo do `decide.think.thinker`. Atenção: o interruptor de thinking do template do Qwen3.8 pode diferir do dele (o card não diz qual é o thinking padrão; o servidor do card usa `--reasoning-parser qwen3`); o "modo de verificação" do Sage exige uma mensagem de sistema não vazia (`chat_template_kwargs: {"verification": true}`, `README.md`). Nada disso foi medido. Os traços de qualquer pensador só valem no treino se o GT medir esse pensador.
+5. **O Sage-A1.5 como pensador, não como decisor (uso útil, não medido).** Com 3B ativos (arXiv 2610.28578, legenda da Fig. 9) ele pode ser um gerador barato dos traços `Raciocínio:` do gate GT. Só depois de a PR #78 (kit do GT) estar na `main`, e como um `--model` alternativo do `decide.think.thinker`. Atenção: o interruptor de thinking do template do Qwen3.8 pode diferir do dele (o card não diz qual é o thinking padrão; o servidor do card usa `--reasoning-parser qwen3`); o "modo de verificação" do Sage exige uma mensagem de sistema não vazia (`chat_template_kwargs: {"verification": true}`, `README.md`). Nada disso foi medido, e o artigo não avalia raciocínio sem ferramentas nem decisão em uma passada (acima). Os traços de qualquer pensador só valem no treino se o GT medir esse pensador.
 
 ## O que não transfere do plano atual para o Sage-A1.5
 
@@ -73,6 +87,7 @@ Regra de evidência: só número medido entra como fato, com a fonte ao lado. Pr
 ## Consequências
 
 - O custo de testar o Sage como decisor (B2) é uma estimativa, **UNVERIFIED**: da ordem de 1 a 2 h de B200 por modelo no teste mínimo, a US$ 0,001736 por segundo (preço do B200 informado pelo planejador, da página de preços da Modal em 2026-10-21; não relido por esta squad), ou seja, cerca de US$ 6,25 por hora de GPU (0,001736 × 3600). O PLAN.md seção 6 usa os preços da mesma página, mas no modo preemptível e sem este número por segundo. Não inclui o tempo para escrever a cabeça e o carregador novos.
+- **Conclusão inalterada pelo artigo:** B2 segue em baixa prioridade. O Sage como decisor seria da mesma família 35B-A3B cujo melhor resultado no placar é 62,28 (contexto 3), e o artigo não traz nenhuma medida que mude isso.
 - O B1 tem mais evidência de placar e menos reaproveitamento de código; o B2 tem menos evidência e o mesmo problema de reaproveitamento. A diferença está dita para que a escolha, se vier, seja feita sabendo disso.
 - Nenhuma fase, gate ou issue do plano atual muda. Os gatilhos acima são a única coisa nova, e eles dependem de medidas que o plano atual já produz (GT e privado caseiro).
 - Esta ADR só muda por outra ADR. Os números do plano mudam por nova versão do `decide/PLAN.md`, com a data e o que foi medido.
