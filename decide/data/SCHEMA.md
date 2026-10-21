@@ -185,6 +185,20 @@ janela de 13 palavras (dentro de uma linha) aparece na referência (`ngram`). Un
 de referência são tratadas como modelo de texto (boilerplate) e ignoradas; um mesmo estado vale 1 não importa quantas
 perguntas o compartilhem, então uma passagem com 30 perguntas de referência continua protegida. Normalização: NFKC, caixa
 baixa, só palavras (`\w+`). O canary é procurado no texto das folhas unidas por quebra de linha (`canary`).
+
+**Linhas de marcação de formato.** Uma linha que só carrega formato não é um enunciado curto: o `>>>> REPLACE` de um pedido de
+edição de código não diz nada sobre o item, e rejeitava 213 de 320 traços do loop. A lista é explícita e versionada
+(`text.MARKER_LINES`, versão 1; a versão entra na impressão digital da descontaminação e no relatório, `markers_version`).
+Vale só para a regra `short_line`: a linha inteira, sem espaços nas pontas, tem de casar (caixa não importa), e nem o
+índice nem a checagem a contam como unidade. Qualquer outra linha curta, inclusive código (`@classmethod`, `Ok(())`,
+`SELECT`), continua valendo como enunciado curto. Mudar a lista exige subir a versão e uma entrada nesta tabela.
+
+| exemplo | casa com | por quê |
+|---|---|---|
+| `<<<<<<< SEARCH` | três ou mais `<` e `SEARCH` | abre um bloco de edição SEARCH/REPLACE |
+| `=======` | três ou mais `=` | separa as duas metades do bloco (sem letras, nunca contou; listada por completude) |
+| `>>>>>>> REPLACE` | três ou mais `>` e `REPLACE` | fecha o bloco; os traços do loop escrevem com quatro `>` |
+| `` ```python `` | três ou mais crases ou til, com etiqueta de linguagem opcional | cerca de código |
 Uma referência que não rende nenhum pedido, ou cujas linhas não lidas passam de 1 %, derruba a rodada (`ReferenceDataError`):
 a triagem contra uma referência não lida deixaria tudo passar. O relatório (`decontamination.json`) lista parâmetros,
 contagens por motivo e por fonte, linhas lidas/puladas por referência e o sha256 das entradas.

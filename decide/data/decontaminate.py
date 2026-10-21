@@ -40,7 +40,7 @@ DEFAULT_MAX_DF = 20
 DEFAULT_MIN_LINE_WORDS = 5
 MAX_SKIPPED_FRACTION = 0.01     # a reference file may have this share of rows we cannot read before we stop
 #: Bumped when the matching rules change, so parts screened by older rules are not reused by a resumed run.
-RULES_VERSION = 2
+RULES_VERSION = 3     # 3: format-only marker lines (text.MARKER_LINES) are not short statements
 _SHARDS = 256
 _SHIFT = 56
 
@@ -127,7 +127,7 @@ class ReferenceIndex:
             toks = T.words(line)
             if len(toks) >= self.min_line_words:
                 lines_out.add(T.hash64(" ".join(toks), "line"))
-            elif statements and T.has_letters(toks):
+            elif statements and T.has_letters(toks) and not T.is_marker_line(line):
                 shorts_out.add(T.hash64(" ".join(toks), "short"))
             grams_out.update(T.ngram_hashes(toks, self.n))
 
@@ -184,7 +184,7 @@ class ReferenceIndex:
             if len(toks) >= self.min_line_words and T.hash64(" ".join(toks), "line") in self._lines:
                 return Match("line", line[:120])
         for line, toks in lines:
-            if (line in statements and len(toks) < self.min_line_words and T.has_letters(toks)
+            if (line in statements and len(toks) < self.min_line_words and T.has_letters(toks) and not T.is_marker_line(line)
                     and T.hash64(" ".join(toks), "short") in self._shorts):
                 return Match("short_line", line[:120])
         for line, toks in lines:
@@ -200,12 +200,13 @@ class ReferenceIndex:
         kept = sum(k for _, k in units.values())
         return {"n": self.n, "max_df": self.max_df, "min_line_words": self.min_line_words, "requests": self._count,
                 "states": len(self._states), "frozen": self._frozen, "units_total": total, "units_kept": kept,
-                "units_dropped_df": total - kept, "rules_version": RULES_VERSION,
+                "units_dropped_df": total - kept, "rules_version": RULES_VERSION, "markers_version": T.MARKER_LINES_VERSION,
                 "units": {name: {"total": t, "kept": k} for name, (t, k) in units.items()}}
 
     def fingerprint(self) -> str:
         """Identifies the index (rules + parameters + reference files) so a resumed run knows its parts are still valid."""
-        return S.digest(S.canonical_json({"rules": RULES_VERSION, "n": self.n, "max_df": self.max_df, "min_line_words": self.min_line_words,
+        return S.digest(S.canonical_json({"rules": RULES_VERSION, "markers": T.MARKER_LINES_VERSION, "n": self.n, "max_df": self.max_df,
+                                          "min_line_words": self.min_line_words,
                                           "sources": [s["sha256"] for s in self.sources], "requests": self._count}))
 
 

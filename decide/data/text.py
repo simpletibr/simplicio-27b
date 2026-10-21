@@ -5,7 +5,7 @@ import functools
 import hashlib
 import re
 import unicodedata
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from .schema import option_texts
 
@@ -52,6 +52,28 @@ def request_has_canary(request: Any) -> bool:
     The texts are joined without the object keys between them (a canary split over two texts is still contiguous);
     the keys, which can hold a text of their own, are searched in a second pass."""
     return contains_canary("\n".join(leaf_texts(request))) or contains_canary("\n".join(_strings(request)))
+
+
+#: Lines that only carry format, never content.  A line that matches one of them is not a "short statement" for the
+#: decontamination rule ``short_line``: the SEARCH/REPLACE markers of a code-edit prompt say nothing about the item, and 213
+#: of the 320 Simplicio-Loop traces were rejected for sharing one with the reference.  The list is explicit and versioned
+#: (SCHEMA.md section 9 lists every entry): change it only together with ``MARKER_LINES_VERSION``, which is part of the
+#: decontamination fingerprint, so a resumed run never keeps rows screened with an older list.
+MARKER_LINES_VERSION = 1
+#: (regex that must match the whole stripped line, case-insensitive; an example; why the line is format and not content)
+MARKER_LINES: Tuple[Tuple[str, str, str], ...] = (
+    (r"<{3,}\s*SEARCH", "<<<<<<< SEARCH", "opens a SEARCH/REPLACE edit block"),
+    (r"={3,}", "=======", "separates the two halves of a SEARCH/REPLACE edit block (no letters, so it never counted; listed for completeness)"),
+    (r">{3,}\s*REPLACE", ">>>>>>> REPLACE", "closes a SEARCH/REPLACE edit block (the Simplicio-Loop traces write four chevrons)"),
+    (r"(?:`{3,}|~{3,})[\w+#.-]*", "```python", "code fence, with or without a language tag"),
+)
+_MARKER_RES = tuple(re.compile(pattern, re.IGNORECASE) for pattern, _, _ in MARKER_LINES)
+
+
+def is_marker_line(line: str) -> bool:
+    """True when the whole stripped line is one of the format-only markers of ``MARKER_LINES``."""
+    stripped = line.strip()
+    return any(r.fullmatch(stripped) for r in _MARKER_RES)
 
 
 @functools.lru_cache(maxsize=1 << 20)
