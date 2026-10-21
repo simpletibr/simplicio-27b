@@ -272,6 +272,16 @@ class BuildFlow(unittest.TestCase):
         self.assertIn("enabled", err.getvalue())
         self.assertFalse((self.root / "off" / "manifest.json").exists())
 
+    def test_dump_columns_writes_the_columns_of_every_usable_source(self) -> None:
+        path = self.root / "columns.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = B.main(["--dump-columns", str(path), "--reader", f"local:{self.raw}", "--sources", str(self.sources_yaml)])
+        self.assertEqual(rc, 0)
+        dumped = json.loads(path.read_text(encoding="utf-8"))["sources"]
+        self.assertEqual(sorted(dumped), ["toy_cls", "toy_held", "toy_mcq", "toy_review"], "deny entries have no data to read")
+        self.assertEqual(sorted(dumped["toy_mcq"]["columns"]), ["answer", "choices", "id", "question"])
+        self.assertEqual(dumped["toy_mcq"]["hf_id"], "toy/mcq")
+
     def test_inspect_prints_conversion(self) -> None:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -697,6 +707,33 @@ class RegistryQuality(unittest.TestCase):
         # measured on the real parquet (WANLI 397c41b3 train, 102,885 rows): `id` has 102,885 distinct values,
         # `pairID` only 56,572
         self.assertEqual(self.registry["wanli"].args["id"], "id")
+
+    #: adapter -> (`args` entries that name a column of the dataset, `args` entries that are literals).  A new entry in
+    #: sources.yaml must be classified here, so a column name can not slip through unchecked.
+    ARG_KINDS = {
+        "mcq": ({"question", "choices", "answer", "context", "id"}, {"answer_kind", "answer_offset"}),
+        "classification": ({"text", "label", "id"}, {"label_names", "instruction"}),
+        "nli": ({"premise", "hypothesis", "label", "id"}, {"labels"}),
+        "binary": ({"text", "label", "id"}, {"question", "positive", "threshold", "true_text", "false_text"}),
+        "gsm8k": ({"question", "answer", "id"}, {"options", "pool"}),
+    }
+
+    def test_every_field_named_in_args_is_a_column_of_the_real_dataset(self) -> None:
+        # `fields_verified` is only the YAML's word for it.  tests/fixtures/decide_data/columns.json holds the columns
+        # measured on the pinned revisions (`python -m decide.data.build_corpus --dump-columns ...`), so a typo in
+        # sources.yaml or a revision bump that renames a column fails here, offline
+        fixture = json.loads((ROOT / "tests" / "fixtures" / "decide_data" / "columns.json").read_text(encoding="utf-8"))["sources"]
+        usable = {k for k, s in self.registry.items() if s.decision != "deny"}
+        self.assertEqual(set(fixture), usable, "the fixture lists exactly the sources that can reach a run")
+        for key in sorted(usable):
+            src, columns = self.registry[key], fixture[key]["columns"]
+            self.assertEqual((fixture[key]["revision"], fixture[key]["convert_revision"]), (src.revision, src.convert_revision), f"{key}: fixture is for another revision")
+            column_args, literal_args = self.ARG_KINDS[src.adapter]
+            self.assertEqual(set(src.args) - column_args - literal_args, set(), f"{key}: classify the new args in ARG_KINDS")
+            for arg in sorted(set(src.args) & column_args):
+                value = src.args[arg]
+                for field in value if isinstance(value, list) else [value]:
+                    self.assertIn(str(field).split(".")[0], columns, f"{key}: args.{arg}={field!r} is not a column of {src.hf_id}@{(src.convert_revision or src.revision)[:8]}")
 
     def test_policy_holds_for_the_shipped_registry(self) -> None:
         SRC.check_policy(self.registry)

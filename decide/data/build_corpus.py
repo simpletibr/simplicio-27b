@@ -210,6 +210,25 @@ def _generated_rows(args: argparse.Namespace, ap: argparse.ArgumentParser) -> Di
     return rows
 
 
+def source_columns(dataset: Any) -> Dict[str, str]:
+    """Column name -> type of a dataset: the parquet schema, or the first row of a JSONL/CSV source."""
+    files = getattr(dataset, "files", None)
+    if files:
+        _, pq = S._arrow()
+        return {f.name: str(f.type) for f in pq.ParquetFile(files[0]).schema_arrow}
+    first = next(iter(dataset.rows()), {})
+    return {str(k): type(v).__name__ for k, v in first.items()}
+
+
+def dump_columns(path: Path, sources: Mapping[str, SRC.Source], reader: Any) -> Dict[str, Any]:
+    """Write the columns of every non-deny source, with the revision they were read at (tests/fixtures/decide_data/columns.json)."""
+    dumped = {key: {"hf_id": s.hf_id, "revision": s.revision, "convert_revision": s.convert_revision, "columns": source_columns(reader.open(s))}
+              for key, s in sorted(sources.items()) if s.decision != "deny"}
+    result = {"schema_version": S.SCHEMA_VERSION, "kind": "columns", "sources": dumped}
+    S.write_manifest(path, result)
+    return result
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", help="output directory (parquet parts + manifest.json)")
@@ -227,12 +246,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--config", type=Path, default=None, help="config.data.yaml with the data.generator section (default decide/config.data.yaml)")
     ap.add_argument("--loop-per-record", type=int, default=2)
     ap.add_argument("--inspect", metavar="KEY", help="print the first rows of a source and how they convert, then exit")
+    ap.add_argument("--dump-columns", metavar="PATH", type=Path,
+                    help="write the columns of every non-deny source (at its pinned revision) to PATH, then exit")
     ap.add_argument("--no-resume", action="store_true")
     args = ap.parse_args(argv)
     sources = SRC.load_sources(args.sources)
     reader = make_reader(args.reader)
     if args.inspect:
         inspect(sources[args.inspect], reader)
+        return 0
+    if args.dump_columns:
+        dumped = dump_columns(args.dump_columns, sources, reader)
+        print(f"columns of {len(dumped['sources'])} sources written to {args.dump_columns}")
         return 0
     if not args.out:
         ap.error("--out is required")
