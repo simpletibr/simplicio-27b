@@ -1,0 +1,181 @@
+{
+  "kind": "columns",
+  "schema_version": 1,
+  "sources": {
+    "arc_challenge": {
+      "columns": {
+        "answerKey": "string",
+        "choices": "struct<text: list<item: string>, label: list<item: string>>",
+        "id": "string",
+        "question": "string"
+      },
+      "convert_revision": null,
+      "hf_id": "allenai/ai2_arc",
+      "revision": "210d026faf9955653af8916fad021475a3f00453"
+    },
+    "arc_easy": {
+      "columns": {
+        "answerKey": "string",
+        "choices": "struct<text: list<item: string>, label: list<item: string>>",
+        "id": "string",
+        "question": "string"
+      },
+      "convert_revision": null,
+      "hf_id": "allenai/ai2_arc",
+      "revision": "210d026faf9955653af8916fad021475a3f00453"
+    },
+    "banking77": {
+      "columns": {
+        "category": "str",
+        "text": "str"
+      },
+      "convert_revision": null,
+      "hf_id": "PolyAI/banking77",
+      "revision": "90d4e2ee5521c04fc1488f065b8b083658768c57"
+    },
+    "civil_comments": {
+      "columns": {
+        "identity_attack": "float",
+        "insult": "float",
+        "obscene": "float",
+        "severe_toxicity": "float",
+        "sexual_explicit": "float",
+        "text": "string",
+        "threat": "float",
+        "toxicity": "float"
+      },
+      "convert_revision": null,
+      "hf_id": "google/civil_comments",
+      "revision": "f2970eb3a55777454c94069077cc8d9b5866312d"
+    },
+    "clinc_oos": {
+      "columns": {
+        "intent": "int64",
+        "text": "string"
+      },
+      "convert_revision": null,
+      "hf_id": "clinc/clinc_oos",
+      "revision": "155b9c710419136e17307b80d0a13e68cd46b4ec"
+    },
+    "cosmos_qa": {
+      "columns": {
+        "answer0": "string",
+        "answer1": "string",
+        "answer2": "string",
+        "answer3": "string",
+        "context": "string",
+        "id": "string",
+        "label": "int32",
+        "question": "string"
+      },
+      "convert_revision": "ed50fe83db62b355759053b1cd5eef344ee371e0",
+      "hf_id": "allenai/cosmos_qa",
+      "revision": "28d9d5e2aae025e73e11177891a88dba51190013"
+    },
+    "ethics_commonsense": {
+      "columns": {
+        "input": "string",
+        "label": "int32"
+      },
+      "convert_revision": "6deab74c03e30f13540266e373ce31f8466169f8",
+      "hf_id": "hendrycks/ethics",
+      "revision": "b8b47c589f8bee77175b8648e5497278b68da48a"
+    },
+    "go_emotions": {
+      "columns": {
+        "id": "string",
+        "labels": "list<item: int64>",
+        "text": "string"
+      },
+      "convert_revision": null,
+      "hf_id": "google-research-datasets/go_emotions",
+      "revision": "add492243ff905527e67aeb8b80c082af02207c3"
+    },
+    "gsm8k": {
+      "columns": {
+        "answer": "string",
+        "question": "string"
+      },
+      "convert_revision": null,
+      "hf_id": "openai/gsm8k",
+      "revision": "740312add88f781978c0658806c59bc2815b9866"
+    },
+    "medmcqa": {
+      "columns": {
+        "choice_type": "string",
+        "cop": "int64",
+        "exp": "string",
+        "id": "string",
+        "opa": "string",
+        "opb": "string",
+        "opc": "string",
+        "opd": "string",
+        "question": "string",
+        "subject_name": "string",
+        "topic_name": "string"
+      },
+      "convert_revision": null,
+      "hf_id": "openlifescienceai/medmcqa",
+      "revision": "91c6572c454088bf71b679ad90aa8dffcd0d5868"
+    },
+    "mmlu_validation": {
+      "columns": {
+        "answer": "int64",
+        "choices": "list<item: string>",
+        "question": "string",
+        "subject": "string"
+      },
+      "convert_revision": null,
+      "hf_id": "cais/mmlu",
+      "revision": "c30699e8356da336a370243923dbaf21066bb9fe"
+    },
+    "qasc": {
+      "columns": {
+        "answerKey": "string",
+        "choices": "struct<text: list<item: string>, label: list<item: string>>",
+        "combinedfact": "string",
+        "fact1": "string",
+        "fact2": "string",
+        "formatted_question": "string",
+        "id": "string",
+        "question": "string"
+      },
+      "convert_revision": null,
+      "hf_id": "allenai/qasc",
+      "revision": "a34ba204eb9a33b919c10cc08f4f1c8dae5ec070"
+    },
+    "twitter_fin_sentiment": {
+      "columns": {
+        "label": "int64",
+        "text": "string"
+      },
+      "convert_revision": "3e6bbcfb0c378a3017cea4ba198a4ce2594cd4c1",
+      "hf_id": "zeroshot/twitter-financial-news-sentiment",
+      "revision": "ccbe24de388e287beb92dd393a335c376b350ac3"
+    },
+    "wanli": {
+      "columns": {
+        "genre": "string",
+        "gold": "string",
+        "hypothesis": "string",
+        "id": "int64",
+        "pairID": "string",
+        "premise": "string"
+      },
+      "convert_revision": "397c41b3d2c0225b0f3d6029e1a0e3ae28fc29f8",
+      "hf_id": "alisawuffles/WANLI",
+      "revision": "61c95318fd71c55b6ba355d76253254615f387ec"
+    },
+    "winogrande": {
+      "columns": {
+        "answer": "string",
+        "option1": "string",
+        "option2": "string",
+        "sentence": "string"
+      },
+      "convert_revision": null,
+      "hf_id": "allenai/winogrande",
+      "revision": "01e74176c63542e6b0bcb004dcdea22d94fb67b5"
+    }
+  }
+}

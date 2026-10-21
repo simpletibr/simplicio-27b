@@ -1,0 +1,267 @@
+# decide/data/sources.yaml :: registro de fontes e politica de licencas (Squad B, issue #67).
+#
+# Negar por padrao. Uma fonte so treina com decision: allow + licenca em LICENSE_ALLOW + evidence.
+# Conferido em 2026-10-21 na API do Hugging Face (cardData.license e sha da revisao). O card pode estar errado
+# ou nao cobrir o conteudo de origem: por isso ARC (CC BY-SA) e as fontes sem metadado de licenca ficam em review,
+# e o HellaSwag (contextos do WikiHow, CC BY-NC-SA, e do ActivityNet) fica em deny. review so entra com
+# --include-review, decisao do dono.
+#
+# revision: sha completo (40 hex) do commit do repositorio em que a licenca e os campos foram conferidos. O leitor do
+# Hub baixa SO nesse commit (`--reader hub-latest` e o modo explicito para explorar uma fonte nova). Repositorios sem
+# parquet na main (WANLI, twitter-financial-news-sentiment, hendrycks/ethics, cosmos_qa) leem os parquet automaticos
+# da branch refs/convert/parquet: convert_revision fixa esse commit tambem. Se um sha sumir do Hub o build falha
+# (nao cai para a main): refaca a conferencia de licenca e atualize os dois campos juntos.
+#
+# role: heldout = nunca treina; alimenta o privado caseiro (proxy_private.py).
+# fields_verified: true = `python -m decide.data.build_corpus --inspect <chave> --reader hub-latest` rodou em 2026-10-21 e as
+# duas primeiras linhas converteram com o ouro certo (conferido a olho em clinc_oos, go_emotions, twitter_fin_sentiment,
+# qasc, winogrande, arc_easy, gsm8k, medmcqa, mmlu_validation); false = nao conferido, rode o inspect antes.
+
+sources:
+  # ------------------------------------------------------------------ treino (allow)
+  clinc_oos:
+    hf_id: clinc/clinc_oos
+    config: plus
+    split: train
+    license: cc-by-3.0
+    revision: 155b9c710419136e17307b80d0a13e68cd46b4ec
+    decision: allow
+    evidence: "API do HF, cardData.license=cc-by-3.0, sha 155b9c71 (2026-10-21); kit docs/suite.md: CLINC150 CC BY 3.0 (atribuicao no card)"
+    adapter: classification
+    args: {text: text, label: intent, label_names: auto, instruction: "Which intent best describes this user message?\n{text}"}
+    cap: 15000
+    fields_verified: true
+  banking77:
+    hf_id: PolyAI/banking77
+    split: train
+    license: cc-by-4.0
+    revision: 90d4e2ee5521c04fc1488f065b8b083658768c57
+    decision: allow
+    evidence: "API do HF, cardData.license=cc-by-4.0, sha 90d4e2ee (2026-10-21); atribuicao no card"
+    adapter: classification
+    args: {text: text, label: category, label_names: auto, instruction: "A bank customer wrote this message. Which intent does it express?\n{text}"}
+    files:
+      data: https://raw.githubusercontent.com/PolyAI-LDN/task-specific-datasets/master/banking_data/train.csv
+      labels: https://raw.githubusercontent.com/PolyAI-LDN/task-specific-datasets/master/banking_data/categories.json
+      sha256: {data: b06e26ac675513959a63135f11b94ea7786ed02da65db93a5650d8838cbc664b, labels: 53261da888122daf2d120d925458631d9619e15d82e56052e7a42e535ce32b63}
+    cap: 10003
+    fields_verified: true
+    notes: "o repositorio HF so tem um script de carga (sem parquet): le-se o train.csv do GitHub do PolyAI (mesmo arquivo que o script baixaria), sem rodar o script; sha256 conferido em 2026-10-21 (10003 linhas, 77 classes)"
+  gsm8k:
+    hf_id: openai/gsm8k
+    config: main
+    split: train
+    license: mit
+    revision: 740312add88f781978c0658806c59bc2815b9866
+    decision: allow
+    evidence: "API do HF, cardData.license=mit, sha 740312ad (2026-10-21)"
+    adapter: gsm8k
+    args: {question: question, answer: answer, options: 4}
+    cap: 7473
+    fields_verified: true
+    notes: "distratores = respostas de outros problemas do treino, de magnitude parecida (nao calculados a partir do ouro)"
+  mmlu_validation:
+    hf_id: cais/mmlu
+    config: all
+    split: validation
+    license: mit
+    revision: c30699e8356da336a370243923dbaf21066bb9fe
+    decision: allow
+    evidence: "API do HF, cardData.license=mit, sha c30699e8 (2026-10-21); so validation (1531 linhas); auxiliary_train NAO entra: mistura RACE, ARC e outras licencas"
+    adapter: mcq
+    args: {question: question, choices: choices, answer: answer, answer_kind: index}
+    cap: 1531
+    fields_verified: true
+  medmcqa:
+    hf_id: openlifescienceai/medmcqa
+    split: train
+    license: apache-2.0
+    revision: 91c6572c454088bf71b679ad90aa8dffcd0d5868
+    decision: allow
+    evidence: "API do HF, cardData.license=apache-2.0, sha 91c6572c (2026-10-21)"
+    adapter: mcq
+    args: {question: question, choices: [opa, opb, opc, opd], answer: cop, answer_kind: index, id: id}
+    cap: 40000
+    fields_verified: true
+  wanli:
+    hf_id: alisawuffles/WANLI
+    split: train
+    license: cc-by-4.0
+    revision: 61c95318fd71c55b6ba355d76253254615f387ec
+    convert_revision: 397c41b3d2c0225b0f3d6029e1a0e3ae28fc29f8
+    decision: allow
+    evidence: "API do HF, cardData.license=cc-by-4.0, sha 61c95318 (2026-10-21); atribuicao no card"
+    adapter: nli
+    args: {premise: premise, hypothesis: hypothesis, label: gold, labels: [entailment, neutral, contradiction], id: id}
+    cap: 40000
+    fields_verified: true
+    notes: "o `pairID` NAO e unico (102.885 linhas, 56.572 valores): o id do exemplo vem da coluna `id` (102.885 distintos), medido no parquet real"
+  civil_comments:
+    hf_id: google/civil_comments
+    split: train
+    license: cc0-1.0
+    revision: f2970eb3a55777454c94069077cc8d9b5866312d
+    decision: allow
+    evidence: "API do HF, cardData.license=cc0-1.0, sha f2970eb3 (2026-10-21)"
+    adapter: binary
+    args: {text: text, label: toxicity, threshold: 0.5, question: "Is this comment toxic?"}
+    cap: 30000
+    fields_verified: true
+
+  # ------------------------------------------------------------------ privado caseiro (heldout; nunca treinam)
+  twitter_fin_sentiment:
+    hf_id: zeroshot/twitter-financial-news-sentiment
+    split: train
+    license: mit
+    revision: ccbe24de388e287beb92dd393a335c376b350ac3
+    convert_revision: 3e6bbcfb0c378a3017cea4ba198a4ce2594cd4c1
+    decision: allow
+    role: heldout
+    evidence: "API do HF, cardData.license=mit, sha ccbe24de (2026-10-21); card: LABEL_0 Bearish, LABEL_1 Bullish, LABEL_2 Neutral"
+    adapter: classification
+    args: {text: text, label: label, label_names: [Bearish, Bullish, Neutral], instruction: "What is the sentiment of this financial news tweet?\n{text}"}
+    lang: en
+    fields_verified: true
+  go_emotions:
+    hf_id: google-research-datasets/go_emotions
+    config: simplified
+    split: train
+    license: apache-2.0
+    revision: add492243ff905527e67aeb8b80c082af02207c3
+    decision: allow
+    role: heldout
+    evidence: "API do HF, cardData.license=apache-2.0, sha add49224 (2026-10-21)"
+    adapter: classification
+    args: {text: text, label: labels, label_names: auto, instruction: "Which emotion does this comment express?\n{text}", id: id}
+    fields_verified: true
+    notes: "so linhas com exatamente um rotulo"
+  ethics_commonsense:
+    hf_id: hendrycks/ethics
+    config: commonsense
+    split: train
+    license: mit
+    revision: b8b47c589f8bee77175b8648e5497278b68da48a
+    convert_revision: 6deab74c03e30f13540266e373ce31f8466169f8
+    decision: allow
+    role: heldout
+    evidence: "API do HF, cardData.license=mit, sha b8b47c58 (2026-10-21)"
+    adapter: binary
+    args: {text: input, label: label, positive: 1, question: "Is the action described here clearly morally wrong?"}
+    fields_verified: true
+  qasc:
+    hf_id: allenai/qasc
+    split: train
+    license: cc-by-4.0
+    revision: a34ba204eb9a33b919c10cc08f4f1c8dae5ec070
+    decision: allow
+    role: heldout
+    evidence: "API do HF, cardData.license=cc-by-4.0, sha a34ba204 (2026-10-21)"
+    adapter: mcq
+    args: {question: question, choices: choices, answer: answerKey, answer_kind: letter, id: id}
+    fields_verified: true
+  cosmos_qa:
+    hf_id: allenai/cosmos_qa
+    split: train
+    license: cc-by-4.0
+    revision: 28d9d5e2aae025e73e11177891a88dba51190013
+    convert_revision: ed50fe83db62b355759053b1cd5eef344ee371e0
+    decision: allow
+    role: heldout
+    evidence: "API do HF, cardData.license=cc-by-4.0, sha 28d9d5e2 (2026-10-21); card: licenca CC BY 4.0 informada por e-mail da autora"
+    adapter: mcq
+    args: {question: question, context: context, choices: [answer0, answer1, answer2, answer3], answer: label, answer_kind: index, id: id}
+    fields_verified: true
+
+  # ------------------------------------------------------------------ review (so com --include-review)
+  arc_easy:
+    hf_id: allenai/ai2_arc
+    config: ARC-Easy
+    split: train
+    license: cc-by-sa-4.0
+    revision: 210d026faf9955653af8916fad021475a3f00453
+    decision: review
+    evidence: "API do HF, cardData.license=cc-by-sa-4.0, sha 210d026f (2026-10-21); share-alike"
+    adapter: mcq
+    args: {question: question, choices: choices, answer: answerKey, answer_kind: letter, id: id}
+    fields_verified: true
+  arc_challenge:
+    hf_id: allenai/ai2_arc
+    config: ARC-Challenge
+    split: train
+    license: cc-by-sa-4.0
+    revision: 210d026faf9955653af8916fad021475a3f00453
+    decision: review
+    evidence: "API do HF, cardData.license=cc-by-sa-4.0, sha 210d026f (2026-10-21); share-alike"
+    adapter: mcq
+    args: {question: question, choices: choices, answer: answerKey, answer_kind: letter, id: id}
+    fields_verified: true
+  winogrande:
+    hf_id: allenai/winogrande
+    config: winogrande_xl
+    split: train
+    license: unknown
+    revision: 01e74176c63542e6b0bcb004dcdea22d94fb67b5
+    decision: review
+    evidence: "API do HF 2026-10-21, sha 01e74176: sem licenca no metadado do card"
+    adapter: mcq
+    args: {question: sentence, choices: [option1, option2], answer: answer, answer_kind: index, answer_offset: 1}
+    fields_verified: true
+
+  # ------------------------------------------------------------------ deny (registrados para documentar a exclusao)
+  bbh:
+    hf_id: suzgunmirac/BIG-Bench-Hard
+    license: mit
+    decision: deny
+    evidence: "kit hub/0.3/manifest.json: carrega o canary do BIG-bench, nunca em corpus de treino"
+    adapter: none
+  hellaswag:
+    hf_id: Rowan/hellaswag
+    revision: 218ec52e09a7e7462a5400043bb9a69a41d06b76
+    license: mit
+    decision: deny
+    evidence: "API do HF 2026-10-21, sha 218ec52e: sem licenca no metadado do card (o README diz MIT), mas os contextos vem do WikiHow (CC BY-NC-SA) e do ActivityNet"
+    adapter: none
+    notes: "SCHEMA 8: fonte com conteudo NC/ND vai para a lista negra, sem excecao; a licenca MIT do dataset nao cobre o conteudo de origem. Fica em deny ate haver parecer juridico por escrito"
+  tasksource_bigbench:
+    hf_id: tasksource/bigbench
+    license: apache-2.0
+    decision: deny
+    evidence: "API do HF 2026-10-21: Apache-2.0, mas e o BIG-bench inteiro, com o canary; nunca em corpus de treino"
+    adapter: none
+  gpqa:
+    hf_id: Idavidrein/gpqa
+    license: cc-by-4.0
+    decision: deny
+    evidence: "kit docs/suite.md: os autores pedem que as questoes nao sejam postadas em texto puro; dado de avaliacao"
+    adapter: none
+  hle:
+    hf_id: cais/hle
+    license: mit
+    decision: deny
+    evidence: "kit docs/suite.md: dataset com acesso restrito (gated); dado de avaliacao"
+    adapter: none
+  anli:
+    hf_id: facebook/anli
+    license: cc-by-nc-4.0
+    decision: deny
+    evidence: "kit docs/suite.md: ANLI e CC BY-NC 4.0 (nao comercial)"
+    adapter: none
+  ragtruth:
+    hf_id: ParticleMedia/RAGTruth
+    license: mit
+    decision: deny
+    evidence: "kit docs/suite.md: contextos do MS MARCO (nao comercial) e do Yelp (sem redistribuicao)"
+    adapter: none
+  paws:
+    hf_id: google-research-datasets/paws
+    config: labeled_final
+    license: other
+    decision: deny
+    evidence: "API do HF 2026-10-21: cardData.license=other (termos proprios nao conferidos)"
+    adapter: none
+  multi_nli:
+    hf_id: nyu-mll/multi_nli
+    license: other
+    decision: deny
+    evidence: "API do HF 2026-10-21: cardData lista cc-by-3.0, cc-by-sa-3.0, mit e other (mistura por genero); nao conferido genero a genero"
+    adapter: none

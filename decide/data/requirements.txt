@@ -1,0 +1,5 @@
+# Versions decide/data and its tests ran with (2026-10-21). The tests need none of them except pyarrow and PyYAML;
+# huggingface_hub is only for `--reader hub`.
+pyarrow==26.0.0
+PyYAML==6.0.3
+huggingface_hub==1.33.0
