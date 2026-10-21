@@ -43,7 +43,7 @@ from .loss import decision_loss
 from .model import JointModel, LoraSpec, check_codes, collate, load_tokenizer, read_config, target_tensors
 from .optim import CPUOffloadAdamW
 from .protocol import RequestEncoder
-from .schedule import epoch_order, learning_rate_factor, microbatches, plan_steps
+from .schedule import epoch_order, learning_rate_factor, microbatches, plan_steps, step_seed
 from .temperature import CalibrationError, calibration_fields
 
 DEFAULT_LR = {"lora": 2e-5, "full": 2e-6}
@@ -163,7 +163,8 @@ def main(argv: Optional[Sequence[str]] = None, *, tokenizer: Any = None) -> int:
     torch.set_num_threads(args.cpu_threads)
     distributed = DistributedTraining.initialize()
     try:
-        return _train(args, distributed, out, targets, checkpoint, train, dev, plan, stop, policy, lr, summary_plan, tokenizer)
+        with events.default_log(out / "events.jsonl"):          # this run's own log, however many runs this process makes
+            return _train(args, distributed, out, targets, checkpoint, train, dev, plan, stop, policy, lr, summary_plan, tokenizer)
     finally:
         distributed.close()
 
@@ -183,7 +184,6 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
     if distributed.primary:
         out.mkdir(parents=True, exist_ok=True)
     distributed.barrier()
-    os.environ.setdefault("DECIDE_EVENTS", str(out / "events.jsonl"))
 
     config = read_config(checkpoint)
     tokenizer = tokenizer if tokenizer is not None else load_tokenizer(checkpoint)
@@ -242,6 +242,7 @@ def _train(args: argparse.Namespace, distributed: DistributedTraining, out: Path
             order_cache.clear()
             order_cache[epoch] = epoch_order(plan.rows, seed=args.seed, epoch=epoch)
         indices = plan.batch_indices(step, seed=args.seed, order=order_cache[epoch])
+        torch.manual_seed(step_seed(args.seed, step, distributed.rank))      # dropout masks: a function of (seed, step, rank), so a resumed run matches
         items: List[Item] = []
         too_long = 0
         for index in indices:

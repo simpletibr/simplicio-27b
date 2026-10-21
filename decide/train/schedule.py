@@ -6,6 +6,7 @@ or Python version, visits the examples in exactly the same order.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
@@ -38,6 +39,14 @@ def microbatches(lengths: Sequence[int], *, max_rows: int, token_budget: int) ->
     if pending:
         groups.append(pending)
     return groups
+
+
+def step_seed(seed: int, step: int, rank: int = 0) -> int:
+    """The seed of the random numbers one optimizer step draws (dropout masks): 63 bits of ``SHA-256("decide-step-seed-v1|seed|step|rank")``.
+
+    It depends on nothing else, so a run resumed at step N draws what the uninterrupted run drew there, on any machine."""
+    digest = hashlib.sha256(f"decide-step-seed-v1|{seed}|{step}|{rank}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") >> 1
 
 
 def epoch_order(rows: int, *, seed: int, epoch: int) -> List[int]:
