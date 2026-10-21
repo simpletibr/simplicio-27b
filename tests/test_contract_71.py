@@ -3020,6 +3020,22 @@ class ProxyEvalContract(unittest.TestCase):
         self.assertEqual(code, 3)
         self.assertIn("1 of them answered twice with different numbers", out + err)
         self.assertFalse((self.root / "scores.json").exists())
+        self.assertNotIn("Run `run` again", err, "running again does not take a repeated row out")
+        self.assertIn("repeated rows (running again does not take them out)", err)
+
+    def test_compare_says_how_many_questions_were_answered_twice_with_different_numbers(self) -> None:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        self.make_runs(flash=2, novo=3)
+        rows = pq.read_table(self.root / "runs" / "novo" / "results.parquet").to_pylist()
+        rows.append(dict(rows[0], probs=[0.1, 0.1, 0.1, 0.7]))
+        pq.write_table(pa.Table.from_pylist(rows), str(self.root / "runs" / "novo" / "results.parquet"))
+        code, out, _ = self.main(*self.compare_args("--min-rows", 10))
+        self.assertEqual(code, 3)
+        self.assertIn("new_bad_rows", out)
+        self.assertIn("new: 1 questions answered twice with different numbers", out)
+        self.assertNotIn("baseline: ", out)
 
     def test_a_folder_without_a_result_table_says_what_is_missing(self) -> None:
         (self.root / "empty").mkdir()

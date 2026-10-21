@@ -1028,6 +1028,16 @@ class ProxyContract(unittest.TestCase):
         self.assertEqual(sorted(table), [("e1", "q1"), ("e2", "q1"), ("e3", "7")], "rows without probabilities or an id are not answers")
 
 
+    def test_the_same_row_twice_is_not_a_conflict_even_when_its_numbers_are_not_numbers(self) -> None:
+        """NaN != NaN, and each NaN read from a file is its own object: a row with NaN written twice is one answer (malformed either way, but not answered twice with different numbers)."""
+        nan = lambda: float("nan")      # noqa: E731
+        row = lambda probs: {"example_id": "e1", "question_id": "q1", "probs": probs}      # noqa: E731
+        self.assertEqual(P.result_table([row([nan(), 1.0]), row([nan(), 1.0])])[1], set())
+        self.assertEqual(P.result_table([row([nan(), 1.0]), row([1.0, nan()])])[1], {("e1", "q1")})
+        self.assertEqual(P.result_table([row([nan(), 1.0]), row([1.0, 1.0])])[1], {("e1", "q1")})
+        self.assertEqual(P.result_table([row([1.0, 2.0]), row([1.0])])[1], {("e1", "q1")}, "a different length is a different answer")
+
+
 class GeneratorAndLoopContract(unittest.TestCase):
     def test_generator_is_off_by_default(self) -> None:
         spec = G.TaskSpec(domain="support", lang="pt", qtype="choice", description="triagem de chamados")
