@@ -696,6 +696,56 @@ class CalibrationItemsContract(HermeticTestCase):
         self.assertEqual(ev.calibration_items(self.dir / "out", rows), [])
 
 
+class SpecSourcesContract(HermeticTestCase):
+    """A `dir:PATH` repo reads a folder of this machine with no confinement, on purpose: it is a path its owner typed.  So a model spec may come
+    from the caller of `load_engine` and from the config files, and from nothing that travels with a run: a request row, a result row or the
+    remote `state.json` cannot build one.  If a later change makes a spec out of such data, it has to refuse `dir:` or confine it to the workdir."""
+
+    HOSTILE = {"anchor": "dir:/etc", "anchor_revision": None, "donors": [{"repo": "dir:/etc", "weight": 1.0}], "lora": {"repo": "dir:/etc", "weight": 1.0},
+               "spec": {"anchor": "dir:/etc"}, "model": "dir:/etc"}
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+
+    def test_the_modules_a_run_goes_through_never_name_the_spec_or_the_repo_readers(self):
+        root = Path(ev.__file__).parent
+        for module in ("evaluate.py", "state.py", "sample.py", "budget.py", "calibrate.py"):
+            text = (root / module).read_text(encoding="utf-8")
+            for name in ("normalize_spec", "load_engine", "load_decider", "HubRepo", "spec_for", "repo_key", "is_local"):
+                with self.subTest(f"{module}: {name}"):
+                    self.assertNotIn(name, text)
+
+    def test_hostile_keys_in_a_request_a_result_and_the_remote_state_never_reach_a_spec(self):
+        from unittest import mock
+
+        from decide.sd import api, loader, remote
+
+        store = MemoryStore()
+        first = State.open(self.dir / "s1", store)
+        first.set_meta("note", "x")
+        first.push(files_now=True)
+        doc = json.loads(store.files["state.json"].decode("utf-8"))
+        doc.update(self.HOSTILE)
+        doc["meta"].update(self.HOSTILE)
+        doc["rows"]["r"] = dict(self.HOSTILE)
+        store.files["state.json"] = json.dumps(doc).encode("utf-8")
+        questions = {"q1": {"type": "choice", "instructions": "pick", "criteria": {"A": "a", "B": "b"}}}
+        rows = [{"example_id": "e0", "request": {"state": "s0", "questions": questions}, "gold": {"q1": "A"}, **self.HOSTILE},
+                {"example_id": "e1", "state": "s1", "questions": questions, "gold": {"q1": "A"}, **self.HOSTILE}]
+        write_jsonl(self.dir / "req.jsonl", rows)
+        boom = AssertionError("a model spec or a repo reader was reached from run data")
+        with mock.patch.object(api, "normalize_spec", side_effect=boom), mock.patch.object(loader, "load_decider", side_effect=boom), \
+                mock.patch.object(remote.HubRepo, "__init__", side_effect=boom):
+            second = State.open(self.dir / "s2", store)
+            info = ev.run_requests(StubEngine(), self.dir / "req.jsonl", self.dir / "s2" / "runs" / "x", state=second, log=lambda t: None, table=False)
+        self.assertEqual(info["counts"], {"ok": 2})
+        for row in ev.read_results(self.dir / "s2" / "runs" / "x").values():
+            self.assertFalse(set(self.HOSTILE) & set(row), sorted(set(self.HOSTILE) & set(row)))
+
+
 class OriginContract(HermeticTestCase):
     """Where the rows of a run come from is written down with the run, so a temperature is not fitted on evaluation data by mistake
     (ADR 0004, item 6: the GT sample and the public suite are evaluation data, not training data)."""

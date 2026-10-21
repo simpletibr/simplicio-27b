@@ -16,6 +16,10 @@ training protocol's `fold_reasoning()` is integrated here.
 
 A repo is named `org/name` and read at a full commit hash (`anchor_revision`, `revision`), or `dir:PATH` for a checkpoint folder on this
 machine (the model that was just trained): no Hub, no network, and no revision, since a folder has none (one is refused).
+A `dir:` path is read as it is: there is no confinement to a work directory, because it is a path its owner typed.  So a spec comes from the
+caller of `load_engine` and from the config files (`config.yaml`, `decide/config.*.yaml`, `SD_CONFIG`), never from data that travels with a run
+(a request row, a result row, the remote `state.json`: tests/test_contract_65_evaluate.py `SpecSourcesContract` keeps it so).  Code that builds a
+spec from such data must refuse `dir:` or confine it.
 
 Importing this module does not import torch: the pure helpers (`normalize_spec`, `spec_for`, `parse_device`,
 `quant_settings`) work anywhere, and `load_engine` imports the heavy parts when it is called.
