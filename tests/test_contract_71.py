@@ -2829,7 +2829,7 @@ class ProxyEvalContract(unittest.TestCase):
     def test_compare_passes_a_clear_gain_and_writes_the_verdict(self) -> None:
         self.make_runs(flash=2, novo=3)
         code, out, _ = self.main("compare", "--proxy", self.proxy, "--new", self.root / "runs" / "novo", "--baseline", self.root / "runs" / "flash",
-                                 "--margin", "1.0", "--resamples", 50, "--out", self.root / "verdict.json")
+                                 "--margin", "1.0", "--resamples", 50, "--min-rows", 10, "--out", self.root / "verdict.json")
         self.assertEqual(code, 0, out)
         verdict = json.loads((self.root / "verdict.json").read_text(encoding="utf-8"))
         self.assertEqual(verdict["status"], "PASS")
@@ -2840,7 +2840,7 @@ class ProxyEvalContract(unittest.TestCase):
     def test_compare_fails_below_the_margin_and_exits_3(self) -> None:
         self.make_runs(flash=2, novo=3)
         code, out, _ = self.main("compare", "--proxy", self.proxy, "--new", self.root / "runs" / "novo", "--baseline", self.root / "runs" / "flash",
-                                 "--margin", "50", "--resamples", 50)
+                                 "--margin", "50", "--resamples", 50, "--min-rows", 10)
         self.assertEqual(code, 3)
         self.assertIn("FAIL", out)
         self.assertIn("delta_below_margin", out)
@@ -2848,7 +2848,7 @@ class ProxyEvalContract(unittest.TestCase):
     def test_compare_of_a_loss_fails(self) -> None:
         self.make_runs(flash=2, novo=1)
         code, out, _ = self.main("compare", "--proxy", self.proxy, "--new", self.root / "runs" / "novo", "--baseline", self.root / "runs" / "flash",
-                                 "--margin", "0", "--resamples", 50)
+                                 "--margin", "0", "--resamples", 50, "--min-rows", 10)
         self.assertEqual(code, 3)
         self.assertIn("FAIL", out)
 
@@ -2859,10 +2859,41 @@ class ProxyEvalContract(unittest.TestCase):
         table = pq.read_table(self.root / "runs" / "flash" / "results.parquet")
         pq.write_table(table.slice(0, 40), str(self.root / "runs" / "flash" / "results.parquet"))
         code, out, _ = self.main("compare", "--proxy", self.proxy, "--new", self.root / "runs" / "novo", "--baseline", self.root / "runs" / "flash",
-                                 "--margin", "1.0", "--resamples", 50)
+                                 "--margin", "1.0", "--resamples", 50, "--min-rows", 10)
         self.assertEqual(code, 3)
         self.assertIn("INVALID", out)
         self.assertIn("baseline_missing_rows", out)
+
+    def compare_args(self, *extra):
+        return ("compare", "--proxy", self.proxy, "--new", self.root / "runs" / "novo", "--baseline", self.root / "runs" / "flash", "--margin", "1.0", "--resamples", 50, *extra)
+
+    def test_compare_has_a_floor_of_rows_too_and_the_default_is_the_one_of_g4(self) -> None:
+        """Like G4: a gain measured on a handful of rows is not a gain.  The proxy of this test has 80 rows, under the default floor."""
+        from decide.rental import gates as G
+
+        self.make_runs(flash=2, novo=3)
+        code, out, _ = self.main(*self.compare_args("--out", self.root / "verdict.json"))
+        self.assertEqual(code, 3, out)
+        self.assertIn("INVALID", out)
+        self.assertIn("too_few_rows", out)
+        verdict = json.loads((self.root / "verdict.json").read_text(encoding="utf-8"))
+        self.assertEqual((verdict["status"], verdict["min_rows"]), ("INVALID", G.DEFAULT_MIN_ROWS))
+        self.assertEqual(G.DEFAULT_MIN_ROWS, rental_cfg()["gates"]["g4_min_rows"], "G2 and G4 ask for the same number unless someone chooses another")
+
+    def test_compare_takes_the_floor_from_the_command_line(self) -> None:
+        self.make_runs(flash=2, novo=3)
+        code, out, _ = self.main(*self.compare_args("--min-rows", 80, "--out", self.root / "verdict.json"))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads((self.root / "verdict.json").read_text(encoding="utf-8"))["min_rows"], 80)
+        code, out, _ = self.main(*self.compare_args("--min-rows", 81))
+        self.assertEqual(code, 3, out)
+        self.assertIn("too_few_rows", out)
+
+    def test_the_floor_is_a_whole_number_of_at_least_one(self) -> None:
+        for bad in ("0", "-5", "1.5", "many", "True"):
+            code, _, err = self.main(*self.compare_args("--min-rows", bad))
+            self.assertEqual(code, 2, bad)
+            self.assertIn("--min-rows", err)
 
     def test_the_margin_has_no_default_so_a_gate_is_never_run_with_a_number_nobody_chose(self) -> None:
         code, _, err = self.main("compare", "--proxy", self.proxy, "--new", self.root, "--baseline", self.root)

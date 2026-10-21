@@ -14,7 +14,8 @@ any margin): the new run against the baseline on the same questions, with the pa
 the rented day uses for G4 (``decide.rental.gates.g4_verdict``).
 
 A run with a question that has no row (or an invalid one) is never scored as if it were whole: ``score`` refuses to write and
-``compare`` says INVALID.  ``--margin`` has no default and there is no flag to skip the comparison.
+``compare`` says INVALID.  So does a proxy with fewer than ``--min-rows`` rows that have a gold answer (default 100, the floor of G4).
+``--margin`` has no default and there is no flag to skip the comparison.
 
 Exit codes: 0 done (and PASS); 1 an error (a run the kit did not finish, a missing file); 2 usage; 3 the gate did not pass
 (FAIL or INVALID, or an incomplete run in ``score``).
@@ -130,7 +131,7 @@ def cmd_score(args: argparse.Namespace) -> int:
 def cmd_compare(args: argparse.Namespace) -> int:
     new, baseline = results_table(args.new), results_table(args.baseline)
     verdict = G.g4_verdict(G.proxy_requests(args.proxy), list(PP.read_results(new)), list(PP.read_results(baseline)),
-                           margin_points=args.margin, resamples=args.resamples, seed=args.seed)
+                           margin_points=args.margin, resamples=args.resamples, seed=args.seed, min_rows=args.min_rows)
     if args.out:
         target = Path(args.out)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -146,6 +147,16 @@ def cmd_compare(args: argparse.Namespace) -> int:
         print("notes: " + ", ".join(verdict["notes"]))
     print(verdict["scope"])
     return EXIT_OK if verdict["status"] == "PASS" else EXIT_STOPPED
+
+
+def _min_rows(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"{text!r}: the floor is a whole number of rows of at least 1 (below it the verdict is INVALID)")
+    return value
 
 
 def _margin(text: str) -> float:
@@ -185,6 +196,8 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--new", required=True, help="the folder of the run being tested")
     compare.add_argument("--baseline", required=True, help="the folder of the run it must beat")
     compare.add_argument("--margin", required=True, type=_margin, help="proxy points the new run must gain (G2: 1.0; G4: 1.5); no default on purpose")
+    compare.add_argument("--min-rows", type=_min_rows, default=G.DEFAULT_MIN_ROWS,
+                         help=f"rows with a gold answer below which the verdict is INVALID, however large the gain (default: {G.DEFAULT_MIN_ROWS}, the floor of G4: a choice, not a power calculation)")
     compare.add_argument("--resamples", type=int, default=1000, help="bootstrap resamples (default: 1000)")
     compare.add_argument("--seed", type=int, default=G.DEFAULT_SEED)
     compare.add_argument("--out", help="also write the verdict as JSON here")

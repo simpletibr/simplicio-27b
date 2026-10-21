@@ -28,6 +28,9 @@ from decide.data import schema as S
 
 GT_REPORT_FORMAT = "think-gt-report/2"                           # decide.think.compare.REPORT_FORMAT
 DEFAULT_SEED = 20261021
+#: The floor of rows with a gold answer below which a comparison is INVALID, for G2 (``proxy_eval compare``); G4 reads the same number from ``gates.g4_min_rows`` of
+#: ``config.rental.yaml`` (a test keeps the two equal).  A CHOICE against a handful of rows, not a power calculation (UNVERIFIED): the home proxy asks 300 per source.
+DEFAULT_MIN_ROWS = 100
 SCOPE = ("home private proxy (decide.data.proxy_private): a stand-in for the board, not the board; "
          "the public round and the lab's agreement (G5) are what the board sees")
 
