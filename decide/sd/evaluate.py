@@ -755,7 +755,7 @@ def score_sample(results_path: Union[str, os.PathLike], sample_ref: Union[str, o
     return out
 
 
-def _percentile(values: Sequence[float], q: float) -> float:
+def percentile(values: Sequence[float], q: float) -> float:
     ordered = sorted(values)
     if not ordered:
         raise EvaluateError("no replicates")
@@ -785,8 +785,8 @@ def compare_runs(results_a: Union[str, os.PathLike], results_b: Union[str, os.Pa
                 sampled.extend(groups[rng.randrange(len(groups))])
         deltas.append(_score(res_a, sampled, edition, "a")["public"] - _score(res_b, sampled, edition, "b")["public"])
     tail = (1.0 - level) / 2.0
-    return {"delta": a - b, "a": a, "b": b, "low": _percentile(deltas, tail) if deltas else None,
-            "high": _percentile(deltas, 1.0 - tail) if deltas else None, "replicates": replicates, "seed": seed, "level": level}
+    return {"delta": a - b, "a": a, "b": b, "low": percentile(deltas, tail) if deltas else None,
+            "high": percentile(deltas, 1.0 - tail) if deltas else None, "replicates": replicates, "seed": seed, "level": level}
 
 
 # --------------------------------------------------------------------------- items for calibration
