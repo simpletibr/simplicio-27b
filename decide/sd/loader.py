@@ -24,13 +24,13 @@ from torch import nn
 from decide.sd import d3 as d3_protocol
 from decide.sd import merge as M
 from decide.sd import nf4
+from decide.sd.config import PROTOCOLS
 from decide.sd.engine import AssembledDecider
 from decide.sd.remote import HubRepo, RemoteError
 from decide.sd.vendor.pplx_decider.model import enable_noncausal_full_attention
 from decide.sd.vendor.pplx_decider.protocol import PROTOCOL
 
 DTYPES = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
-PROTOCOLS = ("pplx_joint", "d3")
 LAYER = re.compile(r"^language_model\.layers\.(\d+)\.")
 
 
@@ -452,6 +452,17 @@ def _place(model: nn.Module, layer_device: Sequence[torch.device], offloaded: se
         return output
 
     lm.register_forward_hook(bring_back, with_kwargs=True)
+
+
+def stored_bytes(repo: HubRepo, skip: Sequence[str] = ("visual.",)) -> int:
+    """Bytes of the tensors the loader would read from `repo` (headers only: no tensor data is downloaded)."""
+    total = 0
+    for name in repo.names():
+        if any(pattern in name for pattern in skip):
+            continue
+        info = repo.info(name)
+        total += info.end - info.start
+    return total
 
 
 def describe(spec: Mapping[str, Any], options: LoadOptions) -> Dict[str, Any]:

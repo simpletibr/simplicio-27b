@@ -32,7 +32,8 @@ from decide.sd.vendor.pplx_decider.protocol import (
 
 from decide.sd.kitapi import Engine, Unsupported
 
-SUPPORTED_TYPES = ("choice", "noul")
+SUPPORTED_TYPES = ("choice", "noul")                      # what the Decision Index kit scores
+ALL_TYPES = ("choice", "noul", "score")                   # what the pplx protocol can answer (teacher labels use all three)
 OOM_ERRORS: Tuple[type, ...] = tuple(e for e in (getattr(torch, "OutOfMemoryError", None), getattr(torch.cuda, "OutOfMemoryError", None)) if e)
 
 
@@ -90,11 +91,23 @@ class AssembledDecider(Decider):
                     results[index, key] = row
         return [{key: results[index, key] for plan_chunk in plan for key in plan_chunk.keys} for index, plan in enumerate(plans)]
 
+    def run_batch(self, plans: Sequence[Sequence[Encoded]], requests: Sequence[Mapping[str, Any]]) -> List[Dict[str, List[float]]]:
+        """Logits per question for every planned request: by the packed fast path when one is attached, else the reference path.
 
-def _check_request(request: Mapping[str, Any]) -> None:
+        `plans[i]` is the encoding of `requests[i]`; the fast path plans again by itself, so it is given the requests.
+        """
+        if self.fast is None:
+            return self.run_plans(plans)
+        rows = list(self.fast.run(list(requests)))
+        if len(rows) != len(plans):
+            raise RuntimeError(f"the fast path answered {len(rows)} requests out of {len(plans)}")
+        return [{key: list(values) for key, values in logits.items()} for _request, logits, _chunks in rows]
+
+
+def _check_request(request: Mapping[str, Any], types: Sequence[str] = SUPPORTED_TYPES) -> None:
     for key, question in request["questions"].items():
-        if not isinstance(question, Mapping) or question.get("type") not in SUPPORTED_TYPES:
-            raise Unsupported(f"question {key!r}: only {SUPPORTED_TYPES} questions are scored by the kit")
+        if not isinstance(question, Mapping) or question.get("type") not in types:
+            raise Unsupported(f"question {key!r}: this engine serves only {tuple(types)} questions (the kit scores {SUPPORTED_TYPES})")
     if request.get("images"):
         raise Unsupported("this engine loads the text tower only; image requests are not supported")
 
@@ -107,8 +120,12 @@ class DecisionEngine(Engine):
     def __init__(self, decider: AssembledDecider, *, tta_rotations: int = 1, tta_mode: str = "reverse",
                  temperature: Optional[float] = None, temperatures: Optional[Mapping[str, float]] = None,
                  provenance: Optional[Mapping[str, Any]] = None, name: Optional[str] = None, check_finite: bool = True,
-                 **options: Any) -> None:
+                 question_types: Sequence[str] = SUPPORTED_TYPES, **options: Any) -> None:
         super().__init__(**options)
+        bad = [t for t in question_types if t not in ALL_TYPES]
+        if bad:
+            raise ValueError(f"question_types may only hold {ALL_TYPES}, got {bad}")
+        self.question_types = tuple(question_types)
         if tta_mode not in tta.MODES:
             raise ValueError(f"tta_mode must be one of {tta.MODES}")
         self.decider = decider
@@ -124,7 +141,13 @@ class DecisionEngine(Engine):
 
     # ---- helpers
     def temperature_for(self, question: Mapping[str, Any]) -> float:
-        return float(self.temperatures.get(question["type"], self.temperatures.get("default", self.temperature)))
+        """The divisor for one question: `type:k-bucket`, else `type`, else `default`, else the model's own temperature."""
+        kind = question["type"]
+        n = 2 if kind == "noul" else len(question.get("criteria") or ())
+        for key in (f"{kind}:{calibrate.k_bucket(n)}", kind, "default"):
+            if key in self.temperatures:
+                return float(self.temperatures[key])
+        return self.temperature
 
     def _views(self, request: Mapping[str, Any]) -> Tuple[List[Dict[str, List[int]]], List[Dict[str, Any]]]:
         plans = tta.plan(request, self.views, self.tta_mode)
@@ -145,7 +168,9 @@ class DecisionEngine(Engine):
             applied[key] = t
             answers[key] = answer(question, calibrate.reprobabilities(logits[key], t))
         response = {"model": self.name, "answers": answers, "usage": {"input_tokens": tokens, "output_tokens": 0, "sequences": len(plans)}}
-        raw = {"logits": logits, "temperature": self.decider.temperature, "applied_temperatures": applied, "views": len(plans), "tokens": tokens}
+        codes = {key: list(self.decider.codes[:len(rows[0])]) for key, rows in logits.items()}       # answer codes of the valid options
+        raw = {"logits": logits, "codes": codes, "temperature": self.decider.temperature, "applied_temperatures": applied,
+               "views": len(plans), "tokens": tokens}
         return response, raw
 
     # ---- kit interface
@@ -161,10 +186,10 @@ class DecisionEngine(Engine):
         All views of all requests are planned first; a request that cannot be encoded does not stop the others.
         """
         results: List[Any] = [None] * len(requests)
-        jobs: List[Tuple[int, Mapping[str, Any], List[Dict[str, List[int]]], List[List[Encoded]]]] = []
+        jobs: List[Tuple[int, Mapping[str, Any], List[Dict[str, List[int]]], List[List[Encoded]], List[Dict[str, Any]]]] = []
         for i, request in enumerate(requests):
             try:
-                _check_request(request)
+                _check_request(request, self.question_types)
                 plans, view_requests = self._views(request)
                 encoded = [self.decider.encoder.plan(r, self.decider.max_length) for r in view_requests]
             except (LengthError, RequestError) as exc:
@@ -173,17 +198,18 @@ class DecisionEngine(Engine):
             except Unsupported as exc:
                 results[i] = exc
                 continue
-            jobs.append((i, request, plans, encoded))
+            jobs.append((i, request, plans, encoded, view_requests))
         if jobs:
-            flat = [chunks for _i, _r, _p, encoded in jobs for chunks in encoded]
+            flat = [chunks for _i, _r, _p, encoded, _v in jobs for chunks in encoded]
+            flat_requests = [view for _i, _r, _p, _e, views in jobs for view in views]
             try:
-                logits = self.decider.run_plans(flat)
+                logits = self.decider.run_batch(flat, flat_requests)
             except Unsupported as exc:
                 for i, *_ in jobs:
                     results[i] = exc
                 return results
             cursor = 0
-            for i, request, plans, encoded in jobs:
+            for i, request, plans, encoded, _views in jobs:
                 mine = logits[cursor:cursor + len(encoded)]
                 cursor += len(encoded)
                 tokens = sum(c.length for chunks in encoded for c in chunks)

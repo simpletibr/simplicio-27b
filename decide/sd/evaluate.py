@@ -435,7 +435,7 @@ def run_requests(engine: Any, requests_path: Union[str, os.PathLike], out_path: 
 
 # --------------------------------------------------------------------------- the probability table
 
-TABLE_COLUMNS = ("run_id", "catalog_id", "group_id", "track", "question_id", "qtype", "status", "n_options", "option_keys",
+TABLE_COLUMNS = ("run_id", "catalog_id", "group_id", "track", "question_id", "qtype", "status", "n_options", "option_keys", "codes",
                  "probs", "logits", "views", "temperature", "applied_temperature", "tokens", "gold", "error")
 
 
@@ -456,7 +456,7 @@ def table_rows(run_dir: Union[str, os.PathLike], golds: Optional[Mapping[str, Ma
         base = {k: row.get(k) for k in ("run_id", "catalog_id", "group_id", "track", "status")}
         answers = (row.get("response") or {}).get("answers") if row.get("status") == "ok" else None
         if not answers:
-            yield {**base, "question_id": None, "qtype": None, "n_options": 0, "option_keys": [], "probs": [], "logits": [],
+            yield {**base, "question_id": None, "qtype": None, "n_options": 0, "option_keys": [], "codes": [], "probs": [], "logits": [],
                    "views": 0, "temperature": None, "applied_temperature": None, "tokens": 0, "gold": None, "error": row.get("error")}
             continue
         raw = raws.get(run_id) or {}
@@ -469,7 +469,7 @@ def table_rows(run_dir: Union[str, os.PathLike], golds: Optional[Mapping[str, Ma
                 probs = [float(answer["probabilities"][k]) for k in keys]
             logits = (raw.get("logits") or {}).get(qid) or []
             yield {**base, "question_id": qid, "qtype": answer.get("type"), "n_options": len(keys), "option_keys": keys,
-                   "probs": probs, "logits": [[float(x) for x in view] for view in logits], "views": int(raw.get("views") or len(logits)),
+                   "codes": (raw.get("codes") or {}).get(qid), "probs": probs, "logits": [[float(x) for x in view] for view in logits], "views": int(raw.get("views") or len(logits)),
                    "temperature": raw.get("temperature"), "applied_temperature": (raw.get("applied_temperatures") or {}).get(qid),
                    "tokens": tokens, "gold": _gold_key((golds.get(run_id) or {}).get(qid)), "error": None}
 
@@ -486,7 +486,8 @@ def write_table(run_dir: Union[str, os.PathLike], golds: Optional[Mapping[str, M
     schema = pa.schema([
         ("run_id", pa.string()), ("catalog_id", pa.int64()), ("group_id", pa.string()), ("track", pa.string()),
         ("question_id", pa.string()), ("qtype", pa.string()), ("status", pa.string()), ("n_options", pa.int32()),
-        ("option_keys", pa.list_(pa.string())), ("probs", pa.list_(pa.float64())), ("logits", pa.list_(pa.list_(pa.float64()))),
+        ("option_keys", pa.list_(pa.string())), ("codes", pa.list_(pa.string())), ("probs", pa.list_(pa.float64())),
+        ("logits", pa.list_(pa.list_(pa.float64()))),
         ("views", pa.int32()), ("temperature", pa.float64()), ("applied_temperature", pa.float64()), ("tokens", pa.int64()),
         ("gold", pa.string()), ("error", pa.string()),
     ])
@@ -495,6 +496,48 @@ def write_table(run_dir: Union[str, os.PathLike], golds: Optional[Mapping[str, M
     pq.write_table(pa.Table.from_pylist(rows, schema=schema), str(tmp))
     os.replace(tmp, out)
     return str(out)
+
+
+def _table_file(path: Union[str, os.PathLike]) -> Path:
+    p = Path(path)
+    p = p / TABLE_NAME if p.is_dir() else p
+    if not p.exists():
+        raise EvaluateError(f"{p}: no probability table here; run_requests writes it when a run completes")
+    return p
+
+
+def _table_batches(path: Union[str, os.PathLike], columns: Sequence[str]) -> Iterator[Dict[str, Any]]:
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise EvaluateError("reading the probability table needs pyarrow (pip install pyarrow)") from exc
+    for batch in pq.ParquetFile(str(_table_file(path))).iter_batches(batch_size=1024, columns=list(columns)):
+        yield from batch.to_pylist()
+
+
+def table_items(path: Union[str, os.PathLike]) -> List[calibrate.Item]:
+    """`calibrate.Item`s from a probability table (the file, or the run directory that holds it).
+
+    Rows that are not `ok`, have no gold label, or whose gold is not one of the option keys are left out.
+    """
+    items: List[calibrate.Item] = []
+    for row in _table_batches(path, ("run_id", "question_id", "qtype", "status", "option_keys", "logits", "gold")):
+        keys, gold, views = row.get("option_keys") or [], row.get("gold"), row.get("logits") or []
+        if row.get("status") != "ok" or row.get("question_id") is None or gold is None or gold not in keys:
+            continue
+        if not views or any(len(view) != len(keys) for view in views):
+            continue
+        items.append(calibrate.Item(row["run_id"], row["question_id"], str(row["qtype"]), [[float(x) for x in v] for v in views], keys.index(gold)))
+    return items
+
+
+def table_temperature(path: Union[str, os.PathLike]) -> Optional[float]:
+    """The temperature the model itself ships with (the most common value in the table), or None when nothing was recorded."""
+    counts: collections.Counter = collections.Counter()
+    for row in _table_batches(path, ("status", "temperature")):
+        if row.get("status") == "ok" and row.get("temperature") is not None:
+            counts[float(row["temperature"])] += 1
+    return counts.most_common(1)[0][0] if counts else None
 
 
 # --------------------------------------------------------------------------- throughput and the sample size

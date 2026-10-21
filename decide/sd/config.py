@@ -15,6 +15,7 @@ METHODS = ("task_arithmetic", "ties")
 REFERENCES = ("anchor", "base")
 QUANTS = ("nf4", "fp16", "bf16", "none")
 TTA_MODES = ("reverse", "rotate")
+PROTOCOLS = ("pplx_joint", "d3")        # pplx_joint: the joint prompt we ship; d3: one question per sequence (fidelity only)
 # fase0b: Lychee is CC BY-NC (cannot ship), amos has no compatible readout head; neither may be a donor.
 FORBIDDEN_DONORS = ("lychee", "amos")
 

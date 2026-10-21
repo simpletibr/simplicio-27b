@@ -68,7 +68,7 @@ eval:
   quant: nf4                       # nf4 | fp16 | bf16 | none
   compute_dtype: float16           # T4 nao tem bf16
   double_quant: true
-  max_gpu_gb: 14.0                 # limite por GPU no device_map
+  max_gpu_gb: null                 # teto opcional de memoria por GPU (GB) no planejamento; vazio = a que a placa tem
   batch_tokens: 4096
   min_per_benchmark: 4             # piso de grupos por benchmark ao encolher a amostra por orcamento
 

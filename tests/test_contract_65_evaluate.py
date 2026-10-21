@@ -85,7 +85,8 @@ class StubEngine:
                 answers[key] = {"type": "noul", "noul": softmax(values)[1]}
             logits[key] = [values]
         response = {"model": "stub", "answers": answers, "usage": {"input_tokens": 10, "output_tokens": 0}}
-        raw = {"logits": logits, "temperature": 1.0, "applied_temperatures": {k: 1.0 for k in logits}, "views": 1, "tokens": 10}
+        raw = {"logits": logits, "codes": {k: [chr(65 + i) for i in range(len(v[0]))] for k, v in logits.items()},
+               "temperature": 1.0, "applied_temperatures": {k: 1.0 for k in logits}, "views": 1, "tokens": 10}
         return response, raw
 
     def batch(self, requests):
@@ -414,6 +415,66 @@ class RunRequestsContract(HermeticTestCase):
         self.assertEqual(rows[0]["option_keys"], ["false", "true"])
         self.assertAlmostEqual(rows[0]["probs"][1], softmax([0.0, 1.0])[1])
         self.assertEqual(rows[0]["gold"], "true")
+
+    def test_table_rows_carry_the_answer_codes_of_the_valid_options(self):
+        write_jsonl(self.dir / "n.jsonl", [kit_row(0, options=("A", "B", "C")), kit_row(1, qtype="noul", gold=True, catalog_id=29)])
+        ev.run_requests(StubEngine(), self.dir / "n.jsonl", self.dir / "nout", log=lambda t: None)
+        rows = list(ev.table_rows(self.dir / "nout"))
+        self.assertEqual(rows[0]["codes"], ["A", "B", "C"])
+        self.assertEqual(rows[1]["codes"], ["A", "B"])
+
+    def test_a_run_from_before_codes_were_recorded_still_makes_a_table(self):
+        write_jsonl(self.dir / "n.jsonl", [kit_row(0)])
+        ev.run_requests(StubEngine(), self.dir / "n.jsonl", self.dir / "nout", log=lambda t: None)
+        raw_path = self.dir / "nout" / ev.RAW_NAME
+        raw = json.loads(raw_path.read_text(encoding="utf-8"))
+        raw.pop("codes")
+        raw_path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+        self.assertIsNone(list(ev.table_rows(self.dir / "nout"))[0]["codes"])
+
+    @needs_pyarrow
+    def test_the_parquet_table_has_a_codes_column(self):
+        import pyarrow.parquet as pq
+
+        self.go(StubEngine())
+        table = pq.read_table(self.out / ev.TABLE_NAME).to_pylist()
+        self.assertEqual(table[0]["codes"], ["A", "B"])
+
+
+@needs_pyarrow
+class TableItemsContract(HermeticTestCase):
+    """Calibration items straight from the probability table (what `api.fit_temperature` reads)."""
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        self.rows = [kit_row(0, gold="B"), kit_row(1, qtype="noul", gold=True, catalog_id=29), kit_row(2, gold="Z"), kit_row(3, gold="A")]
+        write_jsonl(self.dir / "req.jsonl", self.rows)
+        ev.run_requests(StubEngine({"state-3": "unsupported"}), self.dir / "req.jsonl", self.dir / "out", log=lambda t: None)
+
+    def test_items_have_logits_per_view_and_the_gold_option_index(self):
+        items = {i.run_id: i for i in ev.table_items(self.dir / "out" / ev.TABLE_NAME)}
+        self.assertEqual(sorted(items), ["28:T:T:0", "29:T:T:1"])
+        self.assertEqual((items["28:T:T:0"].gold, items["28:T:T:0"].qtype, items["28:T:T:0"].logits), (1, "choice", [[2.0, 1.0]]))
+        self.assertEqual((items["29:T:T:1"].gold, items["29:T:T:1"].qtype), (1, "noul"))
+
+    def test_a_directory_means_its_table(self):
+        self.assertEqual(len(ev.table_items(self.dir / "out")), 2)
+
+    def test_the_models_own_temperature_is_the_baseline(self):
+        self.assertEqual(ev.table_temperature(self.dir / "out"), 1.0)
+
+    def test_agrees_with_the_items_built_from_the_jsonl_files(self):
+        from_table = sorted((i.run_id, i.question_id, i.qtype, i.gold, [list(v) for v in i.logits]) for i in ev.table_items(self.dir / "out"))
+        from_jsonl = sorted((i.run_id, i.question_id, i.qtype, i.gold, [list(v) for v in i.logits])
+                            for i in ev.calibration_items(self.dir / "out", self.rows))
+        self.assertEqual(from_table, from_jsonl)
+
+    def test_no_table_is_an_error_that_says_how_a_table_appears(self):
+        with self.assertRaisesRegex(ev.EvaluateError, "completes"):
+            ev.table_items(self.dir / "nowhere")
 
 
 class ThroughputContract(HermeticTestCase):

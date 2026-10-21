@@ -255,3 +255,23 @@ def plan_devices(
             notes=[f"CPU offload of {k} decoder layers (moved to the GPU on demand): slow and UNVERIFIED"],
         )
     return DevicePlan("insufficient", "cpu", {}, notes=[f"NF4 needs about {tight:.0f} GB of GPU memory; found {sum(usable):.1f} GB"], ok=False)
+
+
+def plan_dense_devices(gpu_mem_gb: Sequence[float], need_gb: float, max_gpu_gb: Optional[float] = None) -> DevicePlan:
+    """Lay an unquantised model of `need_gb` (the weights as they will sit in memory) on the GPUs that are present.
+
+    One GPU when it holds the model plus the activation headroom, else the layers are split over all of them
+    (one active at a time), else `insufficient`.  The 4B rehearsal models in fp16 take the first branch on a T4.
+    """
+    mem = [float(m) for m in gpu_mem_gb]
+    if max_gpu_gb is not None:
+        mem = [min(m, float(max_gpu_gb) + 1.0) for m in mem]
+    usable = [max(0.0, m - 0.9) for m in mem]
+    need = float(need_gb) + ACTIVATION_HEADROOM_GB
+    if usable and usable[0] >= need:
+        return DevicePlan("single", "cuda:0", {0: round(usable[0], 1)}, notes=[f"the model (about {need_gb:.1f} GB) fits on one GPU"])
+    if len(usable) > 1 and sum(usable) >= need:
+        return DevicePlan("split2", "cuda:0", {i: round(u, 1) for i, u in enumerate(usable)},
+                          notes=[f"the model (about {need_gb:.1f} GB) is split across {len(usable)} GPUs, one active at a time"])
+    return DevicePlan("insufficient", "cpu", {}, ok=False,
+                      notes=[f"the model needs about {need_gb:.0f} GB of GPU memory plus {ACTIVATION_HEADROOM_GB} GB of headroom; found {sum(usable):.1f} GB usable"])
