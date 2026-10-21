@@ -70,7 +70,7 @@ eval:
   double_quant: true
   max_gpu_gb: 14.0                 # limite por GPU no device_map
   batch_tokens: 4096
-  min_rows_per_benchmark: 4        # piso ao encolher a amostra por orcamento
+  min_per_benchmark: 4             # piso de grupos por benchmark ao encolher a amostra por orcamento
 
 budget:
   session_hours: 11.5

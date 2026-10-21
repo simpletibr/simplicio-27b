@@ -18,8 +18,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from decide_support import ROOT, HermeticTestCase, needs_numpy, needs_torch
+from decide_support import ROOT, HermeticTestCase, needs_bnb, needs_kit, needs_numpy, needs_torch
 
 from decide.sd import budget as B
 from decide.sd import config as C
@@ -750,6 +751,586 @@ class CalibrateContract(unittest.TestCase):
         out = self.K.fit_groups(items, by="question_type", holdout=0.5, seed=3, min_items=50)
         self.assertEqual(out["temperatures"]["noul"], out["default"])
         self.assertIn("noul", out["fallback"])
+
+
+class FakeClock:
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, seconds):
+        self.t += seconds
+
+
+class StateContract(HermeticTestCase):
+    """Idempotent stage and row checkpoints, mirrored to a store; a dead session resumes where it stopped."""
+
+    def setUp(self):
+        super().setUp()
+        from decide.sd import state
+
+        self.S = state
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.clock = FakeClock()
+
+    def open(self, store=None, sub="w", **kw):
+        return self.S.State.open(self.dir / sub, store, clock=self.clock, now=self.clock, **kw)
+
+    def test_a_fresh_state_is_empty_and_saved_atomically(self):
+        st = self.open()
+        self.assertFalse(st.is_done("fidelity"))
+        self.assertIsNone(st.stage_status("fidelity"))
+        st.save()
+        data = json.loads((self.dir / "w" / "state.json").read_text())
+        self.assertEqual((data["version"], data["stages"], data["rows"]), (self.S.SCHEMA_VERSION, {}, {}))
+        self.assertEqual([p.name for p in (self.dir / "w").iterdir() if p.name.endswith(".tmp")], [])
+
+    def test_run_stage_runs_once_and_returns_the_stored_result(self):
+        st, calls = self.open(), []
+
+        def work(x):
+            calls.append(x)
+            return {"score": x * 2}
+
+        self.assertEqual(st.run_stage("a", work, 3), {"score": 6})
+        self.assertEqual(st.run_stage("a", work, 99), {"score": 6})
+        self.assertEqual(calls, [3])
+        self.assertTrue(st.is_done("a"))
+        self.assertEqual(st.run_stage("a", work, 4, force=True), {"score": 8})
+        self.assertEqual(calls, [3, 4])
+
+    def test_a_failed_stage_is_recorded_and_runs_again(self):
+        st = self.open()
+
+        def boom():
+            raise RuntimeError("cuda out of memory")
+
+        with self.assertRaisesRegex(RuntimeError, "out of memory"):
+            st.run_stage("a", boom)
+        self.assertEqual(st.stage_status("a"), "failed")
+        self.assertIn("out of memory", st.data["stages"]["a"]["error"])
+        self.assertEqual(st.run_stage("a", lambda: "fine"), "fine")
+        self.assertEqual((st.stage_status("a"), st.data["stages"]["a"]["attempts"]), ("done", 2))
+
+    def test_state_survives_a_restart_and_a_dead_running_stage_is_redone(self):
+        st = self.open()
+        st.run_stage("done_one", lambda: 1)
+        st.begin("died_midway")                         # the session died here: status stays "running"
+        again = self.open()
+        self.assertTrue(again.is_done("done_one"))
+        self.assertFalse(again.is_done("died_midway"))
+        self.assertEqual(again.stage_status("died_midway"), "running")
+        self.assertEqual(again.run_stage("died_midway", lambda: 2), 2)
+        self.assertEqual(again.data["stages"]["died_midway"]["attempts"], 2)
+
+    def test_rows_are_idempotent(self):
+        st = self.open()
+        for _ in range(3):
+            st.mark_row("eval:anchor", "run-1", {"ms": 5})
+        st.mark_row("eval:anchor", "run-2")
+        self.assertEqual(st.rows("eval:anchor"), {"run-1": {"ms": 5}, "run-2": True})
+        self.assertTrue(st.row_done("eval:anchor", "run-1"))
+        self.assertFalse(st.row_done("eval:anchor", "run-3"))
+        st.save()
+        self.assertEqual(self.open().rows("eval:anchor"), st.rows("eval:anchor"))
+
+    def test_a_truncated_state_file_is_moved_aside_and_the_store_copy_is_used(self):
+        store = self.S.MemoryStore()
+        st = self.open(store)
+        st.run_stage("a", lambda: 1)
+        st.push()
+        (self.dir / "w" / "state.json").write_text('{"version": 1, "stag')
+        again = self.open(store)
+        self.assertTrue(again.is_done("a"))
+        self.assertTrue((self.dir / "w" / "state.json.corrupt").exists())
+
+    def test_a_truncated_state_file_without_a_store_starts_fresh_and_says_so(self):
+        self.open().save()
+        (self.dir / "w" / "state.json").write_text("{")
+        again = self.open()
+        self.assertEqual(again.data["stages"], {})
+        self.assertIn("corrupt", " ".join(again.data["notes"]))
+
+    def test_push_is_throttled_but_stage_end_always_pushes(self):
+        store = self.S.MemoryStore()
+        st = self.open(store, min_push_seconds=600)
+        st.save()
+        first = store.writes
+        st.mark_row("s", "k1")
+        st.save()                                      # inside the interval: local only
+        self.assertEqual(store.writes, first)
+        self.clock.advance(601)
+        st.mark_row("s", "k2")
+        st.save()
+        self.assertEqual(store.writes, first + 1)
+        st.run_stage("quick", lambda: 1)               # finishing a stage forces a push
+        self.assertEqual(store.writes, first + 2)
+        self.assertIn("quick", json.loads(store.read("state.json"))["stages"])
+
+    def test_a_push_failure_never_kills_the_run(self):
+        class Flaky(self.S.MemoryStore):
+            fail = True
+
+            def write(self, name, data):
+                if self.fail:
+                    raise OSError("503 from the Hub")
+                super().write(name, data)
+
+        store = Flaky()
+        st = self.open(store)
+        self.assertEqual(st.run_stage("a", lambda: 1), 1)
+        self.assertIn("503", st.push_error)
+        store.fail = False
+        st.push()
+        self.assertIsNone(st.push_error)
+        self.assertIn("a", json.loads(store.read("state.json"))["stages"])
+
+    def test_open_merges_local_and_remote_progress(self):
+        store = self.S.MemoryStore()
+        other = self.S.State.open(self.dir / "colab", store, clock=self.clock, now=self.clock)
+        other.run_stage("merge:ta_l0.25", lambda: "from colab")
+        other.mark_row("eval:anchor", "r1", 1)
+        other.push()
+        mine = self.open()                              # no store yet: local only
+        mine.run_stage("fidelity", lambda: "from kaggle")
+        mine.mark_row("eval:anchor", "r2", 2)
+        mine.save()
+        merged = self.open(store)
+        self.assertTrue(merged.is_done("merge:ta_l0.25"))
+        self.assertTrue(merged.is_done("fidelity"))
+        self.assertEqual(merged.rows("eval:anchor"), {"r1": 1, "r2": 2})
+        self.assertEqual(merged.result("merge:ta_l0.25"), "from colab")
+
+    def test_done_beats_running_when_merging(self):
+        a = {"version": 1, "seq": 3, "stages": {"x": {"status": "running", "attempts": 1}}, "rows": {}, "meta": {}, "files": {}, "notes": []}
+        b = {"version": 1, "seq": 1, "stages": {"x": {"status": "done", "attempts": 1, "result": 5, "finished": 10.0}}, "rows": {}, "meta": {}, "files": {}, "notes": []}
+        self.assertEqual(self.S.merge_states(a, b)["stages"]["x"]["status"], "done")
+        self.assertEqual(self.S.merge_states(b, a)["stages"]["x"]["status"], "done")
+
+    def test_tracked_files_are_mirrored_and_restored_after_a_dead_session(self):
+        store = self.S.MemoryStore()
+        st = self.open(store)
+        results = self.dir / "w" / "runs" / "anchor" / "results.jsonl"
+        results.parent.mkdir(parents=True)
+        results.write_text('{"run_id": "a"}\n{"run_id": "b"}\n')
+        st.track_file(results, "runs/anchor/results.jsonl")
+        st.push(files_now=True)
+        self.assertEqual(store.read("runs/anchor/results.jsonl"), results.read_bytes())
+        writes = store.writes
+        st.push(files_now=True)
+        self.assertEqual(store.writes, writes + 1)      # only state.json again: the unchanged file is skipped
+        # new session, empty disk
+        fresh = self.S.State.open(self.dir / "fresh", store, clock=self.clock, now=self.clock)
+        restored = fresh.restore_files()
+        local = self.dir / "fresh" / "runs" / "anchor" / "results.jsonl"
+        self.assertEqual(restored, ["runs/anchor/results.jsonl"])
+        self.assertEqual(local.read_text(), results.read_text())
+
+    def test_restore_keeps_a_longer_local_log(self):
+        store = self.S.MemoryStore()
+        st = self.open(store)
+        log = self.dir / "w" / "results.jsonl"
+        log.write_text("1\n")
+        st.track_file(log, "results.jsonl")
+        st.push(files_now=True)
+        log.write_text("1\n2\n3\n")                    # the session kept going after the last push
+        self.assertEqual(st.restore_files(), [])
+        self.assertEqual(log.read_text(), "1\n2\n3\n")
+
+    def test_tokens_are_redacted_from_recorded_errors(self):
+        store = self.S.MemoryStore()
+        st = self.open(store)
+
+        def boom():
+            raise RuntimeError("401 Client Error for Authorization: Bearer hf_SECRET_TOKEN_VALUE (token hf_SECRET_TOKEN_VALUE)")
+
+        with self.assertRaises(RuntimeError):
+            st.run_stage("a", boom)
+        for text in ((self.dir / "w" / "state.json").read_text(), store.read("state.json").decode()):
+            self.assertNotIn("hf_SECRET", text)
+            self.assertIn("redacted", text)
+        self.assertEqual(self.S.redact("x hf_abcdefgh12345 y"), "x hf_[redacted] y")
+        self.assertNotIn("hf_", repr(self.S.HfDatasetStore("u/d", "hf_SECRET_TOKEN_VALUE")))
+
+    def test_from_env_has_no_store_without_a_token(self):
+        self.assertIsNone(self.S.store_from_env("user/dataset", environ={}))
+        store = self.S.store_from_env("user/dataset", environ={"HF_TOKEN": "hf_x"})
+        self.assertIsInstance(store, self.S.HfDatasetStore)
+        self.assertEqual(store.repo_id, "user/dataset")
+
+    def test_hf_dataset_store_uses_the_hub_api_for_a_private_dataset(self):
+        import types
+
+        calls = []
+
+        class FakeErrors:
+            class EntryNotFoundError(Exception):
+                pass
+
+            class RepositoryNotFoundError(Exception):
+                pass
+
+            class RevisionNotFoundError(Exception):
+                pass
+
+        class FakeApi:
+            def __init__(self, token=None, endpoint=None):
+                calls.append(("api", token, endpoint))
+
+            def create_repo(self, repo_id, **kw):
+                calls.append(("create", repo_id, kw))
+
+            def upload_file(self, **kw):
+                calls.append(("upload", kw))
+
+            def list_repo_files(self, repo_id, repo_type=None):
+                calls.append(("list", repo_id, repo_type))
+                return ["state.json", "runs/a.jsonl", "other.txt"]
+
+        served = {"state.json": b"{}"}
+
+        def hf_hub_download(repo_id, filename, **kw):
+            calls.append(("download", repo_id, filename, kw))
+            if filename not in served:
+                raise FakeErrors.EntryNotFoundError(filename)
+            target = self.dir / "dl.bin"
+            target.write_bytes(served[filename])
+            return str(target)
+
+        fake = types.SimpleNamespace(HfApi=FakeApi, hf_hub_download=hf_hub_download, errors=FakeErrors)
+        store = self.S.HfDatasetStore("u/state", "hf_tok_for_test_only", endpoint="http://hub.test")
+        with mock.patch.dict(sys.modules, {"huggingface_hub": fake}):
+            self.assertEqual(store.read("state.json"), b"{}")
+            self.assertIsNone(store.read("missing.json"))
+            store.write("state.json", b"[1]")
+            store.write("runs/a.jsonl", b"x")
+            self.assertEqual(store.list("runs/"), ["runs/a.jsonl"])
+        creates = [c for c in calls if c[0] == "create"]
+        self.assertEqual(len(creates), 1)                                  # the repo is created once, private
+        self.assertEqual((creates[0][1], creates[0][2]["repo_type"], creates[0][2]["private"], creates[0][2]["exist_ok"]), ("u/state", "dataset", True, True))
+        uploads = [c[1] for c in calls if c[0] == "upload"]
+        self.assertEqual([(u["path_in_repo"], u["repo_type"], u["repo_id"], u["path_or_fileobj"]) for u in uploads],
+                         [("state.json", "dataset", "u/state", b"[1]"), ("runs/a.jsonl", "dataset", "u/state", b"x")])
+        downloads = [c for c in calls if c[0] == "download"]
+        self.assertTrue(all(d[3]["repo_type"] == "dataset" and d[3]["force_download"] and d[3]["endpoint"] == "http://hub.test" for d in downloads))
+
+    def test_hf_dataset_store_refuses_to_exist_without_a_token(self):
+        with self.assertRaises(self.S.StateError):
+            self.S.HfDatasetStore("u/state", "")
+
+    def test_dir_store_round_trip_and_listing(self):
+        store = self.S.DirStore(self.dir / "remote")
+        self.assertIsNone(store.read("a/b.json"))
+        store.write("a/b.json", b"{}")
+        store.write("a/c.json", b"[]")
+        self.assertEqual(store.read("a/b.json"), b"{}")
+        self.assertEqual(store.list("a/"), ["a/b.json", "a/c.json"])
+        with self.assertRaises(ValueError):
+            store.write("../escape", b"x")
+
+
+def synthetic_rows(benchmarks=(2, 5, 24), groups=30, rows_per_group=(1, 3), tokens=200, long_every=0):
+    """A small stand-in for the suite: `groups` groups per benchmark, each with a few rows."""
+    out = []
+    for b in benchmarks:
+        for g in range(groups):
+            n = rows_per_group[0] + (g % (rows_per_group[1] - rows_per_group[0] + 1))
+            for i in range(n):
+                t = tokens + 10 * i
+                if long_every and g % long_every == 0 and i == 0:
+                    t = 100_000
+                out.append({"_evaluation": {"run_id": f"b{b}:g{g}:r{i}", "catalog_id": b, "group_id": f"g{g}", "track": "all", "proxy_tokens": t},
+                            "state": f"state {b} {g}", "questions": {"q": {"type": "choice", "criteria": {"a": "x", "b": "y"}}},
+                            "expected": {"q": "a"}})
+    return out
+
+
+class SampleContract(HermeticTestCase):
+    def setUp(self):
+        super().setUp()
+        from decide.sd import sample
+
+        self.S = sample
+        self.rows = synthetic_rows()
+
+    def groups(self, sel):
+        return sorted({(r["_evaluation"]["catalog_id"], r["_evaluation"]["group_id"]) for r in sel.rows})
+
+    def test_quota_per_benchmark_and_complete_groups(self):
+        sel = self.S.select(self.rows, per_benchmark=5, seed=1)
+        per = {}
+        for b, g in self.groups(sel):
+            per[b] = per.get(b, 0) + 1
+        self.assertEqual(per, {2: 5, 5: 5, 24: 5})
+        for b, g in self.groups(sel):                       # every row of a chosen group is there
+            want = {r["_evaluation"]["run_id"] for r in self.rows if r["_evaluation"]["catalog_id"] == b and r["_evaluation"]["group_id"] == g}
+            got = {r["_evaluation"]["run_id"] for r in sel.rows if r["_evaluation"]["catalog_id"] == b and r["_evaluation"]["group_id"] == g}
+            self.assertEqual(got, want)
+
+    def test_selection_is_deterministic_and_independent_of_input_order(self):
+        a = self.S.select(self.rows, per_benchmark=7, seed=11)
+        shuffled = list(reversed(self.rows))
+        b = self.S.select(shuffled, per_benchmark=7, seed=11)
+        self.assertEqual(self.groups(a), self.groups(b))
+        self.assertEqual(a.manifest["run_ids_sha256"], b.manifest["run_ids_sha256"])
+        self.assertEqual([r["_evaluation"]["run_id"] for r in a.rows], [r["_evaluation"]["run_id"] for r in b.rows])
+        c = self.S.select(self.rows, per_benchmark=7, seed=12)
+        self.assertNotEqual(self.groups(a), self.groups(c))
+
+    def test_a_smaller_sample_is_a_prefix_of_a_bigger_one(self):
+        big = self.S.select(self.rows, per_benchmark=16, seed=3)
+        small = self.S.select(self.rows, per_benchmark=6, seed=3)
+        self.assertTrue(set(self.groups(small)) <= set(self.groups(big)))
+        shrunk = self.S.shrink(big.rows, per_benchmark=6, seed=3)
+        self.assertEqual([r["_evaluation"]["run_id"] for r in shrunk], [r["_evaluation"]["run_id"] for r in small.rows])
+
+    def test_groups_with_a_long_row_are_dropped_whole_and_counted(self):
+        rows = synthetic_rows(long_every=3)                   # groups 0, 3, 6, ... have one 100k-token row
+        sel = self.S.select(rows, per_benchmark=30, seed=5, max_proxy_tokens=6000)
+        chosen = {g for _b, g in self.groups(sel)}
+        self.assertFalse(any(int(g[1:]) % 3 == 0 for g in chosen))
+        self.assertEqual(max(r["_evaluation"]["proxy_tokens"] for r in sel.rows) <= 6000, True)
+        m = sel.manifest["benchmarks"]["2"]
+        self.assertEqual((m["available_groups"], m["excluded_long_groups"], m["groups"]), (30, 10, 20))
+        self.assertEqual(sel.manifest["totals"]["excluded_long_groups"], 30)
+        self.assertEqual(sel.manifest["max_proxy_tokens"], 6000)
+
+    def test_excluded_long_groups_free_their_slot_for_the_next_group(self):
+        rows = synthetic_rows(long_every=2)
+        sel = self.S.select(rows, per_benchmark=5, seed=9, max_proxy_tokens=6000)
+        self.assertEqual(sel.manifest["benchmarks"]["5"]["groups"], 5)
+
+    def test_short_benchmarks_take_everything_and_say_so(self):
+        rows = synthetic_rows(groups=3)
+        sel = self.S.select(rows, per_benchmark=8, seed=1)
+        self.assertEqual(sel.manifest["benchmarks"]["2"]["groups"], 3)
+        self.assertTrue(sel.manifest["benchmarks"]["2"]["short"])
+        full = self.S.select(synthetic_rows(groups=10), per_benchmark=8, seed=1)
+        self.assertFalse(full.manifest["benchmarks"]["2"]["short"])
+
+    def test_ranking_matches_the_kit_so_a_published_sample_can_be_reproduced(self):
+        import hashlib
+
+        key = self.S.rank_key(20261021, 24, "g7")
+        self.assertEqual(key, hashlib.sha256(b"20261021:24:g7").hexdigest())
+
+    @needs_kit
+    def test_group_order_equals_the_scoring_kits_stratified_sample(self):
+        from decision_index.suite.io import read_jsonl
+        from decision_index.suite.sample import stratified_sample
+
+        class Fake:
+            def rows(self_inner, apply_exclusions=False):
+                return iter(self.rows)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "kit.jsonl"
+            stratified_sample(Fake(), 10**9, out, seed=20261021)
+            order = {}
+            for row in read_jsonl(out):
+                e = row["_evaluation"]
+                seen = order.setdefault(e["catalog_id"], [])
+                if e["group_id"] not in seen:
+                    seen.append(e["group_id"])
+        mine = self.S.select(self.rows, per_benchmark=8, seed=20261021)
+        for benchmark, groups in order.items():
+            got = []
+            for r in mine.rows:
+                e = r["_evaluation"]
+                if e["catalog_id"] == benchmark and e["group_id"] not in got:
+                    got.append(e["group_id"])
+            self.assertEqual(got, groups[:8])
+
+    def test_manifest_describes_the_sample(self):
+        sel = self.S.select(self.rows, per_benchmark=4, seed=2, edition="0.3")
+        m = sel.manifest
+        self.assertEqual((m["edition"], m["seed"], m["per_benchmark"]), ("0.3", 2, 4))
+        self.assertEqual(m["totals"]["rows"], len(sel.rows))
+        self.assertEqual(m["totals"]["groups"], 12)
+        self.assertEqual(m["totals"]["tokens"], sum(r["_evaluation"]["proxy_tokens"] for r in sel.rows))
+        self.assertEqual(sum(b["rows"] for b in m["benchmarks"].values()), len(sel.rows))
+        json.dumps(m, allow_nan=False)
+
+    def test_write_and_load_round_trip_and_tamper_detection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sel = self.S.select(self.rows, per_benchmark=4, seed=2)
+            paths = self.S.write(sel, tmp)
+            rows, manifest = self.S.load(tmp)
+            self.assertEqual([r["_evaluation"]["run_id"] for r in rows], [r["_evaluation"]["run_id"] for r in sel.rows])
+            self.assertEqual(manifest, sel.manifest)
+            import gzip
+
+            with gzip.open(paths["rows"], "wt", encoding="utf-8") as handle:
+                handle.write(json.dumps(sel.rows[0]) + "\n")
+            with self.assertRaisesRegex(self.S.SampleError, "does not match"):
+                self.S.load(tmp)
+
+    def test_fit_to_budget_picks_the_largest_sample_that_fits(self):
+        rows = self.S.select(self.rows, per_benchmark=20, seed=4).rows
+        full = sum(r["_evaluation"]["proxy_tokens"] for r in rows)
+        plan = self.S.fit(rows, seed=4, token_budget=full, minimum=2)
+        self.assertEqual((plan["per_benchmark"], plan["fits"]), (20, True))
+        half = self.S.fit(rows, seed=4, token_budget=full / 2, minimum=2)
+        self.assertLess(half["per_benchmark"], 20)
+        self.assertLessEqual(half["tokens"], full / 2)
+        again = self.S.fit(rows, seed=4, token_budget=full / 2 + 1, minimum=2)
+        self.assertGreaterEqual(again["per_benchmark"], half["per_benchmark"])
+        tiny = self.S.fit(rows, seed=4, token_budget=1, minimum=3)
+        self.assertEqual((tiny["per_benchmark"], tiny["fits"]), (3, False))       # the floor wins, and it says so
+
+    def test_sample_suite_restricts_the_rows_a_scorer_sees(self):
+        class Fake:
+            edition = {"id": "0.3"}
+
+            def __init__(self, rows):
+                self._rows = rows
+
+            def rows(self, apply_exclusions=False):
+                return iter(self._rows)
+
+        sel = self.S.select(self.rows, per_benchmark=3, seed=1)
+        view = self.S.SampleSuite(Fake(self.rows), {r["_evaluation"]["run_id"] for r in sel.rows})
+        self.assertEqual(view.edition, {"id": "0.3"})
+        self.assertEqual({r["_evaluation"]["run_id"] for r in view.rows(apply_exclusions=True)}, {r["_evaluation"]["run_id"] for r in sel.rows})
+
+
+@needs_torch
+class Nf4Contract(HermeticTestCase):
+    """The NF4 weight format: same bytes as bitsandbytes, bounded error, a Linear that dequantises on the fly."""
+
+    @classmethod
+    def setUpClass(cls):
+        import torch
+
+        from decide.sd import nf4
+
+        cls.torch, cls.N = torch, nf4
+
+    def weight(self, rows=48, cols=128, seed=0, scale=0.05):
+        g = self.torch.Generator().manual_seed(seed)
+        return self.torch.randn(rows, cols, generator=g) * scale
+
+    def test_code_table_is_the_16_point_normal_float(self):
+        code = self.N.NF4_CODE
+        self.assertEqual(len(code), 16)
+        self.assertEqual(list(code), sorted(code))
+        self.assertEqual((code[0], code[7], code[15]), (-1.0, 0.0, 1.0))
+
+    @needs_bnb
+    def test_code_table_matches_bitsandbytes(self):
+        import bitsandbytes.functional as bf
+
+        self.assertEqual([round(float(x), 9) for x in bf.get_4bit_type("nf4", device="cpu")], [round(x, 9) for x in self.N.NF4_CODE])
+
+    def test_round_trip_error_is_bounded_by_half_the_widest_code_gap(self):
+        w = self.weight(64, 192)
+        packed, absmax, shape = self.N.quantize_nf4(w)
+        back = self.N.dequantize_nf4(packed, absmax, shape, dtype=self.torch.float32)
+        gap = max(b - a for a, b in zip(self.N.NF4_CODE, self.N.NF4_CODE[1:]))
+        per_block = w.reshape(-1, 64).abs().amax(dim=1)
+        err = (back - w).reshape(-1, 64).abs().amax(dim=1)
+        self.assertTrue(bool((err <= per_block * gap / 2 + 1e-7).all()))
+        self.assertLess(float((back - w).abs().mean()), 0.12 * float(w.abs().mean()) + 1e-3)
+
+    def test_the_largest_value_of_each_block_is_exact(self):
+        w = self.weight(8, 64)
+        packed, absmax, shape = self.N.quantize_nf4(w)
+        back = self.N.dequantize_nf4(packed, absmax, shape, dtype=self.torch.float32)
+        for i in range(8):
+            j = int(w[i].abs().argmax())
+            self.assertAlmostEqual(float(back[i, j]), float(w[i, j]), places=6)
+
+    def test_quantising_a_dequantised_weight_changes_nothing(self):
+        w = self.weight(32, 64, seed=3)
+        p1, a1, shape = self.N.quantize_nf4(w)
+        p2, a2, _ = self.N.quantize_nf4(self.N.dequantize_nf4(p1, a1, shape, dtype=self.torch.float32))
+        self.assertTrue(self.torch.equal(p1, p2))
+        self.assertTrue(self.torch.allclose(a1, a2))
+
+    def test_pack_layout_first_value_in_the_high_nibble(self):
+        w = self.torch.zeros(1, 64)
+        w[0, 0], w[0, 1] = -1.0, 1.0                          # codes 0 and 15
+        packed, absmax, _ = self.N.quantize_nf4(w)
+        self.assertEqual(int(packed[0]), 0x0F)
+        self.assertEqual(float(absmax[0]), 1.0)
+        self.assertEqual(int(packed[1]), 0x77)                # zeros are code 7 in both nibbles
+
+    def test_all_zero_blocks_stay_zero(self):
+        packed, absmax, shape = self.N.quantize_nf4(self.torch.zeros(2, 64))
+        back = self.N.dequantize_nf4(packed, absmax, shape, dtype=self.torch.float32)
+        self.assertTrue(bool((back == 0).all()))
+        self.assertTrue(bool(self.torch.isfinite(back).all()))
+
+    def test_sizes_that_are_not_a_multiple_of_the_block_are_padded(self):
+        w = self.weight(3, 50, seed=5)                         # 150 values -> 3 blocks of 64
+        packed, absmax, shape = self.N.quantize_nf4(w)
+        self.assertEqual((packed.numel(), absmax.numel()), (96, 3))
+        back = self.N.dequantize_nf4(packed, absmax, shape, dtype=self.torch.float32)
+        self.assertEqual(tuple(back.shape), (3, 50))
+        self.assertLess(float((back - w).abs().max()), float(w.abs().max()) * 0.16)
+
+    def test_memory_is_half_a_byte_per_weight_plus_the_block_statistics(self):
+        w = self.weight(128, 256)
+        packed, absmax, _ = self.N.quantize_nf4(w)
+        self.assertEqual(packed.numel() * packed.element_size(), w.numel() // 2)
+        self.assertEqual(absmax.numel(), w.numel() // 64)
+        _, half, _ = self.N.quantize_nf4(w, absmax_dtype=self.torch.float16)
+        self.assertEqual(half.dtype, self.torch.float16)
+
+    def test_chunked_quantisation_gives_the_same_bytes(self):
+        w = self.weight(40, 256, seed=7)
+        whole = self.N.quantize_nf4(w)
+        old = self.N.CHUNK_ELEMENTS
+        self.N.CHUNK_ELEMENTS = 64 * 3
+        try:
+            chunked = self.N.quantize_nf4(w)
+        finally:
+            self.N.CHUNK_ELEMENTS = old
+        self.assertTrue(self.torch.equal(whole[0], chunked[0]))
+        self.assertTrue(self.torch.equal(whole[1], chunked[1]))
+
+    @needs_bnb
+    def test_bytes_and_values_are_identical_to_bitsandbytes(self):
+        import bitsandbytes.functional as bf
+
+        w = self.weight(32, 128, seed=11)
+        packed, absmax, shape = self.N.quantize_nf4(w)
+        q, state = bf.quantize_4bit(w, blocksize=64, compress_statistics=False, quant_type="nf4")
+        self.assertTrue(self.torch.equal(packed.reshape(-1, 1), q))
+        self.assertTrue(self.torch.equal(absmax, state.absmax))
+        ours = self.N.dequantize_nf4(packed, absmax, shape, dtype=self.torch.float32)
+        self.assertTrue(self.torch.allclose(ours, bf.dequantize_4bit(q, state), atol=0, rtol=0))
+
+    def test_linear_forward_equals_a_dense_linear_on_the_dequantised_weight(self):
+        w = self.weight(24, 128, seed=2)
+        bias = self.torch.randn(24) * 0.1
+        layer = self.N.Nf4Linear.from_weight(w, bias, compute_dtype=self.torch.float32)
+        x = self.torch.randn(5, 7, 128)
+        dense = self.torch.nn.functional.linear(x, layer.dequantized(self.torch.float32), bias)
+        self.assertTrue(self.torch.allclose(layer(x), dense, atol=1e-5))
+        plain = self.torch.nn.functional.linear(x, w, bias)
+        self.assertLess(float((layer(x) - plain).abs().mean()), 0.12 * float(plain.abs().mean()) + 1e-3)
+
+    def test_linear_runs_in_the_compute_dtype(self):
+        layer = self.N.Nf4Linear.from_weight(self.weight(8, 64), compute_dtype=self.torch.bfloat16)
+        out = layer(self.torch.randn(2, 64))
+        self.assertEqual(out.dtype, self.torch.bfloat16)
+
+    def test_linear_state_dict_round_trip(self):
+        a = self.N.Nf4Linear.from_weight(self.weight(16, 64, seed=4), compute_dtype=self.torch.float32)
+        b = self.N.Nf4Linear(64, 16, compute_dtype=self.torch.float32)
+        b.load_state_dict(a.state_dict())
+        x = self.torch.randn(3, 64)
+        self.assertTrue(self.torch.equal(a(x), b(x)))
+
+    def test_set_weight_refuses_a_wrong_shape(self):
+        layer = self.N.Nf4Linear(64, 8)
+        with self.assertRaises(ValueError):
+            layer.set_weight(self.torch.zeros(9, 64))
 
 
 class VendorContract(unittest.TestCase):
