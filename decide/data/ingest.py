@@ -60,7 +60,7 @@ def convert_source(source: Source, dataset: Dataset, *, seed: int, cap: Optional
         if problems:
             stats["invalid"] += 1
             continue
-        if T.contains_canary(S.canonical_json(request)):
+        if T.request_has_canary(request):
             stats["canary"] += 1
             continue
         digest = S.request_digest(request)

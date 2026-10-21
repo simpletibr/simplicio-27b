@@ -30,6 +30,9 @@ from .readers import HubReader, LocalReader
 DEFAULT_SEED = 20261021
 DEFAULT_DEV_PERCENT = 1.0
 DEFAULT_SHARD_ROWS = 50_000
+#: Bumped when the conversion rules change (ids, canary check, option keys...), so a resumed run does not reuse parts
+#: that an older version of the builder wrote.
+BUILDER_VERSION = 2
 
 
 def split_of(example_id: str, dev_percent: float) -> str:
@@ -48,7 +51,7 @@ def _write_rows(out: Path, name: str, rows: Sequence[Mapping[str, Any]], dev_per
 
 
 def _config_hash(source: Optional[SRC.Source], extra: Mapping[str, Any]) -> str:
-    material = {"source": None if source is None else {k: getattr(source, k) for k in source.__dataclass_fields__}, **extra}
+    material = {"builder": BUILDER_VERSION, "source": None if source is None else {k: getattr(source, k) for k in source.__dataclass_fields__}, **extra}
     return S.digest(S.canonical_json(material))
 
 

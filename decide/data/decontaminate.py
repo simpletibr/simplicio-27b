@@ -1,16 +1,23 @@
 """Decontamination of the training corpus against the public suite (and the private proxy).
 
-A corpus example is rejected when, after NFKC / case-fold / word normalization,
+A corpus example is rejected when, after NFKC / case-fold / word normalization (and with the JSON keys sorted, so the
+order of the keys in either file never matters),
 
 1. the whole request, or one question (state + instructions + options), has the same hash as a reference one;
 2. a *line* of at least ``min_line_words`` words equals a reference line;
-3. any window of ``ngram`` (13) words inside a line also occurs in a reference line.
+3. a *short* line (fewer words, at least one letter) of the state or of an instruction equals a short line of the state
+   or of an instruction of a reference request: a test item can be a single utterance ("thanks so much!");
+4. any window of ``ngram`` (13) words inside a line also occurs in a reference line.
 
-Units (lines and windows) that occur in more than ``max_df`` distinct reference requests are boilerplate
-(task templates, shared option lists) and are ignored.  The corpus text is also scanned for the BIG-bench canary.
+Units (lines and windows) that occur in more than ``max_df`` reference requests are boilerplate (task templates,
+shared option lists) and are ignored.  A state is counted once however many questions share it, so a passage with
+30 reference questions is not mistaken for a template.  The corpus text is also scanned for the BIG-bench canary,
+whatever line breaks it is split by.
 
 Memory: the reference units live in sorted ``array('Q')`` shards (8 bytes per unit), so 100M units fit in ~800 MB.
-Everything streams, and a corpus directory is processed part by part so an interrupted run resumes.
+Everything streams, and a corpus directory is processed part by part so an interrupted run resumes.  The corpus is
+read through its ``manifest.json`` (only the parts it lists, sha256 checked); the output directory holds exactly the
+parts of the last finished run.
 """
 from __future__ import annotations
 
@@ -31,13 +38,20 @@ from . import text as T
 DEFAULT_NGRAM = 13
 DEFAULT_MAX_DF = 20
 DEFAULT_MIN_LINE_WORDS = 5
+MAX_SKIPPED_FRACTION = 0.01     # a reference file may have this share of rows we cannot read before we stop
+#: Bumped when the matching rules change, so parts screened by older rules are not reused by a resumed run.
+RULES_VERSION = 2
 _SHARDS = 256
 _SHIFT = 56
 
 
+class ReferenceDataError(ValueError):
+    """A reference file yields no request, or too many of its rows cannot be read: a silent hole in the screening."""
+
+
 @dataclass(frozen=True)
 class Match:
-    reason: str          # exact_request | exact_question | line | ngram | canary | schema
+    reason: str          # exact_request | exact_question | line | short_line | ngram | canary | schema
     detail: str = ""
 
 
@@ -81,6 +95,11 @@ class _UnitSet:
         return i < len(shard) and shard[i] == unit
 
 
+def canonical(request: Mapping[str, Any]) -> Dict[str, Any]:
+    """The request with its keys sorted at every level, the form the corpus stores (``schema.canonical_json``)."""
+    return json.loads(S.canonical_json(request))
+
+
 class ReferenceIndex:
     """Hashes of the reference requests; ``check`` says whether a corpus request leaks one of them."""
 
@@ -93,20 +112,24 @@ class ReferenceIndex:
         self._questions: Dict[str, str] = {}
         self._lines = _UnitSet(max_df)
         self._grams = _UnitSet(max_df)
+        self._shorts = _UnitSet(max_df)
+        self._states: set = set()
         self._count = 0
         self._frozen = False
         self.sources: List[Dict[str, Any]] = []
 
     # ---- units
-    def _units(self, request: Mapping[str, Any]) -> Tuple[List[int], List[int]]:
-        lines: List[int] = []
-        grams: List[int] = []
-        for line in T.request_lines(request):
+    def _line_units(self, lines: Sequence[str], statements: bool, out: Tuple[set, set, set]) -> None:
+        """Add the units of ``lines`` to ``out`` = (lines, windows, short lines); ``statements``: lines of the state or
+        of an instruction, the only ones whose short forms count."""
+        lines_out, grams_out, shorts_out = out
+        for line in lines:
             toks = T.words(line)
             if len(toks) >= self.min_line_words:
-                lines.append(T.hash64(" ".join(toks), "line"))
-            grams.extend(T.ngram_hashes(toks, self.n))
-        return lines, grams
+                lines_out.add(T.hash64(" ".join(toks), "line"))
+            elif statements and T.has_letters(toks):
+                shorts_out.add(T.hash64(" ".join(toks), "short"))
+            grams_out.update(T.ngram_hashes(toks, self.n))
 
     def _keys(self, request: Mapping[str, Any]) -> Tuple[str, Dict[str, str]]:
         texts = T.question_texts(request)
@@ -116,53 +139,73 @@ class ReferenceIndex:
     def add(self, request: Mapping[str, Any], ref_id: Optional[str] = None) -> None:
         if self._frozen:
             raise RuntimeError("the index is frozen")
+        request = canonical(request)
         rid = ref_id if ref_id is not None else str(self._count)
         whole, per_question = self._keys(request)
         self._requests.setdefault(whole, rid)
         for qid, key in per_question.items():
             self._questions.setdefault(key, f"{rid}#{qid}")
-        lines, grams = self._units(request)
-        self._lines.add_request_units(lines)
-        self._grams.add_request_units(grams)
+        # a state shared by many questions (a passage with 30 reference questions) counts once for the document
+        # frequency: its units are added by the first request that has it
+        state_id = int(S.digest(S.canonical_json(request.get("state")))[:16], 16)
+        first = state_id not in self._states
+        self._states.add(state_id)
+        out: Tuple[set, set, set] = (set(), set(), set())
+        if first:
+            self._line_units(T.state_lines(request), True, out)
+        self._line_units(T.instruction_lines(request), True, out)
+        self._line_units(T.option_lines(request), False, out)
+        self._lines.add_request_units(out[0])
+        self._grams.add_request_units(out[1])
+        self._shorts.add_request_units(out[2])
         self._count += 1
 
     def freeze(self) -> None:
         if not self._frozen:
             self._lines.freeze()
             self._grams.freeze()
+            self._shorts.freeze()
             self._frozen = True
 
     # ---- querying
     def check(self, request: Mapping[str, Any]) -> Optional[Match]:
         if not self._frozen:
             raise RuntimeError("freeze() the index before check()")
+        request = canonical(request)
         whole, per_question = self._keys(request)
         if whole in self._requests:
             return Match("exact_request", self._requests[whole])
         for key in per_question.values():
             if key in self._questions:
                 return Match("exact_question", self._questions[key])
-        for line in T.request_lines(request):
-            toks = T.words(line)
+        statements = set(T.state_lines(request)) | set(T.instruction_lines(request))
+        lines = [(line, T.words(line)) for line in T.request_lines(request)]
+        for line, toks in lines:
             if len(toks) >= self.min_line_words and T.hash64(" ".join(toks), "line") in self._lines:
                 return Match("line", line[:120])
-        for line in T.request_lines(request):
-            hits = sum(1 for g in T.ngram_hashes(T.words(line), self.n) if g in self._grams)
+        for line, toks in lines:
+            if (line in statements and len(toks) < self.min_line_words and T.has_letters(toks)
+                    and T.hash64(" ".join(toks), "short") in self._shorts):
+                return Match("short_line", line[:120])
+        for line, toks in lines:
+            hits = sum(1 for g in T.ngram_hashes(toks, self.n) if g in self._grams)
             if hits:
                 return Match("ngram", f"{hits} windows of {self.n} words in: {line[:80]}")
         return None
 
     def stats(self) -> Dict[str, Any]:
-        units = {"lines": (self._lines.total, self._lines.kept), "ngrams": (self._grams.total, self._grams.kept)}
+        units = {"lines": (self._lines.total, self._lines.kept), "ngrams": (self._grams.total, self._grams.kept),
+                 "short_lines": (self._shorts.total, self._shorts.kept)}
         total = sum(t for t, _ in units.values())
         kept = sum(k for _, k in units.values())
         return {"n": self.n, "max_df": self.max_df, "min_line_words": self.min_line_words, "requests": self._count,
-                "frozen": self._frozen, "units_total": total, "units_kept": kept, "units_dropped_df": total - kept,
+                "states": len(self._states), "frozen": self._frozen, "units_total": total, "units_kept": kept,
+                "units_dropped_df": total - kept, "rules_version": RULES_VERSION,
                 "units": {name: {"total": t, "kept": k} for name, (t, k) in units.items()}}
 
     def fingerprint(self) -> str:
-        """Identifies the index (parameters + reference files) so a resumed run knows its parts are still valid."""
-        return S.digest(S.canonical_json({"n": self.n, "max_df": self.max_df, "min_line_words": self.min_line_words,
+        """Identifies the index (rules + parameters + reference files) so a resumed run knows its parts are still valid."""
+        return S.digest(S.canonical_json({"rules": RULES_VERSION, "n": self.n, "max_df": self.max_df, "min_line_words": self.min_line_words,
                                           "sources": [s["sha256"] for s in self.sources], "requests": self._count}))
 
 
@@ -172,20 +215,41 @@ def _open_text(path: Path):
     return gzip.open(path, "rt", encoding="utf-8") if str(path).endswith(".gz") else open(path, "rt", encoding="utf-8")
 
 
-def iter_reference_requests(path: os.PathLike) -> Iterator[Tuple[str, Dict[str, Any]]]:
+def _reference_request(row: Any) -> Optional[Dict[str, Any]]:
+    """The request of a reference row: suite rows (``state``/``questions`` at the top) or ``{"request": {...}}``
+    (an object or its JSON text, as the corpus stores it); ``None`` when the row has neither."""
+    if not isinstance(row, dict):
+        return None
+    if isinstance(row.get("questions"), dict):
+        return {"state": row.get("state", {}), "questions": row["questions"]}
+    wrapped = row.get("request")
+    if isinstance(wrapped, str):
+        try:
+            wrapped = json.loads(wrapped)
+        except ValueError:
+            return None
+    if isinstance(wrapped, dict) and isinstance(wrapped.get("questions"), dict):
+        return {"state": wrapped.get("state", {}), "questions": wrapped["questions"]}
+    return None
+
+
+def iter_reference_requests(path: os.PathLike, stats: Optional[Dict[str, int]] = None) -> Iterator[Tuple[str, Dict[str, Any]]]:
     """(id, request) of every row of a reference file or directory.
 
-    Accepted: decision-index suite rows (``*.jsonl[.gz]`` with state/questions), corpus parquet files, and
-    directories holding either.
+    Accepted: decision-index suite rows (``*.jsonl[.gz]`` with state/questions at the top, or a ``request`` object),
+    corpus parquet files, and directories holding either.  ``stats`` (``rows``, ``skipped``) counts the JSONL rows
+    read and the ones that hold no request, so the caller can refuse a reference it only half understood.
     """
     p = Path(path)
     if p.is_dir():
         files = sorted(f for f in p.rglob("*") if f.is_file() and (f.suffix == ".parquet" or ".jsonl" in f.name))
         for f in files:
-            yield from iter_reference_requests(f)
+            yield from iter_reference_requests(f, stats)
         return
     if p.suffix == ".parquet":
         for row in S.read_corpus(p):
+            if stats is not None:
+                stats["rows"] = stats.get("rows", 0) + 1
             yield row["example_id"], S.parse_row(row)[0]
         return
     with _open_text(p) as fh:
@@ -193,9 +257,12 @@ def iter_reference_requests(path: os.PathLike) -> Iterator[Tuple[str, Dict[str, 
             if not line.strip():
                 continue
             row = json.loads(line)
-            if not isinstance(row, dict) or not isinstance(row.get("questions"), dict):
-                continue
-            yield str(row.get("id", f"{p.name}:{i}")), {"state": row.get("state", {}), "questions": row["questions"]}
+            request = _reference_request(row)
+            if stats is not None:
+                stats["rows"] = stats.get("rows", 0) + 1
+                stats["skipped"] = stats.get("skipped", 0) + (request is None)
+            if request is not None:
+                yield str(row.get("id", f"{p.name}:{i}")), request
 
 
 def build_index(paths: Sequence[os.PathLike], *, n: int = DEFAULT_NGRAM, max_df: int = DEFAULT_MAX_DF,
@@ -203,10 +270,17 @@ def build_index(paths: Sequence[os.PathLike], *, n: int = DEFAULT_NGRAM, max_df:
     index = ReferenceIndex(n=n, max_df=max_df, min_line_words=min_line_words)
     for path in paths:
         before = index._count
-        for rid, request in iter_reference_requests(path):
+        stats: Dict[str, int] = {"rows": 0, "skipped": 0}
+        for rid, request in iter_reference_requests(path, stats):
             index.add(request, rid)
+        added = index._count - before
+        if added == 0 or stats["skipped"] > MAX_SKIPPED_FRACTION * stats["rows"]:
+            raise ReferenceDataError(
+                f"reference {path}: {added} requests indexed, {stats['skipped']} of {stats['rows']} rows hold no request "
+                "(expected suite rows with state/questions, rows with a `request`, or corpus parquet); "
+                "screening against a reference that was not read would let every leak through")
         files = [Path(path)] if Path(path).is_file() else sorted(f for f in Path(path).rglob("*") if f.is_file())
-        index.sources.append({"path": str(path), "requests": index._count - before,
+        index.sources.append({"path": str(path), "requests": added, "rows": stats["rows"], "skipped": stats["skipped"],
                               "sha256": S.digest("".join(S.sha256_file(f) for f in files))})
     index.freeze()
     return index
@@ -219,7 +293,7 @@ def _screen(row: Mapping[str, Any], index: ReferenceIndex) -> Optional[Match]:
     if problems:
         return Match("schema", problems[0])
     request, _ = S.parse_row(row)
-    if T.contains_canary(row["request"]):
+    if T.request_has_canary(request):
         return Match("canary", "BIG-bench canary text")
     return index.check(request)
 

@@ -21,9 +21,37 @@ def words(text: str) -> List[str]:
     return _WORD.findall(unicodedata.normalize("NFKC", text).casefold())
 
 
+def has_letters(tokens: Sequence[str]) -> bool:
+    """True when some token holds a letter: "42" or "3.5" are numbers, not statements."""
+    return any(ch.isalpha() for token in tokens for ch in token)
+
+
 def contains_canary(text: str) -> bool:
-    """True for the BIG-bench canary (``canary GUID <uuid>``) or its "should never appear in training corpora" line."""
+    """True for the BIG-bench canary (``canary GUID <uuid>``) or its "should never appear in training corpora" line.
+
+    Whitespace of any kind (spaces, line breaks) may separate the words, and full-width letters count (NFKC)."""
+    text = unicodedata.normalize("NFKC", text)
     return bool(_CANARY_GUID.search(text) or _CANARY_PHRASE.search(text))
+
+
+def _strings(value: Any) -> List[str]:
+    """Every string inside a JSON value, object keys included."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        return [s for k, v in value.items() for s in ([k] if isinstance(k, str) else []) + _strings(v)]
+    if isinstance(value, (list, tuple)):
+        return [s for v in value for s in _strings(v)]
+    return []
+
+
+def request_has_canary(request: Any) -> bool:
+    """The canary anywhere in a request, also split over line breaks or over several texts (state, instruction, options).
+
+    The search runs over the texts joined by line breaks, not over the JSON: there a line break is a backslash and an n.
+    The texts are joined without the object keys between them (a canary split over two texts is still contiguous);
+    the keys, which can hold a text of their own, are searched in a second pass."""
+    return contains_canary("\n".join(leaf_texts(request))) or contains_canary("\n".join(_strings(request)))
 
 
 @functools.lru_cache(maxsize=1 << 20)
@@ -88,17 +116,35 @@ def question_texts(request: Mapping[str, Any]) -> Dict[str, str]:
     return {qid: " ".join(words("\n".join(p))) for qid, p in question_parts(request).items()}
 
 
-def request_lines(request: Mapping[str, Any]) -> List[str]:
-    """Distinct non-empty lines of every text of the request (state once, then each question), in order."""
+def _distinct_lines(chunks: Sequence[str]) -> List[str]:
     seen: Dict[str, None] = {}
-    state = leaf_texts(request.get("state"))
-    chunks = list(state)
-    for question in request.get("questions", {}).values():
-        chunks += leaf_texts(question.get("instructions"))
-        chunks += [t for d in option_texts(question) for t in leaf_texts(d)]
     for chunk in chunks:
         for line in chunk.split("\n"):
             line = line.strip()
             if line:
                 seen.setdefault(line, None)
     return list(seen)
+
+
+def state_lines(request: Mapping[str, Any]) -> List[str]:
+    """Distinct non-empty lines of the state."""
+    return _distinct_lines(leaf_texts(request.get("state")))
+
+
+def instruction_lines(request: Mapping[str, Any]) -> List[str]:
+    """Distinct non-empty lines of the instructions of every question."""
+    return _distinct_lines([t for q in request.get("questions", {}).values() for t in leaf_texts(q.get("instructions"))])
+
+
+def option_lines(request: Mapping[str, Any]) -> List[str]:
+    """Distinct non-empty lines of the option descriptions of every question."""
+    return _distinct_lines([t for q in request.get("questions", {}).values() for d in option_texts(q) for t in leaf_texts(d)])
+
+
+def request_lines(request: Mapping[str, Any]) -> List[str]:
+    """Distinct non-empty lines of every text of the request (state once, then each question), in order."""
+    chunks = list(leaf_texts(request.get("state")))
+    for question in request.get("questions", {}).values():
+        chunks += leaf_texts(question.get("instructions"))
+        chunks += [t for d in option_texts(question) for t in leaf_texts(d)]
+    return _distinct_lines(chunks)
