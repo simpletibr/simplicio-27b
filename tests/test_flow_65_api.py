@@ -377,6 +377,30 @@ class ApiFlow(HermeticTestCase):
         self.assertEqual(len(route["logits"]), 2)
         self.assertIsNotNone(route["gold"])
 
+    def test_a_flat_row_with_reasoning_is_refused_by_the_engine_not_answered_without_it(self):
+        row = self.dev_rows(2)[0]
+        row = {"example_id": row["example_id"], **row["request"], "reasoning": "step 1: ...", "gold": row["gold"]}      # the flat shape
+        out = api.run_requests(self.engine("anchor"), self.write_requests([row]), self.dir / "run", log=None, table=False)
+        self.assertEqual(out["counts"], {"unsupported": 1})
+        result = json.loads((self.dir / "run" / self.ev.RESULTS_NAME).read_text(encoding="utf-8").splitlines()[0])
+        self.assertIn("reasoning", result["error"])
+
+    def test_reasoning_fold_makes_the_engine_answer_the_folded_prompt(self):
+        from decide.train.protocol import fold_reasoning
+
+        row = self.dev_rows(2)[0]
+        flat = {"example_id": row["example_id"], **row["request"], "reasoning": "step 1: the user asked twice\nstep 2: so book", "gold": row["gold"]}
+        eng = self.engine("anchor")
+        out = api.run_requests(eng, self.write_requests([flat]), self.dir / "run", log=None, table=False, reasoning="fold")
+        self.assertEqual(out["counts"], {"ok": 1})
+        result = json.loads((self.dir / "run" / self.ev.RESULTS_NAME).read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(result["reasoning_mode"], "fold")
+        folded = fold_reasoning({k: flat[k] for k in ("state", "questions", "reasoning")})
+        direct, _ = eng(**folded)
+        self.assertEqual(result["response"]["answers"], direct["answers"])
+        plain, _ = eng(**{k: flat[k] for k in ("state", "questions")})
+        self.assertNotEqual(result["response"]["answers"], plain["answers"])             # the reasoning changed what the model read
+
     @needs_pyarrow
     def test_a_second_call_resumes_and_does_no_work(self):
         rows = self.gold_rows(6)

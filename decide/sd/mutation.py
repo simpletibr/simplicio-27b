@@ -58,6 +58,10 @@ class Mutation:
 MERGE_TESTS = ("test_contract_65.MergeMathContract",)
 TTA_TESTS = ("test_contract_65.TtaContract", "test_flow_65.EngineFlow")
 CAL_TESTS = ("test_contract_65.CalibrateContract",)
+REASONING_TESTS = ("test_contract_65_evaluate.ReasoningContract",
+                   "test_flow_65_api.ApiFlow.test_a_flat_row_with_reasoning_is_refused_by_the_engine_not_answered_without_it")
+FOLD_TESTS = ("test_contract_65_evaluate.FoldReasoningContract",
+              "test_flow_65_api.ApiFlow.test_reasoning_fold_makes_the_engine_answer_the_folded_prompt")
 RESUME_TESTS = ("test_contract_65_evaluate.RunRequestsContract",)
 ORIGIN_TESTS = ("test_contract_65_api.FitTemperatureOriginContract", "test_contract_65_evaluate.OriginContract")
 ENGINE_TESTS = ("test_flow_65.EngineFlow", "test_flow_65_api.EngineExtrasFlow")
@@ -308,6 +312,27 @@ MUTATIONS: Tuple[Mutation, ...] = (
     Mutation("budget", "every-error-row-is-final", EV, 'row.get("exception") in TERMINAL_ERRORS', 'row.get("exception") is not None', RESUME_TESTS,
              "a transient error (a dropped connection, a lone out-of-memory) is never retried"),
     Mutation("budget", "stuck-rows-not-announced", EV, "    if stuck:", "    if False:", RESUME_TESTS, "a resume skips rows without saying so"),
+    Mutation("budget", "fold-asked-for-and-ignored", EV, "        items, refused = _fold_items(items)", "        pass", FOLD_TESTS,
+             "reasoning='fold' goes to the engine as it is and the engine refuses the row"),
+    Mutation("budget", "fold-applied-by-default", EV, "retry_nonfinite: bool = False, reasoning: str = REASONING_REFUSE)",
+             "retry_nonfinite: bool = False, reasoning: str = REASONING_FOLD)", FOLD_TESTS, "a request with reasoning is folded without anyone asking"),
+    Mutation("budget", "reasoning-mode-not-checked", EV, "    if reasoning not in REASONING_MODES:", "    if False:", FOLD_TESTS,
+             "reasoning='Fold' or 'both' runs as the default and nobody is told"),
+    Mutation("budget", "unfoldable-request-reaches-the-engine", EV, "    sent = [item for item in items if item.run_id not in refused]",
+             "    sent = list(items)", FOLD_TESTS, "a request whose state already holds the reasoning block is sent to the engine anyway"),
+    Mutation("budget", "fold-ignores-max-chars", EV, 'return protocol.fold_reasoning(request, **({} if max_chars is None else {"max_chars": max_chars}))',
+             "return protocol.fold_reasoning(request)", FOLD_TESTS, "the clip of a long reasoning is the default's whatever the caller asks"),
+    Mutation("budget", "folded-rows-not-marked", EV, 'meta = {**item.meta, "reasoning_mode": REASONING_FOLD}', "meta = dict(item.meta)", FOLD_TESTS,
+             "nothing in the results says which prompt the model read"),
+    Mutation("budget", "folded-output-resumed-without-the-fold", EV, "    if reasoning == REASONING_REFUSE and any(", "    if False and any(", FOLD_TESTS,
+             "one output holds rows of two prompts"),
+    Mutation("budget", "default-refusals-not-asked-again-for-the-fold", EV, 'row is not None and row.get("reasoning_mode") != REASONING_FOLD)', "False)",
+             FOLD_TESTS, "rows refused under the default stay refused when the fold is asked for"),
+    Mutation("budget", "unfoldable-rows-redone-on-every-resume", EV, ' and row.get("reasoning_mode") != REASONING_FOLD)', ")", FOLD_TESTS,
+             "a row that cannot be folded is asked again, and refused again, on every resume"),
+    Mutation("budget", "training-package-imported-at-load", EV, "from dataclasses import dataclass, replace",
+             "from dataclasses import dataclass, replace; from decide.train import protocol as _early", FOLD_TESTS,
+             "decide.sd needs decide.train to import, and decide.train may need decide.sd"),
     Mutation("remote", "redirect-with-credentials-allowed", R, 'if "@" in parts.netloc or "\\\\" in where:', "if False:", REMOTE_TESTS,
              "a redirect to https://huggingface.co@evil.example/ is followed"),
     Mutation("remote", "redirect-with-backslash-allowed", R, 'if "@" in parts.netloc or "\\\\" in where:', 'if "@" in parts.netloc:', REMOTE_TESTS,
@@ -377,6 +402,8 @@ MUTATIONS: Tuple[Mutation, ...] = (
     Mutation("remote", "redirect-without-location-followed", R, "if not where:", "if False:", REMOTE_TESTS, "a redirect with no Location is followed to nowhere"),
     Mutation("remote", "relative-location-not-resolved", R, "target = urllib.parse.urljoin(url, where)", "target = where", REMOTE_TESTS,
              "a relative redirect is refused instead of followed"),
+    Mutation("budget", "rows-drop-reasoning-on-the-way-to-the-engine", EV, 'REQUEST_KEYS = ("state", "questions", "images", "reasoning")',
+             'REQUEST_KEYS = ("state", "questions", "images")', REASONING_TESTS, "a suite row or a flat row with reasoning is answered without it"),
     Mutation("state", "state-written-in-place", S, 'tmp = self.path.with_name(STATE_NAME + ".tmp")', "tmp = self.path", STATE_TESTS,
              "a disk that fills halfway through leaves a torn state.json instead of the previous one"),
     Mutation("state", "absolute-local-path-allowed", S, "if pure.is_absolute():", "if False:", STATE_TESTS,

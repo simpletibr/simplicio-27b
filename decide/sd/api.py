@@ -11,8 +11,9 @@ an optional LoRA adapter, the merge method.  Nothing is written to disk; the loa
 
 Requests are the Decision Index's: a state text and questions (choice, noul).  A request with a `reasoning` key is refused with
 `Unsupported` (a `unsupported` row), never answered without it: the v1.2 joint prompt has no place for the text, and the engine
-would otherwise answer a question that is not the one asked.  Reasoning is served once the thinking track passes its gate and the
-training protocol's `fold_reasoning()` is integrated here.
+would otherwise answer a question that is not the one asked.  `run_requests(..., reasoning="fold")` asks for the other thing: the text
+is folded into the state with the training protocol's `fold_reasoning()` (one definition, imported when a fold is asked for), so the
+model reads at evaluation the prompt a `--reasoning mixed` run trained on.  The default stays `"refuse"`; nothing is folded unasked.
 
 A repo is named `org/name` and read at a full commit hash (`anchor_revision`, `revision`), or `dir:PATH` for a checkpoint folder on this
 machine (the model that was just trained): no Hub, no network, and no revision, since a folder has none (one is refused).
@@ -387,6 +388,8 @@ def run_requests(engine: Any, requests_path: Union[str, Path], out_path: Union[s
 
     Returns at least `{"rows": new rows, "tokens": input tokens of the new rows, "seconds": wall time, "status": ...}`.
     `out_path` is a directory (or a `.parquet` path, whose folder then holds the run).  See `evaluate.run_requests`.
+    `reasoning="refuse"` (the default) leaves a request's `reasoning` text to the engine, which refuses it; `reasoning="fold"` folds it
+    into the state first, as the training protocol does.
     """
     return evaluate.run_requests(engine, requests_path, out_path, budget=budget, resume=resume, **options)
 
