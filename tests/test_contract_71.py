@@ -660,6 +660,96 @@ def real_gt_report(*, thinker_hits: int = 36, model_hits: int = 20, rows: int = 
     return K.build_report(pack, records[:len(records) - drop], header=header, B=C.BOOTSTRAP_B, seed=C.SEED)
 
 
+class DayStateFromTheOutsideContract(unittest.TestCase):
+    """Review of the PR of F6: a state file is input from outside (the work repo, a hand edit), so what it names is checked before it is used."""
+
+    identity = {"profile": "p" * 64, "config": "c" * 64}
+
+    def write(self, directory: Path, outputs, status="done") -> None:
+        (directory).mkdir(parents=True, exist_ok=True)
+        record = {"status": status, "outputs": {name: {"path": path, "fingerprint": "0" * 64} for name, path in outputs.items()}}
+        (directory / "day.json").write_text(json.dumps({"version": 1, "identity": self.identity, "phases": {"targets": record}}), encoding="utf-8")
+
+    def test_an_output_path_outside_the_root_is_a_problem_whatever_the_spelling(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "day"
+            (root / "targets").mkdir(parents=True)
+            (Path(tmp) / "elsewhere").mkdir()
+            os.symlink(Path(tmp) / "elsewhere", root / "link")
+            good = [str(root / "targets"), str(root / "runs" / "seed1" / "final")]
+            bad = [str(Path(tmp) / "elsewhere" / "x"), str(root / "a" / ".." / ".." / "x"), "..\\x", "C:\\x", str(root / "t\\..\\..\\x"), str(root / "link" / "x"),
+                   str(root), str(root / "state" / ".." / ".."), "", 7, None]
+            for path in good:
+                self.assertIsNone(ST.output_path_problem(root, path), path)
+            for path in bad:
+                self.assertIsNotNone(ST.output_path_problem(root, path), repr(path))
+
+    def test_a_state_that_names_a_path_outside_the_root_is_not_loaded(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "day"
+            for path in (str(Path(tmp) / "x"), str(root / ".." / "x"), "..\\x"):
+                with self.subTest(path=path):
+                    self.write(root / "state", {"targets": path})
+                    with self.assertRaises(ST.StateError) as caught:
+                        ST.DayState(root / "state", identity=self.identity, root=root)
+                    self.assertIn("targets", str(caught.exception))
+                    self.assertTrue((root / "state" / "day.json").is_file(), "the file is left as it is")
+
+    def test_a_state_that_stays_inside_the_root_is_loaded(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "day"
+            self.write(root / "state", {"targets": str(root / "targets")})
+            self.assertEqual(ST.DayState(root / "state", identity=self.identity, root=root).status("targets"), "done")
+
+    def test_parse_state_checks_the_identity_before_anyone_uses_the_outputs(self) -> None:
+        from decide.rental import state as ST
+
+        text = json.dumps({"version": 1, "identity": {"profile": "other", "config": "other"}, "phases": {}})
+        with self.assertRaises(ST.StateError) as caught:
+            ST.parse_state(text, identity=self.identity, root=Path("/nowhere"))
+        self.assertIn("another profile or configuration", str(caught.exception))
+        with self.assertRaises(ST.StateError):
+            ST.parse_state("{not json", identity=self.identity, root=Path("/nowhere"))
+        with self.assertRaises(ST.StateError):
+            ST.parse_state(json.dumps({"version": 9, "identity": self.identity, "phases": {}}), identity=self.identity, root=Path("/nowhere"))
+
+    def test_a_phase_remembers_the_outputs_it_was_built_on(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "targets"
+            out.mkdir()
+            day = ST.DayState(Path(tmp) / "state", identity=self.identity)
+            day.begin("targets")
+            day.done("targets", outputs={"targets": out}, built_on={"fetch": {"corpus": "a" * 64}})
+            self.assertEqual(ST.DayState(Path(tmp) / "state", identity=self.identity).built_on("targets"), {"fetch": {"corpus": "a" * 64}})
+            day.begin("train")
+            day.done("train", outputs={})
+            self.assertEqual(day.built_on("train"), {})
+
+    def test_digest_tree_reads_every_byte_where_the_fingerprint_reads_the_edges(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            big = Path(tmp) / "model" / "weights.bin"
+            big.parent.mkdir()
+            with open(big, "wb") as handle:
+                handle.truncate(ST.FULL_LIMIT + (6 << 20))                                   # a sparse file just over the limit: cheap to make and to read
+            fingerprint_before, digest_before = ST.fingerprint(big.parent), ST.digest_tree(big.parent)
+            with open(big, "r+b") as handle:
+                handle.seek(ST.FULL_LIMIT // 2)
+                handle.write(b"one flipped byte in the middle")
+            self.assertEqual(ST.fingerprint(big.parent), fingerprint_before, "the quick fingerprint does not see the middle of a big file")
+            self.assertNotEqual(ST.digest_tree(big.parent), digest_before, "the digest does")
+            self.assertEqual(ST.digest_tree(big.parent), ST.digest_tree(big.parent))
+
+
 class RealGtReportContract(unittest.TestCase):
     """The day reads the report.json of ``decide.think.compare`` as it is on main, not a lookalike: its format name, ``verdict.status``,
     ``verdict.delta_pts``, ``verdict.ci``, ``coverage.complete`` and ``thinker.config``.  If Squad C renames one, this fails here."""

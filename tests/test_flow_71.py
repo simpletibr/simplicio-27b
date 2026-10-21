@@ -657,5 +657,282 @@ class GuardsOfTheDay(unittest.TestCase):
                 self.assertEqual(day.state.status("train"), "done", "the phase itself stays done")
 
 
+class NoisyTrainer(InProcessExecutor):
+    """A trainer that is not bit-for-bit repeatable, as a GPU run is: every training leaves one extra file in the final of its seed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.trainings = 0
+
+    def run(self, argv, *, log_path, env) -> int:
+        code = super().run(argv, log_path=log_path, env=env)
+        if code == 0 and "decide.train.train" in argv:
+            self.trainings += 1
+            out = Path(argv[argv.index("--out") + 1])
+            (out / "final" / f"noise-{self.trainings}.txt").write_text(f"run {self.trainings}\n", encoding="utf-8")
+        return code
+
+
+class RecordingKit(FakeKit):
+    """A FakeKit that also says whether the output folder of a run already existed when the run began (a real kit resumes from it)."""
+
+    def run(self, model, requests, out, *, budget=None) -> Dict[str, Any]:
+        existed = Path(out).exists()
+        info = super().run(model, requests, out, budget=budget)
+        self.calls[-1]["out_existed"] = existed
+        return info
+
+
+def weights_in(hub, tmp) -> List[str]:
+    return hub.files("me/weights", kind="model") if (Path(tmp) / "hub" / "model" / "me" / "weights").is_dir() else []
+
+
+class GatesCannotBeSkipped(unittest.TestCase):
+    """Review of the PR of F6: no way to a trained, calibrated or published model that goes around the label gate or around what G4 measured."""
+
+    LATER = ("train", "soup", "calibrate", "g4", "publish")
+
+    def test_only_cannot_go_around_the_label_gate(self) -> None:
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp), label_every=2)                            # half of the corpus is labeled: F3 says no
+            executor, kit = InProcessExecutor(), FakeKit()
+            first = make_day(Path(tmp) / "day", hub, kit, executor).run()
+            self.assertEqual((first.status, first.stopped_at), ("stopped", "targets"))
+            with self.assertRaises(R.DayError) as caught:
+                make_day(Path(tmp) / "day", hub, kit, executor).run(only=list(self.LATER))
+            self.assertIn("targets", str(caught.exception))
+            self.assertEqual(executor.modules(), ["decide.train.build_targets"], "nothing was trained or calibrated")
+            self.assertEqual(kit.calls, [], "the kit was not asked for G4")
+            self.assertEqual(weights_in(hub, tmp), [], "nothing reached the weights repo")
+
+    def test_each_phase_refuses_to_run_alone_before_what_it_needs(self) -> None:
+        from decide.rental import run as R
+
+        for phase in ("targets", "traces", "targets_traces", "train", "soup", "calibrate", "g4", "public_round", "publish"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmp:
+                hub, requests = build_world(Path(tmp))
+                executor, kit = InProcessExecutor(), FakeKit()
+                with self.assertRaises(R.DayError):
+                    make_day(Path(tmp) / "day", hub, kit, executor, public_requests=requests).run(only=[phase])
+                self.assertEqual((executor.calls, kit.calls), ([], []), "no command ran and the kit was not asked")
+                self.assertEqual(weights_in(hub, tmp), [])
+
+    def test_the_phases_can_still_be_run_one_by_one_in_their_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp))
+            executor, kit = InProcessExecutor(), FakeKit()
+            for phase in ("fetch", "targets", "traces", "targets_traces", "train", "soup", "calibrate", "g4", "public_round", "publish"):
+                result = make_day(Path(tmp) / "day", hub, kit, executor).run(only=[phase])
+                self.assertIsNone(result.stopped_at, phase)
+                self.assertIn(result.phases[phase], ("done", "skipped"), phase)
+            self.assertTrue(any(name.endswith(".safetensors") for name in weights_in(hub, tmp)))
+
+    def test_a_targets_folder_that_changed_after_its_gate_is_not_trusted(self) -> None:
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp))
+            executor = InProcessExecutor()
+            work = Path(tmp) / "day"
+            make_day(work, hub, FakeKit(), executor).run(until="targets")
+            (work / "targets" / "edited-by-hand.txt").write_text("x", encoding="utf-8")
+            calls = len(executor.calls)
+            with self.assertRaises(R.DayError) as caught:
+                make_day(work, hub, FakeKit(), executor).run(only=["train"])
+            self.assertIn("targets", str(caught.exception))
+            self.assertEqual(len(executor.calls), calls)
+
+    def test_g4_writes_the_digest_of_the_checkpoint_it_measured(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp))
+            work = Path(tmp) / "day"
+            day = make_day(work, hub, FakeKit(), InProcessExecutor())
+            day.run(until="g4")
+            detail = day.state.record("g4")["detail"]
+            self.assertEqual(detail["final_digest"], ST.digest_tree(work / "final"))
+            self.assertEqual(detail["start_fingerprint"], ST.fingerprint(work / "start"))
+            verdict = json.loads((work / "g4" / "verdict.json").read_text(encoding="utf-8"))
+            self.assertEqual(verdict["measured"]["final_digest"], detail["final_digest"])
+
+    def test_publish_and_the_public_round_refuse_a_final_that_g4_did_not_measure(self) -> None:
+        from decide.rental import run as R
+
+        for phase in ("publish", "public_round"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmp:
+                hub, requests = build_world(Path(tmp))
+                work = Path(tmp) / "day"
+                make_day(work, hub, FakeKit(), InProcessExecutor(), public_requests=requests).run(until="g4")
+                (work / "final" / "not-what-g4-saw.txt").write_text("a retrain, a recalibration, a hand edit\n", encoding="utf-8")
+                kit = FakeKit()
+                with self.assertRaises(R.DayError) as caught:
+                    make_day(work, hub, kit, InProcessExecutor(), public_requests=requests).run(only=[phase])
+                self.assertIn("G4", str(caught.exception))
+                self.assertEqual(kit.calls, [], "no GPU time on a checkpoint nobody measured")
+                self.assertEqual(weights_in(hub, tmp), [])
+
+    def test_a_retrain_after_g4_makes_g4_run_again_on_the_new_bytes_before_anything_is_published(self) -> None:
+        from decide.rental import state as ST
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp))
+            work = Path(tmp) / "day"
+            executor = NoisyTrainer()
+            first_kit = RecordingKit()
+            first = make_day(work, hub, first_kit, executor)
+            first.run(until="g4")
+            before = first.state.record("g4")["detail"]["final_digest"]
+            shutil.rmtree(work / "runs")                                              # the machine was lost and the training state with it
+            shutil.rmtree(work / "final")
+            kit = RecordingKit()
+            second = make_day(work, hub, kit, executor)
+            result = second.run()
+            self.assertEqual(result.status, "complete")
+            self.assertEqual(executor.trainings, 2, "the seed was trained again")
+            self.assertEqual([call["model"] for call in kit.calls], ["baseline", "new"], "G4 measured the new bytes")
+            calls = {call["model"]: call for call in kit.calls}
+            self.assertFalse(calls["new"]["out_existed"], "the results of the old checkpoint were set aside, not resumed as the new one's")
+            self.assertTrue(calls["baseline"]["out_existed"], "the baseline did not change, so its results are kept")
+            after = second.state.record("g4")["detail"]["final_digest"]
+            self.assertNotEqual(before, after)
+            self.assertEqual(after, ST.digest_tree(work / "final"))
+            self.assertEqual(second.state.status("publish"), "done")
+
+    def test_a_retrain_that_gives_the_same_bytes_leaves_g4_and_the_upload_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp))
+            work = Path(tmp) / "day"
+            executor = InProcessExecutor()
+            make_day(work, hub, FakeKit(), executor).run()
+            shutil.rmtree(work / "runs")
+            shutil.rmtree(work / "final")
+            kit = FakeKit()
+            result = make_day(work, hub, kit, executor).run()
+            self.assertEqual(result.status, "complete")
+            self.assertEqual(kit.calls, [], "the CPU run is bit for bit the same, so what G4 measured is what is on the disk")
+
+
+class RestoreStaysInsideTheWorkdir(unittest.TestCase):
+    """Review of the PR of F6: the state that comes back from the work repo is checked before one byte is written."""
+
+    def setUp(self) -> None:
+        from decide.rental import hub as H
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.hub, _ = build_world(self.root)
+        self.work = self.root / "day"
+        self.outside = self.root / "outside"
+        self.day = make_day(self.work, self.hub, FakeKit(), InProcessExecutor())
+        self.H = H
+
+    def plant(self, outputs, *, identity=None, phase="targets") -> None:
+        """Put a state in the work repo whose ``phase`` is done and wrote ``outputs`` ({name: path}), with one file under each output."""
+        record = {"status": "done", "started": 1.0, "finished": 2.0, "seconds": 1.0, "detail": {},
+                  "outputs": {name: {"path": path, "fingerprint": "0" * 64} for name, path in outputs.items()}}
+        state = {"version": 1, "identity": identity or self.day.identity, "phases": {phase: record}}
+        staging = self.root / "staging-state"
+        staging.mkdir()
+        (staging / "day.json").write_text(json.dumps(state), encoding="utf-8")
+        self.hub.ensure_repo("me/day", kind="model")
+        self.hub.upload("me/day", staging, kind="model", path_in_repo="state")
+        for index, name in enumerate(outputs):
+            if "/" in name:
+                continue                                              # a name like that cannot be put in the folder repo by the test; the state alone is the attack
+            folder = self.root / f"staging-{index}"
+            folder.mkdir()
+            (folder / "payload.txt").write_text("from the work repo\n", encoding="utf-8")
+            self.hub.upload("me/day", folder, kind="model", path_in_repo=f"outputs/{phase}/{name}")
+
+    def assert_refused_and_nothing_written(self, where_not) -> None:
+        from decide.rental import run as R
+        from decide.rental import state as ST
+
+        with self.assertRaises((ST.StateError, R.DayError)):
+            self.day.run(only=["preflight"])
+        for path in where_not:
+            self.assertFalse(Path(path).exists(), f"{path} was written")
+        self.assertFalse((self.work / "state" / "day.json").exists(), "the state was put in place before it was checked")
+        self.assertFalse((self.work / ".restore").exists(), "the scratch folder was left behind")
+
+    def test_an_absolute_path_outside_the_workdir_is_refused_before_anything_is_written(self) -> None:
+        self.plant({"targets": str(self.outside / "targets")})
+        self.assert_refused_and_nothing_written([self.outside])
+
+    def test_a_path_that_climbs_out_with_dotdot_is_refused(self) -> None:
+        self.plant({"targets": str(self.work / "x" / ".." / ".." / "outside" / "targets")})
+        self.assert_refused_and_nothing_written([self.outside])
+
+    def test_a_backslash_that_climbs_out_is_refused(self) -> None:
+        self.plant({"targets": "..\\outside\\targets"})
+        self.assert_refused_and_nothing_written([self.outside])
+
+    def test_a_drive_letter_is_refused(self) -> None:
+        self.plant({"targets": "C:\\outside\\targets"})
+        self.assert_refused_and_nothing_written([self.outside])
+
+    def test_a_backslash_in_the_middle_of_a_path_is_refused(self) -> None:
+        self.plant({"targets": str(self.work) + "/targets\\..\\..\\x"})
+        self.assert_refused_and_nothing_written([self.outside])
+
+    def test_a_symlink_inside_the_workdir_that_leaves_it_is_refused(self) -> None:
+        self.work.mkdir()
+        self.outside.mkdir()
+        os.symlink(self.outside, self.work / "link")
+        self.plant({"targets": str(self.work / "link" / "targets")})
+        self.assert_refused_and_nothing_written([self.outside / "targets"])
+
+    def test_a_state_of_another_profile_is_refused_before_its_outputs_are_moved(self) -> None:
+        self.plant({"targets": str(self.work / "targets")}, identity={"profile": "other", "config": "other"})
+        self.assert_refused_and_nothing_written([self.work / "targets"])
+
+    def test_the_name_of_an_output_cannot_climb_either(self) -> None:
+        self.plant({"../../escape": str(self.work / "targets")})
+        self.assert_refused_and_nothing_written([self.work / "targets", self.root / "escape"])
+
+    def test_a_state_that_is_all_inside_the_workdir_is_restored(self) -> None:
+        self.plant({"targets": str(self.work / "targets")})
+        self.day.run(only=["preflight"])
+        self.assertTrue((self.work / "targets" / "payload.txt").is_file())
+        self.assertTrue((self.work / "state" / "day.json").is_file())
+
+
+class OneOrchestratorPerWorkdir(unittest.TestCase):
+    def test_a_second_orchestrator_on_the_same_workdir_is_refused(self) -> None:
+        from decide.rental import run as R
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp))
+            work = Path(tmp) / "day"
+            seen: List[str] = []
+
+            class Rival(InProcessExecutor):
+                def run(inner, argv, *, log_path, env) -> int:                  # noqa: N805 - the outer test case is `self`
+                    try:
+                        make_day(work, hub, FakeKit(), InProcessExecutor()).run(only=["preflight"])
+                    except R.DayError as exc:
+                        seen.append(str(exc))
+                    return super().run(argv, log_path=log_path, env=env)
+
+            make_day(work, hub, FakeKit(), Rival()).run(until="targets")
+            self.assertTrue(seen and "another" in seen[0], seen)
+            self.assertFalse((work / "state" / "day.lock").exists(), "the lock is released when the run ends")
+
+    def test_a_lock_left_by_a_process_that_is_gone_is_taken_over(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            hub, _ = build_world(Path(tmp))
+            work = Path(tmp) / "day"
+            (work / "state").mkdir(parents=True)
+            import socket
+
+            (work / "state" / "day.lock").write_text(json.dumps({"pid": 2 ** 22 + 12345, "host": socket.gethostname(), "started": 1.0}), encoding="utf-8")
+            result = make_day(work, hub, FakeKit(), InProcessExecutor()).run(until="fetch")
+            self.assertEqual(result.phases["fetch"], "done")
+
+
 if __name__ == "__main__":
     unittest.main()
