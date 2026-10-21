@@ -47,6 +47,14 @@ def decision_config(token_ids: List[int]) -> dict:
     return {**real, "temperature": TEMPERATURE, "token_ids": token_ids}
 
 
+def d3_decision_config(token_ids: List[int]) -> dict:
+    """A d3-style decision_config.json (format d3-code-readout-v1) over the same tiny tokenizer and codes."""
+    codes = json.loads(VENDOR_CONFIG.read_text())["codes"]
+    return {"format_version": 1, "format_id": "d3-code-readout-v1", "prompt": "d3", "base_model": "tiny/base", "revision": "0" * 40,
+            "codes": codes, "token_ids": token_ids, "temperature": 1.0, "attention_mode": "noncausal_full_attention",
+            "pooling": "last", "max_length": None, "readout_dtype": "float32"}
+
+
 class TinyProcessor:
     """Just what `Encoder` touches: tokenizer, chat template, and a call that returns input ids."""
 
@@ -116,7 +124,8 @@ def safetensors_blob(tensors: Dict[str, "object"]) -> bytes:
 
 
 def publish_backbone(hub, repo: str, state: Dict[str, "object"], *, shards: int = 2, dtype=None, head: Optional["object"] = None,
-                     decision: bool = False, fp32_suffixes: Tuple[str, ...] = ()) -> Tuple[Dict[str, "object"], List[str]]:
+                     decision: bool = False, fp32_suffixes: Tuple[str, ...] = (), protocol: str = "pplx_joint"
+                     ) -> Tuple[Dict[str, "object"], List[str]]:
     """Put a backbone on the fake hub as `shards` safetensors files plus an index; returns (published tensors, names).
 
     Floating tensors are stored as `dtype` (bf16, like the real checkpoints) except names ending in `fp32_suffixes`.
@@ -142,8 +151,11 @@ def publish_backbone(hub, repo: str, state: Dict[str, "object"], *, shards: int 
     hub.add(repo, "config.json", json.dumps(config_dict()).encode())
     if decision:
         _tok, _codes, token_ids = tokenizer_and_codes()
-        hub.add(repo, "decision_config.json", json.dumps(decision_config(token_ids)).encode())
-        hub.add(repo, "joint_config.json", (Path(VENDOR_CONFIG).parent / "joint_config.json").read_bytes())
+        if protocol == "d3":
+            hub.add(repo, "decision_config.json", json.dumps(d3_decision_config(token_ids)).encode())
+        else:
+            hub.add(repo, "decision_config.json", json.dumps(decision_config(token_ids)).encode())
+            hub.add(repo, "joint_config.json", (Path(VENDOR_CONFIG).parent / "joint_config.json").read_bytes())
         hub.add(repo, "readout.safetensors", safetensors_blob({"weight": (head if head is not None else head_weight(0)).to(dtype)}))
     return published, names
 

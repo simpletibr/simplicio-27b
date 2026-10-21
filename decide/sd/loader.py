@@ -21,14 +21,16 @@ from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Sequence
 import torch
 from torch import nn
 
+from decide.sd import d3 as d3_protocol
 from decide.sd import merge as M
 from decide.sd import nf4
 from decide.sd.engine import AssembledDecider
-from decide.sd.remote import HubRepo
+from decide.sd.remote import HubRepo, RemoteError
 from decide.sd.vendor.pplx_decider.model import enable_noncausal_full_attention
 from decide.sd.vendor.pplx_decider.protocol import PROTOCOL
 
 DTYPES = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
+PROTOCOLS = ("pplx_joint", "d3")
 LAYER = re.compile(r"^language_model\.layers\.(\d+)\.")
 
 
@@ -252,8 +254,13 @@ def _prefetch(names: Sequence[str], fetch: Callable[[str], Any], workers: int) -
 def load_decider(spec: Mapping[str, Any], options: Optional[LoadOptions] = None, *,
                  repo_factory: Optional[Callable[[str, Optional[str]], HubRepo]] = None,
                  processor_factory: Optional[Callable[[str, Optional[str]], Any]] = None,
+                 tokenizer_factory: Optional[Callable[[str, Optional[str]], Any]] = None,
                  progress: Optional[Callable[[int, int, str], None]] = None, token: Optional[str] = None) -> AssembledDecider:
-    """Build an `AssembledDecider` for `spec` = {anchor, donors[{repo, weight}], lora{repo, weight}|None, method, density, ...}."""
+    """Build an `AssembledDecider` for `spec` = {anchor, donors[{repo, weight}], lora{repo, weight}|None, method, density, ...}.
+
+    `spec["protocol"]` is `pplx_joint` (default: the joint prompt of pplx-decider, the protocol of the model we ship) or
+    `d3` (one question per sequence, last-token readout; used to check fidelity against the published d3 results).
+    """
     opt = options or LoadOptions()
     if opt.quant not in ("nf4", "none"):
         raise LoaderError("LoadOptions.quant must be 'nf4' or 'none'")
@@ -272,12 +279,25 @@ def load_decider(spec: Mapping[str, Any], options: Optional[LoadOptions] = None,
     base_repo = make_repo(spec["base"]["repo"], spec["base"].get("revision")) if spec.get("reference") == "base" and spec.get("base") else None
 
     # -- small files of the anchor: protocol, calibration, head
-    joint = anchor.read_json("joint_config.json")
-    if joint != PROTOCOL:
-        raise LoaderError("the anchor does not declare the joint inline-readout protocol (version 3)")
+    protocol = spec.get("protocol", "pplx_joint")
+    if protocol not in PROTOCOLS:
+        raise LoaderError(f"spec.protocol must be one of {PROTOCOLS}, got {protocol!r}")
     decision_config = anchor.read_json("decision_config.json")
-    if decision_config.get("attention_mode") != "noncausal_full_attention" or decision_config.get("pooling", "last") != "last":
-        raise LoaderError("expected a noncausal checkpoint with per-position readouts")
+    if protocol == "pplx_joint":
+        try:
+            joint = anchor.read_json("joint_config.json")
+        except RemoteError as exc:
+            raise LoaderError(f"{spec['anchor']} has no joint_config.json ({exc}); it is not a pplx joint checkpoint. "
+                              "A d3 checkpoint needs spec protocol 'd3'.") from exc
+        if joint != PROTOCOL:
+            raise LoaderError("the anchor does not declare the joint inline-readout protocol (version 3)")
+        if decision_config.get("attention_mode") != "noncausal_full_attention" or decision_config.get("pooling", "last") != "last":
+            raise LoaderError("expected a noncausal checkpoint with per-position readouts")
+    else:
+        try:
+            d3_protocol.check_decision_config(decision_config)
+        except ValueError as exc:
+            raise LoaderError(str(exc)) from exc
     config = anchor.read_json("config.json")
 
     # -- what to read
@@ -376,6 +396,18 @@ def load_decider(spec: Mapping[str, Any], options: Optional[LoadOptions] = None,
         head = load_file(head_file)["weight"]
     else:
         head = anchor.shard("readout.safetensors").read_tensor("weight")
+    if protocol == "d3":
+        readout = d3_protocol.CastReadout(head).eval().to(first)
+        if tokenizer_factory is not None:
+            tokenizer = tokenizer_factory(spec["anchor"], spec.get("anchor_revision"))
+        elif processor_factory is not None:
+            tokenizer = processor_factory(spec["anchor"], spec.get("anchor_revision")).tokenizer
+        else:
+            tokenizer = _auto_tokenizer(token)(spec["anchor"], spec.get("anchor_revision"))
+        tokenizer.padding_side = "left"
+        return AssembledDecider(model, readout, d3_protocol.TokenizerOnly(tokenizer), decision_config, device=str(first),
+                                max_length=opt.max_length or None, batch_tokens=opt.batch_tokens,
+                                encoder=d3_protocol.D3Encoder(tokenizer, decision_config["codes"]))
     readout = nn.Linear(head.shape[1], head.shape[0], bias=False, dtype=cdtype)
     readout.weight.data = head.to(cdtype)
     readout.requires_grad_(False).eval().to(first)
@@ -383,6 +415,14 @@ def load_decider(spec: Mapping[str, Any], options: Optional[LoadOptions] = None,
     processor = (processor_factory or _auto_processor(token))(spec["anchor"], spec.get("anchor_revision"))
     return AssembledDecider(model, readout, processor, decision_config, device=str(first),
                             max_length=opt.max_length if opt.max_length else 262_144, batch_tokens=opt.batch_tokens)
+
+
+def _auto_tokenizer(token: Optional[str]) -> Callable[[str, Optional[str]], Any]:
+    def make(repo: str, revision: Optional[str]) -> Any:
+        from transformers import AutoTokenizer
+
+        return AutoTokenizer.from_pretrained(repo, revision=revision, token=token)
+    return make
 
 
 def _auto_processor(token: Optional[str]) -> Callable[[str, Optional[str]], Any]:

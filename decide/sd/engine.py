@@ -40,7 +40,8 @@ class AssembledDecider(Decider):
     """`Decider` around a backbone and readout that are already in memory."""
 
     def __init__(self, backbone: torch.nn.Module, readout: torch.nn.Module, processor: Any, decision_config: Mapping[str, Any],
-                 *, device: str = "cpu", max_length: Optional[int] = DEFAULT_MAX_LENGTH, batch_tokens: int = 4096) -> None:
+                 *, device: str = "cpu", max_length: Optional[int] = DEFAULT_MAX_LENGTH, batch_tokens: int = 4096,
+                 encoder: Any = None) -> None:
         self.checkpoint = Path("<assembled>")
         self.device = torch.device(device)
         self.temperature = float(decision_config["temperature"])
@@ -58,7 +59,7 @@ class AssembledDecider(Decider):
         ):
             raise ValueError("Checkpoint answer codes differ from its tokenizer")
         self.processor = processor
-        self.encoder = Encoder(processor, self.codes)
+        self.encoder = encoder if encoder is not None else Encoder(processor, self.codes)     # pplx joint prompt unless told otherwise
         self.backbone = backbone
         self.readout = readout
         self.fast = None
