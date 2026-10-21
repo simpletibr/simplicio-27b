@@ -628,6 +628,22 @@ class SoupContract(unittest.TestCase):
         self.assertEqual(cfg["temperature"], 1.11)
         self.assertEqual(cfg["soup"]["weights"], [0.75, 0.25])
 
+    def test_a_soup_does_not_inherit_the_calibration_or_the_training_record_of_its_first_input(self) -> None:
+        # the averaged weights are nobody's run: the first input's per-type temperatures, fit flag and training record would lie
+        inputs = [self.make(0, 1, 1.2), self.make(1, 1, 1.4)]
+        for path, tag in zip(inputs, ("a", "b")):
+            config = json.loads((path / "decision_config.json").read_text(encoding="utf-8"))
+            config.update({"temperature_by_type": {"choice": 1.1}, "temperature_fallback": ["score"], "temperature_with_reasoning": 1.9,
+                           "temperature_is_placeholder": False, "training": {"method": "lora", "seed": tag}, "base_model": "tiny/qwen3_5"})
+            (path / "decision_config.json").write_text(json.dumps(config), encoding="utf-8")
+        self.soup.average_checkpoints(inputs, self.root / "soup")
+        config = json.loads((self.root / "soup" / "decision_config.json").read_text(encoding="utf-8"))
+        for key in ("temperature_by_type", "temperature_fallback", "temperature_with_reasoning", "temperature_is_placeholder", "training"):
+            self.assertNotIn(key, config, key)
+        self.assertEqual(config["base_model"], "tiny/qwen3_5", "what describes the architecture is kept")
+        self.assertTrue(config["soup"]["temperature_is_placeholder"])
+        self.assertAlmostEqual(config["temperature"], 1.3)
+
     def test_mismatches_are_refused(self) -> None:
         torch = self.torch
         one, two = self.make(0, 1, 1.0), self.make(1, 1, 1.0)
@@ -657,6 +673,79 @@ class SoupContract(unittest.TestCase):
         self.soup.average_checkpoints(inputs, self.root / "once")
         with self.assertRaises(FileExistsError):
             self.soup.average_checkpoints(inputs, self.root / "once")
+
+
+class CalibrationConfigContract(unittest.TestCase):
+    """``decide.train.temperature``: the temperature a checkpoint carries in ``decision_config.json`` and how a fit is stored there."""
+
+    PLAIN = {"examples": 12, "questions": 140, "reasoning": False,
+             "temperature": {"all": 1.7, "choice": 1.8, "noul": 1.5, "score": 1.7, "fallback": ["score"], "counts": {"all": 140, "choice": 100, "noul": 40, "score": 3}}}
+    THINKING = {"examples": 5, "questions": 60, "reasoning": True,
+                "temperature": {"all": 1.2, "choice": 1.2, "fallback": [], "counts": {"all": 60, "choice": 60}}}
+
+    def setUp(self) -> None:
+        from decide.train import temperature as TM
+
+        self.TM = TM
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.config = {"format_version": 2, "base_model": "tiny/qwen3_5", "temperature": 1.38, "codes": ["A", "B", "C"], "token_ids": [1, 2, 3],
+                       "attention_mode": "noncausal_full_attention", "pooling": "last"}
+        self.path = self.root / "decision_config.json"
+
+    def write(self, **extra) -> None:
+        self.path.write_text(json.dumps({**self.config, **extra}, indent=2) + "\n", encoding="utf-8")
+
+    def read(self) -> dict:
+        return json.loads(self.path.read_text(encoding="utf-8"))
+
+    def test_fields_of_a_plain_fit(self) -> None:
+        fields = self.TM.calibration_fields(self.PLAIN)
+        self.assertEqual(fields["temperature"], 1.7)
+        self.assertEqual(fields["temperature_by_type"], {"choice": 1.8, "noul": 1.5, "score": 1.7})
+        self.assertEqual(fields["temperature_fallback"], ["score"])
+        self.assertIs(fields["temperature_is_placeholder"], False)
+        self.assertEqual(fields["calibration"], {"split": "dev", "examples": 12, "questions": 140, "questions_by_type": {"choice": 100, "noul": 40, "score": 3}})
+        self.assertNotIn("temperature_with_reasoning", fields)
+
+    def test_the_fit_with_reasoning_is_kept_apart(self) -> None:
+        fields = self.TM.calibration_fields(self.PLAIN, self.THINKING)
+        self.assertEqual(fields["temperature"], 1.7, "the checkpoint's own temperature is the one without reasoning")
+        self.assertEqual(fields["temperature_with_reasoning"], 1.2)
+        self.assertEqual(fields["calibration"]["with_reasoning"], {"examples": 5, "questions": 60})
+
+    def test_nothing_to_fit_is_an_error_not_a_default(self) -> None:
+        for report in ({}, {"examples": 3}, {"examples": 3, "questions": 0}):
+            with self.assertRaises(self.TM.CalibrationError, msg=str(report)):
+                self.TM.calibration_fields(report)
+
+    def test_write_replaces_the_calibration_and_keeps_the_rest(self) -> None:
+        self.write(temperature_by_type={"choice": 9.0}, temperature_fallback=["noul"], temperature_with_reasoning=1.9, temperature_is_placeholder=True,
+                   soup={"weights": [0.5, 0.5], "temperature_is_placeholder": True})
+        self.TM.write_calibration(self.root, self.TM.calibration_fields(self.PLAIN))
+        config = self.read()
+        self.assertEqual(config["temperature"], 1.7)
+        self.assertEqual(config["temperature_by_type"], {"choice": 1.8, "noul": 1.5, "score": 1.7})
+        self.assertIs(config["temperature_is_placeholder"], False)
+        self.assertNotIn("temperature_with_reasoning", config, "an old fit with reasoning must not survive a new plain fit")
+        self.assertIs(config["soup"]["temperature_is_placeholder"], False)
+        self.assertEqual(config["soup"]["weights"], [0.5, 0.5])
+        for key in ("format_version", "base_model", "codes", "token_ids", "attention_mode", "pooling"):
+            self.assertEqual(config[key], self.config[key], key)
+        self.assertEqual([p.name for p in self.root.iterdir()], ["decision_config.json"], "no temporary file is left behind")
+
+    def test_write_validates_before_touching_the_file(self) -> None:
+        self.write()
+        before = self.path.read_bytes()
+        for bad in (0.0, -1.0, float("nan"), float("inf"), True, "1.3", None):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                self.TM.write_calibration(self.root, {"temperature": bad})
+        with self.assertRaises(ValueError):
+            self.TM.write_calibration(self.root, {"temperature": 1.5, "temperature_by_type": {"choice": 0.0}})
+        self.assertEqual(self.path.read_bytes(), before)
+        with self.assertRaises(FileNotFoundError):
+            self.TM.write_calibration(self.root / "nowhere", {"temperature": 1.5})
 
 
 @needs_pyarrow
