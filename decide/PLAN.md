@@ -1,6 +1,6 @@
 # Simplicio-Decide-27B — plano para o #1 do Jev Decision Index
 
-Versão 2 · 2026-10-21 (após Fase 0A e 0A-bis) · dono: Wesley · planejamento: Claude (Opus) · execução: squads.
+Versão 2.1 · 2026-10-21 (após Fase 0A e 0A-bis; seção 10, Plano B, acrescentada) · dono: Wesley · planejamento: Claude (Opus) · execução: squads.
 Regra de evidência: só número medido. Projeção ou estimativa leva a marca **UNVERIFIED**.
 Épico: [#64](https://github.com/simpletibr/simplicio-27b/issues/64). Uma issue por fase, na tabela da seção 5.
 
@@ -86,3 +86,13 @@ Uma conta por plataforma. Várias contas para somar cota ficam fora: o FAQ do Co
 - Squads (1 coordenador Sonnet + até 5 Haiku): kit (`decide/sd`, `decide/modal`, `notebooks/decide`) e dados/treino/aluguel (`decide/data`, `decide/train`, `decide/rental`, docs).
 - Merge: um coordenador Sonnet, em série, só PR com "APROVADO PELO SQUAD".
 - Issues: 1 épico e 1 issue por fase, com o gate como critério de aceite.
+
+## 10. Plano B (bases alternativas)
+O plano acima **não muda**. Esta seção só registra o que fazer se ele falhar. Evidência e fontes: [ADR 0005](../docs/adr/0005-plano-b-base-alternativa.md); o que não foi medido leva **UNVERIFIED**.
+- **Pedido do dono:** avaliar o InternScience/Sage-A1.5 (arXiv 2610.28578) como decisor, mantendo o plano atual.
+- **Sage-A1.5 (medido no Hub, 2026-10-21):** MoE `qwen3_5_moe`, 40 camadas (10 de atenção completa, 30 de DeltaNet), largura 2048, 256 especialistas (8 por token), 35.951.822.704 parâmetros, 71,9 GB em BF16, Apache-2.0; o card diz que parte do Qwen3.6-35B-A3B. Os ~3B ativos, o artigo e as notas sem ferramentas (GPQA, HLE) não foram lidos ou medidos: **UNVERIFIED**.
+- **Placar (`index.json`, 2026-10-20):** os 8 modelos de decisão com base de 30 a 35B-A3B vão de 46,50 a 62,28 (melhor: KnowLine 35B-A3B Gen1, LoRA, #27); os três com a mesma base do Sage ficaram em 54,61, 54,49 e 50,85. O décimo do board tem 67,48 e a nossa meta mínima é 69,5. As receitas diferem, então isso não prova teto.
+- **Incompatível com o plano atual:** largura 2048 contra 5120, então nada do merge de backbones, da cabeça do pplx (255 × 5120), do delta do Simplicio ou do kit de fidelidade transfere; pediria cabeça nova (255 × 2048), atenção não-causal só nas 10 camadas de atenção completa e LoRA em atenção e especialistas compartilhados (LoRA nos roteados não está resolvido). BF16 de 71,9 GB não cabe no Kaggle; o NF4 numa T4 é **UNVERIFIED** e provavelmente inviável.
+- **Plano B1 (preferido): Gemma-4-31B com LoRA.** Dois no top 10, ambos Apache-2.0: AJev lm6q, 69,05, #5, LoRA; linne-oak 1.0, 68,55, #7, ajuste completo. Não reaproveita o Simplicio nem o merge Qwen; pede cabeça nova (largura 5376), protocolo para o tokenizador do Gemma, LoRA e dados novos. **Gatilho:** o gate GT falhar **e** a receita do Qwen3.8 estagnar abaixo de 66 no privado caseiro depois do dia econômico de aluguel.
+- **Plano B2 (baixa prioridade): Sage-A1.5 como decisor.** Só por pedido explícito do dono. Teste mínimo: mesma receita, mesmo subconjunto (~20 mil linhas) e mesma semente no Sage e no Qwen3.8, medidos no privado caseiro (1.500 linhas); o Sage morre se ficar mais de 2 pontos abaixo. Custo **UNVERIFIED**: 1 a 2 h de B200 por modelo, a US$ 0,001736 por segundo (cerca de US$ 6,25 por hora; preço informado pelo planejador, não relido).
+- **Uso útil sem virar decisor:** o Sage pode ser um pensador alternativo (`--model` do kit do GT) para gerar traços baratos. Só depois de a PR #78 entrar na `main`, e só vale no treino se o GT medir esse pensador. O thinking padrão dele e o interruptor do template não constam no card. Não medido.
