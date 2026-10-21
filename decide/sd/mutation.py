@@ -5,7 +5,7 @@ merge math, the option-order inverse mapping, the temperature fit, the engine wi
 meant to guard that code, and reports KILLED (some test failed) or SURVIVED (every test passed: a hole in the tests).
 
     python -m decide.sd.mutation                      # every mutation
-    python -m decide.sd.mutation --only tta           # one group (merge, tta, calibrate, engine, loader, config, api, remote, budget)
+    python -m decide.sd.mutation --only tta           # one group (merge, tta, calibrate, engine, loader, config, api, remote, budget, state)
     python -m decide.sd.mutation --id k-bucket-boundary --id ta-sign-flip      # chosen mutations (to re-check a survivor)
     python -m decide.sd.mutation --list
     python -m decide.sd.mutation --json evidence.json
@@ -41,7 +41,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 ROOT = Path(__file__).resolve().parents[2]
 COPIED = ("decide", "tests", "notebooks/decide/requirements.txt")
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache")
-GROUPS = ("merge", "tta", "calibrate", "engine", "loader", "config", "api", "remote", "budget")
+GROUPS = ("merge", "tta", "calibrate", "engine", "loader", "config", "api", "remote", "budget", "state")
 
 
 @dataclass(frozen=True)
@@ -60,6 +60,7 @@ TTA_TESTS = ("test_contract_65.TtaContract", "test_flow_65.EngineFlow")
 CAL_TESTS = ("test_contract_65.CalibrateContract",)
 ENGINE_TESTS = ("test_flow_65.EngineFlow", "test_flow_65_api.EngineExtrasFlow")
 LOADER_TESTS = ("test_flow_65.LoaderFlow",)
+STATE_TESTS = ("test_contract_65.StateContract",)
 BUDGET_TESTS = ("test_contract_65.BudgetContract", "test_contract_65_evaluate", "test_flow_65_evaluate.EvaluateFlow")
 CONFIG_TESTS = ("test_contract_65.ConfigContract",)
 API_TESTS = ("test_contract_65_api.NormalizeSpecContract", "test_contract_65_api.SpecForContract")
@@ -70,6 +71,7 @@ T = "decide/sd/tta.py"
 C = "decide/sd/calibrate.py"
 E = "decide/sd/engine.py"
 BU = "decide/sd/budget.py"
+S = "decide/sd/state.py"
 EV = "decide/sd/evaluate.py"
 L = "decide/sd/loader.py"
 CF = "decide/sd/config.py"
@@ -238,6 +240,17 @@ MUTATIONS: Tuple[Mutation, ...] = (
              "any file name, however hostile, becomes part of a URL"),
     Mutation("remote", "dotdot-segments-allowed", R, 'return isinstance(name, str) and SAFE_PATH.fullmatch(name) is not None and all(part not in (".", "..") for part in name.split("/"))',
              "return isinstance(name, str) and SAFE_PATH.fullmatch(name) is not None", REMOTE_TESTS, "'..' passes as a path segment"),
+
+    # ---- the three the review's own mutation run found alive: a token on a redirect, a state file torn in half, a head from a donor
+    Mutation("remote", "token-follows-a-cross-origin-redirect", R, "if self._origin(url) != first:", "if False and self._origin(url) != first:", REMOTE_TESTS,
+             "the CDN a download is redirected to is shown the Hugging Face token"),
+    Mutation("remote", "redirect-to-plain-http-allowed", R, 'if scheme not in ("http", "https") or (was == "https" and scheme == "http"):',
+             'if scheme not in ("http", "https"):', REMOTE_TESTS, "a redirect may lower https to http"),
+    Mutation("state", "state-written-in-place", S, 'tmp = self.path.with_name(STATE_NAME + ".tmp")', "tmp = self.path", STATE_TESTS,
+             "a disk that fills halfway through leaves a torn state.json instead of the previous one"),
+    Mutation("loader", "donor-readout-lent", L, 'head = anchor.shard("readout.safetensors").read_tensor("weight")',
+             'head = (donors[0] if donors else anchor).shard("readout.safetensors").read_tensor("weight")', LOADER_TESTS,
+             "the readout head comes from a donor that ships one (heads are never merged or lent)"),
 
     # ---- the loader: which tensors are merged with which weights
     Mutation("loader", "donor-weights-misaligned", L, "[weights[i] for i in plan.donors]", "[weights[i] for i in reversed(plan.donors)]",

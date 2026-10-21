@@ -38,6 +38,7 @@ def torch_dtype(name: str):
 
 
 LOOPBACK = ("localhost", "127.0.0.1", "::1")
+MAX_REDIRECTS = 5
 RETRY_STATUS = {408, 425, 429, 500, 502, 503, 504}
 MAX_HEADER = 256 << 20
 
@@ -124,6 +125,37 @@ class HttpTransport:
             self._local.session = s
         return s
 
+    @staticmethod
+    def _origin(url: str) -> Tuple[str, str, Optional[int]]:
+        parts = urllib.parse.urlsplit(url)
+        return (parts.scheme, (parts.hostname or "").lower(), parts.port or {"http": 80, "https": 443}.get(parts.scheme))
+
+    def _follow(self, method: str, url: str, headers: dict, **kw: Any):
+        """One request, with redirects followed here and not by `requests`: the Authorization header goes to the first origin only.
+
+        A Hub download is a redirect to a CDN, and the CDN has no business seeing the token.  `requests` also strips it when the host
+        changes, but that is a detail of its version (the images of Kaggle and Colab bring their own); this does not depend on it.
+        Range and the other headers go along, a redirect may not lower https to http or leave http(s), and a chain ends after 5 hops.
+        """
+        first = self._origin(url)
+        for _hop in range(MAX_REDIRECTS + 1):
+            sent = dict(headers)
+            if self._origin(url) != first:
+                sent.pop("Authorization", None)
+            resp = self._session().request(method, url, headers=sent, allow_redirects=False, **kw)
+            if resp.status_code not in (301, 302, 303, 307, 308):
+                return resp
+            where = resp.headers.get("Location")
+            resp.close()
+            if not where:
+                raise RemoteError(f"HTTP {resp.status_code} without a Location for {url}")
+            target = urllib.parse.urljoin(url, where)
+            scheme, was = urllib.parse.urlsplit(target).scheme, urllib.parse.urlsplit(url).scheme
+            if scheme not in ("http", "https") or (was == "https" and scheme == "http"):
+                raise RemoteError(f"refusing a redirect from {url} to {target.split('?')[0]}: it must stay on https")
+            url = target
+        raise RemoteError(f"too many redirects for {url}")
+
     def _headers(self, extra: Optional[dict] = None) -> dict:
         h = {"User-Agent": "simplicio-decide/0.1"}
         if self.token:
@@ -166,8 +198,7 @@ class HttpTransport:
             cur = start + len(buf)
             retry_after = None
             try:
-                resp = self._session().get(url, headers=self._headers({"Range": f"bytes={cur}-{want_end}"}),
-                                           stream=True, timeout=self.timeout, allow_redirects=True)
+                resp = self._follow("GET", url, self._headers({"Range": f"bytes={cur}-{want_end}"}), stream=True, timeout=self.timeout)
                 code = resp.status_code
                 if code == 206:
                     cr = resp.headers.get("Content-Range", "")
@@ -246,7 +277,7 @@ class HttpTransport:
         while True:
             retry_after = None
             try:
-                resp = self._session().get(url, headers=self._headers(), timeout=self.timeout, allow_redirects=True)
+                resp = self._follow("GET", url, self._headers(), timeout=self.timeout)
                 code = resp.status_code
                 if code == 200:
                     return resp.content

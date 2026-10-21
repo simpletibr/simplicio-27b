@@ -114,6 +114,7 @@ class FakeHub:
         self.truncate_once: Dict[str, int] = {}    # key -> send only N bytes of the body once, then drop the connection
         self.ignore_range: set = set()             # keys served with 200 and the full body
         self.redirect: set = set()                 # keys served through a 302 to /cdn/<key>
+        self.redirect_base: str = ""               # where that 302 points: "" = this server; another server's base_url (or localhost vs 127.0.0.1) = another origin
         self.auth_seen: List[str] = []
         self.linked_etag: Dict[str, str] = {}      # key -> the sha256 the Hub states in x-linked-etag for that file (HEAD only)
         self.heads: List[str] = []                 # keys that were asked with HEAD
@@ -150,7 +151,7 @@ class FakeHub:
                         hub.fail_first[key] = n - 1
                         return self._send(503, b"busy")
                 if key in hub.redirect and not via_cdn:
-                    return self._send(302, b"", extra={"Location": f"/cdn/{key}"})
+                    return self._send(302, b"", extra={"Location": f"{hub.redirect_base}/cdn/{key}"})
                 data = hub.files[key]
                 rng = self.headers.get("Range")
                 if rng and key not in hub.ignore_range:

@@ -154,6 +154,66 @@ class RemoteFlow(HermeticTestCase):
             remote.HubRepo("org/model", endpoint=endpoint, token="tok")
         remote.HubRepo("org/model", endpoint="http://example.com")                      # nothing secret to leak without a token
 
+    def second_origin(self):
+        """A second server holding the same files, reached as `localhost` while the first is `127.0.0.1`: another origin, as a CDN is."""
+        cdn = FakeHub()
+        cdn.files = self.hub.files
+        cdn.__enter__()
+        self.addCleanup(cdn.__exit__, None, None, None)
+        self.hub.redirect_base = f"http://localhost:{cdn.server.server_address[1]}"
+        return cdn
+
+    def test_the_token_does_not_follow_a_redirect_to_another_origin(self):
+        cdn = self.second_origin()
+        self.hub.redirect.add("org/model/model.safetensors")
+        self.hub.require_token = "tok"
+        r = remote.HubRepo("org/model", endpoint=self.hub.base_url, token="tok", sleep=lambda s: None)
+        name = "language_model.embed_tokens.weight"
+        self.assertEqual(self.raw(r, name), self.tensors[name][2])                     # the Range request was carried to the other origin
+        self.assertIn("Bearer tok", self.hub.auth_seen)
+        self.assertGreater(len(cdn.auth_seen), 0)                                       # the bytes did come from the second server
+        self.assertEqual([a for a in cdn.auth_seen if a], [])                           # ...and it was never shown the token
+
+    def test_the_token_stays_on_a_redirect_inside_the_same_origin(self):
+        self.hub.redirect.add("org/model/model.safetensors")
+        r = remote.HubRepo("org/model", endpoint=self.hub.base_url, token="tok", sleep=lambda s: None)
+        self.hub.auth_seen.clear()
+        r.shard("model.safetensors")
+        self.assertEqual(set(self.hub.auth_seen), {"Bearer tok"})
+
+    def test_a_redirect_from_https_to_http_or_to_another_scheme_is_refused_and_loops_end(self):
+        class Reply:
+            def __init__(self, code, location=None):
+                self.status_code, self.headers = code, ({"Location": location} if location else {})
+
+            def close(self):
+                pass
+
+        class Session:
+            def __init__(self, replies):
+                self.replies, self.asked = list(replies), []
+
+            def request(self, method, url, **kw):
+                self.asked.append((url, kw["headers"].get("Authorization")))
+                return self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+
+        def transport(replies):
+            t = remote.HttpTransport(token="tok", sleep=lambda s: None)
+            t._session = lambda: Session(replies)
+            return t
+
+        for target in ("http://cdn.example/file", "ftp://cdn.example/file", "file:///etc/passwd"):
+            with self.subTest(target), self.assertRaisesRegex(remote.RemoteError, "refusing a redirect"):
+                transport([Reply(302, target)]).get("https://huggingface.co/x")
+        with self.assertRaisesRegex(remote.RemoteError, "too many redirects"):
+            transport([Reply(302, "https://huggingface.co/x")]).get("https://huggingface.co/x")
+        session = Session([Reply(302, "/other/path"), Reply(200)])
+        t = remote.HttpTransport(token="tok", sleep=lambda s: None)
+        t._session = lambda: session
+        reply = t._follow("GET", "https://huggingface.co/x", {"Authorization": "Bearer tok"})
+        self.assertEqual(reply.status_code, 200)
+        self.assertEqual(session.asked, [("https://huggingface.co/x", "Bearer tok"), ("https://huggingface.co/other/path", "Bearer tok")])
+
     def test_missing_file_and_unknown_tensor(self):
         r = self.repo()
         with self.assertRaisesRegex(remote.RemoteError, "404"):
@@ -776,6 +836,15 @@ class LoaderFlow(HermeticTestCase):
         self.assertIn(f"covers {total - 1} of {total}", message)
         self.assertIn(drop, message)
         self.assertIn("org/partial", message)
+
+    def test_a_donor_that_ships_its_own_readout_never_lends_it(self):
+        other = self.tm.head_weight(7)
+        self.assertGreater(float((other - self.head).abs().max()), 0.1)
+        self.tm.publish_backbone(self.hub, "org/donorhead", self.sd, shards=2, head=other, decision=True)
+        d = self.load(self.spec(donors=(("org/donorhead", 0.5),)))
+        want = self.head.to(self.torch.bfloat16).double()
+        self.assertLess(float((d.readout.weight.double() - want).abs().max()), 1e-6)         # the anchor's head, not a mix, not the donor's
+        self.assertGreater(float((d.readout.weight.double() - other.to(self.torch.bfloat16).double()).abs().max()), 0.1)
 
     def test_a_donor_without_a_tensor_leaves_the_anchor_value_when_partial_donors_are_allowed(self):
         drop = self.publish_partial()

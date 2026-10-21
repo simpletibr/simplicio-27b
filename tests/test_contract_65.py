@@ -1042,6 +1042,47 @@ class StateContract(HermeticTestCase):
         st.save()
         self.assertEqual(self.open().rows("eval:anchor"), st.rows("eval:anchor"))
 
+    def test_a_write_that_fails_halfway_leaves_the_previous_state_intact(self):
+        import builtins
+        from unittest import mock
+
+        st = self.open()
+        st.run_stage("a", lambda: 1)
+        path = self.dir / "w" / "state.json"
+        before = path.read_text(encoding="utf-8")
+        real_open = builtins.open
+
+        class Dying:                                  # writes half of the text, then the disk is full
+            def __init__(self, handle):
+                self.handle = handle
+
+            def write(self, text):
+                self.handle.write(text[: len(text) // 2])
+                self.handle.flush()
+                raise OSError(28, "No space left on device")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.handle.close()
+                return False
+
+            def __getattr__(self, name):
+                return getattr(self.handle, name)
+
+        def open_that_dies(file, mode="r", *args, **kwargs):
+            handle = real_open(file, mode, *args, **kwargs)
+            return Dying(handle) if "w" in mode and str(file).endswith(("state.json", "state.json.tmp")) else handle
+
+        st.mark_row("s", "k")
+        with mock.patch.object(self.S, "open", open_that_dies, create=True), self.assertRaises(OSError):
+            st.save()
+        self.assertEqual(path.read_text(encoding="utf-8"), before)                   # not truncated, not half-written
+        again = self.open()
+        self.assertTrue(again.is_done("a"))
+        self.assertFalse(again.row_done("s", "k"))                                    # the row that was not saved is redone, nothing else is lost
+
     def test_a_truncated_state_file_is_moved_aside_and_the_store_copy_is_used(self):
         store = self.S.MemoryStore()
         st = self.open(store)
