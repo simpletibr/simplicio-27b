@@ -1,6 +1,6 @@
 """The interface the rest of the project calls: load a model, run requests, score them, fit a temperature.
 
-    engine = load_engine(spec_for(cfg, "ta_l0.25"), quant="nf4", tta_rotations=2)
+    engine = load_engine(spec_for(cfg, "ta_l0.25"), quant="nf4")                        # option-order views: the config's tta.rotations
     info   = run_requests(engine, "requests.jsonl", "work/run", budget=budget)       # per-row probabilities, resumable
     scores = score("work/run", subset_manifest="work/sample")                        # the kit's own scorer, on a sample
     fit    = fit_temperature("work/run/results.parquet")                             # per question type, holdout by request
@@ -312,7 +312,7 @@ def attach_fast(decider: Any, *, fp8: bool = False) -> None:
         raise ApiError(f"the fast path could not start: {exc}") from exc
 
 
-def load_engine(spec: Mapping[str, Any], *, quant: Optional[str] = None, device: Any = "auto", tta_rotations: int = 1,
+def load_engine(spec: Mapping[str, Any], *, quant: Optional[str] = None, device: Any = "auto", tta_rotations: Optional[int] = None,
                 tta_mode: Optional[str] = None, temperature: Optional[float] = None, temperatures: Optional[Mapping[str, float]] = None,
                 cfg: Optional[Mapping[str, Any]] = None, hardware: Optional[env.Hardware] = None, allow_cpu_offload: bool = False,
                 name: Optional[str] = None, token: Optional[str] = None, progress: Optional[Callable[[int, int, str], None]] = None,
@@ -321,7 +321,8 @@ def load_engine(spec: Mapping[str, Any], *, quant: Optional[str] = None, device:
     """A kit-compatible engine (`engine(state, questions) -> (response, raw)`, plus `batch`) for the model `spec` describes.
 
     `quant` is nf4 | fp16 | bf16 | none (default: the config's `eval.quant`); `tta_rotations` is the number of option orders
-    averaged per choice question; `temperatures` maps a question type (or `type:k-bucket`, or `default`) to the divisor
+    averaged per choice question (default: the config's `tta.rotations`, so an engine and a plan made from the same config agree;
+    0 or 1 mean a single view); `temperatures` maps a question type (or `type:k-bucket`, or `default`) to the divisor
     used instead of the model's own.  `fast`/`fp8` attach pplx-decider's packed path: `fp8` changes the probabilities
     (the evaluated model is no longer the published one) and is recorded as such in the engine's provenance.
     `factories` (repo, processor, tokenizer) are test hooks.  Other keyword arguments override `LoadOptions` fields.
@@ -357,7 +358,8 @@ def load_engine(spec: Mapping[str, Any], *, quant: Optional[str] = None, device:
     provenance = loader.describe(spec, options)
     provenance["fast"] = {"enabled": bool(fast), "fp8": bool(fp8), "changes_the_model": bool(fp8)}
     types = tuple(question_types) if question_types else engine_mod.SUPPORTED_TYPES
-    return engine_mod.DecisionEngine(decider, tta_rotations=tta_rotations, tta_mode=tta_mode or cfg["tta"].get("mode", "reverse"),
+    rotations = cfg["tta"].get("rotations", 1) if tta_rotations is None else tta_rotations
+    return engine_mod.DecisionEngine(decider, tta_rotations=rotations, tta_mode=tta_mode or cfg["tta"].get("mode", "reverse"),
                                      temperature=temperature, temperatures=temperatures, provenance=provenance,
                                      name=name or spec.get("name") or "simplicio-decide", question_types=types)
 

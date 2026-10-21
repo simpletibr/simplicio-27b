@@ -199,7 +199,19 @@ class ApiFlow(HermeticTestCase):
         spec = name if isinstance(name, dict) else api.spec_for(cfg, name)
         kw.setdefault("quant", "none")
         kw.setdefault("device", "cpu")
+        kw.setdefault("tta_rotations", 1)                         # the tests below count on one view unless they ask for more
         return api.load_engine(spec, cfg=cfg, factories=self.factories, **kw)
+
+    def test_the_number_of_views_follows_the_config_unless_the_caller_says_otherwise(self):
+        spec = api.spec_for(self.cfg(), "anchor")
+        for cfg, passed, want in ((self.cfg(), None, 2),                                # the shipped config: tta.rotations is 2
+                                  (self.cfg(tta={"rotations": 3}), None, 3),
+                                  (self.cfg(tta={"rotations": 0}), None, 1),            # 0 means no TTA, which is one view
+                                  (self.cfg(), 1, 1), (self.cfg(), 4, 4), (self.cfg(tta={"rotations": 3}), 1, 1)):
+            with self.subTest(config=cfg["tta"]["rotations"], passed=passed):
+                kw = {} if passed is None else {"tta_rotations": passed}
+                eng = api.load_engine(spec, cfg=cfg, factories=self.factories, quant="none", device="cpu", **kw)
+                self.assertEqual(eng.views, want)
 
     def dense(self, state):
         return self.tm.dense_decider(state, self.reference_head)
