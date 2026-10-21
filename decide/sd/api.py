@@ -52,6 +52,12 @@ def _repo(value: Any, what: str) -> str:
     return value.strip()
 
 
+def _revision(value: Any, what: str) -> str:
+    if not C.is_revision(value):
+        raise ApiError(f"{what} must be a full 40-hex commit hash, got {value!r}: a branch moves, so the weights could change between two reads")
+    return value
+
+
 def _checked_part(raw: Any, what: str, forbid: bool) -> Optional[Dict[str, Any]]:
     """One donor or the LoRA: {repo, weight, revision}; None when its weight is zero (nothing to read)."""
     if not isinstance(raw, Mapping):
@@ -70,7 +76,7 @@ def _checked_part(raw: Any, what: str, forbid: bool) -> Optional[Dict[str, Any]]
         raise ApiError(f"donor {repo} is not allowed (license or incompatible readout; see fase0b)")
     if weight == 0:
         return None
-    return {"repo": repo, "weight": weight, "revision": raw.get("revision")}
+    return {"repo": repo, "weight": weight, "revision": _revision(raw.get("revision"), f"{what} ({repo}): revision")}
 
 
 def normalize_spec(spec: Any, cfg: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
@@ -125,16 +131,17 @@ def normalize_spec(spec: Any, cfg: Optional[Mapping[str, Any]] = None) -> Dict[s
     if reference == "base":
         given = spec.get("base")
         if given:
-            base = {"repo": _repo(given.get("repo") if isinstance(given, Mapping) else None, "spec.base.repo"), "revision": given.get("revision")}
+            base_repo = _repo(given.get("repo") if isinstance(given, Mapping) else None, "spec.base.repo")
+            base = {"repo": base_repo, "revision": _revision(given.get("revision"), f"spec.base ({base_repo}): revision")}
         elif cfg is not None and (cfg.get("models") or {}).get("base"):
             entry = cfg["models"]["base"]
-            base = {"repo": entry["repo"], "revision": entry.get("revision")}
+            base = {"repo": entry["repo"], "revision": _revision(entry.get("revision"), f"models.base ({entry['repo']}): revision")}
         else:
             raise ApiError("spec.reference is 'base' but there is no base: pass spec.base or a config with models.base")
     name = spec.get("name")
     if name is not None and not isinstance(name, str):
         raise ApiError("spec.name must be text")
-    return {"anchor": anchor, "anchor_revision": spec.get("anchor_revision"), "donors": donors, "lora": lora, "method": method,
+    return {"anchor": anchor, "anchor_revision": _revision(spec.get("anchor_revision"), f"spec.anchor_revision ({anchor})"), "donors": donors, "lora": lora, "method": method,
             "density": density, "protocol": protocol, "reference": reference, "base": base, "name": name}
 
 

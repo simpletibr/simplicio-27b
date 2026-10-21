@@ -17,6 +17,9 @@ from decide.sd import api, env, remote
 from decide.sd import config as C
 
 
+A, D, L, X = "a" * 40, "b" * 40, "c" * 40, "d" * 40         # commit hashes of the repos of these tests (the fake Hub ignores the revision in the URL)
+
+
 def make_cfg(**overrides):
     return C.load_config(C.DEFAULT_PATH, overrides=overrides or None)
 
@@ -183,10 +186,11 @@ class ApiFlow(HermeticTestCase):
 
     def cfg(self, **over):
         base = {"hub": {"endpoint": self.hub.base_url},
-                "models": {"anchor": {"repo": "org/anchor"},
-                           "donors": [{"name": "d3", "repo": "org/donor", "weight": 1.0, "enabled": True, "revision": None}],
-                           "lora": {"repo": "org/lora", "weight": 0.1, "weight_grid": [0.1], "enabled": True},
-                           "rehearsal": {"d3_mini": {"repo": "org/d3x", "protocol": "d3"}}, "d3": {"repo": "org/d3x", "protocol": "d3"}}}
+                "models": {"anchor": {"repo": "org/anchor", "revision": A},
+                           "donors": [{"name": "d3", "repo": "org/donor", "weight": 1.0, "enabled": True, "revision": D}],
+                           "lora": {"repo": "org/lora", "revision": L, "weight": 0.1, "weight_grid": [0.1], "enabled": True},
+                           "rehearsal": {"d3_mini": {"repo": "org/d3x", "revision": X, "protocol": "d3"}, "pplx_flash": {"repo": "org/flash", "revision": X}},
+                           "d3": {"repo": "org/d3x", "revision": X, "protocol": "d3"}}}
         C._merge(base, over)
         return make_cfg(**base)
 
@@ -242,7 +246,8 @@ class ApiFlow(HermeticTestCase):
         secret = "hf_" + "a1b2c3d4e5f6a7b8c9d0"
         eng = self.engine("ta_l0.5", tta_rotations=2, temperatures={"choice": 1.7})
         text = json.dumps(eng.provenance)
-        self.assertEqual(eng.provenance["spec"]["donors"], [{"repo": "org/donor", "weight": 0.5, "revision": None}])
+        self.assertEqual(eng.provenance["spec"]["donors"], [{"repo": "org/donor", "weight": 0.5, "revision": D}])
+        self.assertEqual(eng.provenance["spec"]["anchor_revision"], A)                  # the commit that was read, not "main"
         self.assertEqual(eng.provenance["options"]["quant"], "none")
         self.assertEqual(eng.provenance["fast"], {"enabled": False, "fp8": False, "changes_the_model": False})
         self.assertEqual(eng.provenance["tta"], {"views": 2, "mode": "reverse"})
@@ -268,7 +273,7 @@ class ApiFlow(HermeticTestCase):
 
     def test_a_donor_that_may_not_ship_is_refused_before_anything_is_downloaded(self):
         with self.assertRaisesRegex(api.ApiError, "not allowed"):
-            api.load_engine({"anchor": "org/anchor", "donors": [{"repo": "x/lychee-27b", "weight": 1.0}]}, cfg=self.cfg(),
+            api.load_engine({"anchor": "org/anchor", "anchor_revision": A, "donors": [{"repo": "x/lychee-27b", "weight": 1.0, "revision": D}]}, cfg=self.cfg(),
                             factories=self.factories, quant="none", device="cpu")
         self.assertEqual(self.hub.log, [])
 

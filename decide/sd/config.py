@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, List, Mapping, Optional, Tuple
 
 import yaml
 
@@ -18,6 +19,7 @@ TTA_MODES = ("reverse", "rotate")
 PROTOCOLS = ("pplx_joint", "d3")        # pplx_joint: the joint prompt we ship; d3: one question per sequence (fidelity only)
 # fase0b: Lychee is CC BY-NC (cannot ship), amos has no compatible readout head; neither may be a donor.
 FORBIDDEN_DONORS = ("lychee", "amos")
+REVISION = re.compile(r"[0-9a-f]{40}")      # a Hub revision is a full commit hash: a branch ("main") moves under a sweep that takes days
 
 
 class Cfg(dict):
@@ -80,6 +82,32 @@ class ConfigError(ValueError):
     pass
 
 
+def is_revision(value: Any) -> bool:
+    """True for a full lowercase 40-hex commit hash, the only kind of revision this kit reads."""
+    return isinstance(value, str) and REVISION.fullmatch(value) is not None
+
+
+def model_entries(models: Mapping) -> List[Tuple[str, Mapping]]:
+    """Every model repo the `models` section names, as `(label, entry)`: base, anchor, lora, d3, each donor, each rehearsal model."""
+    out: List[Tuple[str, Mapping]] = []
+    for key in ("base", "anchor", "lora", "d3"):
+        if isinstance(models.get(key), Mapping):
+            out.append((f"models.{key}", models[key]))
+    for i, donor in enumerate(models.get("donors") or []):
+        if isinstance(donor, Mapping):
+            out.append((f"models.donors[{donor.get('name', i)}]", donor))
+    for key, entry in (models.get("rehearsal") or {}).items():
+        if isinstance(entry, Mapping):
+            out.append((f"models.rehearsal.{key}", entry))
+    return out
+
+
+def dataset_entries(raw: Mapping) -> List[Tuple[str, Mapping]]:
+    """The published result datasets the fidelity check compares against, as `(label, entry)`."""
+    published = (raw.get("fidelity") or {}).get("published") or {}
+    return [(f"fidelity.published.{key}", entry) for key, entry in published.items() if isinstance(entry, Mapping)]
+
+
 def validate(raw: Mapping) -> None:
     def need(cond: bool, msg: str) -> None:
         if not cond:
@@ -103,6 +131,13 @@ def validate(raw: Mapping) -> None:
         need(not (d.get("enabled", True) and any(f in tag for f in FORBIDDEN_DONORS)),
              f"donor {d.get('name')!r} is not allowed (license or incompatible readout; see fase0b)")
     need("repo" in raw["models"].get("anchor", {}), "models.anchor.repo is required")
+    for label, entry in model_entries(raw["models"]):
+        need(is_revision(entry.get("revision")),
+             f"{label}.revision must be a full 40-hex commit hash, got {entry.get('revision')!r}: a branch moves between sessions, "
+             "so no number of a sweep would belong to one set of weights")
+    for label, entry in dataset_entries(raw):
+        need(is_revision(entry.get("revision")), f"{label}.revision must be a full 40-hex commit hash, got {entry.get('revision')!r}: "
+                                                 "the rows it is compared with must not change under the check")
     lora = raw["models"].get("lora") or {}
     need(lora.get("weight", 0) >= 0, "lora.weight must be >= 0")
     e = raw["eval"]

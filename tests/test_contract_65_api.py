@@ -13,6 +13,9 @@ from decide.sd import api, env
 from decide.sd import config as C
 
 
+A, D, E, L, B = ("a" * 40, "b" * 40, "e" * 40, "c" * 40, "d" * 40)       # commit hashes for the repos of these tests
+
+
 def make_cfg(**overrides):
     """The shipped config, read alone (no overlays from other squads), with `overrides` deep-merged on top."""
     return C.load_config(C.DEFAULT_PATH, overrides=overrides or None)
@@ -25,29 +28,45 @@ def hardware(*gpus_gb, ram=29.0):
 
 class NormalizeSpecContract(HermeticTestCase):
     def test_a_bare_anchor_gets_every_default(self):
-        spec = api.normalize_spec({"anchor": "org/a"})
-        self.assertEqual(spec, {"anchor": "org/a", "anchor_revision": None, "donors": [], "lora": None, "method": "anchor",
+        spec = api.normalize_spec({"anchor": "org/a", "anchor_revision": A})
+        self.assertEqual(spec, {"anchor": "org/a", "anchor_revision": A, "donors": [], "lora": None, "method": "anchor",
                                 "density": None, "protocol": "pplx_joint", "reference": "anchor", "base": None, "name": None})
 
+    def test_a_revision_must_be_a_full_commit_hash_everywhere_a_repo_is_named(self):
+        good = {"anchor": "org/a", "anchor_revision": "a" * 40, "donors": [{"repo": "org/d", "weight": 0.5, "revision": "b" * 40}],
+                "lora": {"repo": "org/l", "weight": 0.1, "revision": "c" * 40}}
+        api.normalize_spec(good)
+        for where, make in (("anchor_revision", lambda bad: {**good, "anchor_revision": bad}),
+                            ("donor", lambda bad: {**good, "donors": [{"repo": "org/d", "weight": 0.5, "revision": bad}]}),
+                            ("lora", lambda bad: {**good, "lora": {"repo": "org/l", "weight": 0.1, "revision": bad}}),
+                            ("base", lambda bad: {**good, "reference": "base", "base": {"repo": "org/b", "revision": bad}})):
+            for bad in ("main", None, "", "abc123", "A" * 40, "z" * 40):
+                with self.subTest(f"{where}: {bad!r}"), self.assertRaisesRegex(api.ApiError, "revision"):
+                    api.normalize_spec(make(bad))
+
+    def test_a_zero_weight_part_is_dropped_before_its_revision_matters(self):
+        spec = api.normalize_spec({"anchor": "org/a", "anchor_revision": "a" * 40, "donors": [{"repo": "org/d", "weight": 0}], "lora": {"repo": "org/l", "weight": 0}})
+        self.assertEqual((spec["donors"], spec["lora"]), ([], None))
+
     def test_the_input_is_not_mutated(self):
-        raw = {"anchor": "org/a", "donors": [{"repo": "org/d", "weight": 0.5}], "lora": {"repo": "org/l", "weight": 0.1}}
+        raw = {"anchor": "org/a", "anchor_revision": A, "donors": [{"repo": "org/d", "weight": 0.5, "revision": D}], "lora": {"repo": "org/l", "weight": 0.1, "revision": L}}
         before = copy.deepcopy(raw)
         api.normalize_spec(raw)
         self.assertEqual(raw, before)
 
     def test_donors_and_lora_are_carried_with_their_weights(self):
-        spec = api.normalize_spec({"anchor": "org/a", "donors": [{"repo": "org/d", "weight": 0.5, "revision": "abc"}, {"repo": "org/e", "weight": 0.25}],
-                                   "lora": {"repo": "org/l", "weight": 0.1}})
-        self.assertEqual(spec["donors"], [{"repo": "org/d", "weight": 0.5, "revision": "abc"}, {"repo": "org/e", "weight": 0.25, "revision": None}])
-        self.assertEqual(spec["lora"], {"repo": "org/l", "weight": 0.1, "revision": None})
+        spec = api.normalize_spec({"anchor": "org/a", "anchor_revision": A, "donors": [{"repo": "org/d", "weight": 0.5, "revision": D}, {"repo": "org/e", "weight": 0.25, "revision": E}],
+                                   "lora": {"repo": "org/l", "weight": 0.1, "revision": L}})
+        self.assertEqual(spec["donors"], [{"repo": "org/d", "weight": 0.5, "revision": D}, {"repo": "org/e", "weight": 0.25, "revision": E}])
+        self.assertEqual(spec["lora"], {"repo": "org/l", "weight": 0.1, "revision": L})
         self.assertEqual(spec["method"], "task_arithmetic")
 
     def test_donors_with_weight_zero_are_dropped_and_nothing_left_means_the_anchor_alone(self):
-        spec = api.normalize_spec({"anchor": "org/a", "donors": [{"repo": "org/d", "weight": 0}], "lora": {"repo": "org/l", "weight": 0}, "method": "ties"})
+        spec = api.normalize_spec({"anchor": "org/a", "anchor_revision": A, "donors": [{"repo": "org/d", "weight": 0}], "lora": {"repo": "org/l", "weight": 0}, "method": "ties"})
         self.assertEqual((spec["donors"], spec["lora"], spec["method"], spec["density"]), ([], None, "anchor", None))
 
     def test_ties_gets_a_density(self):
-        base = {"anchor": "org/a", "donors": [{"repo": "org/d", "weight": 1.0}], "method": "ties"}
+        base = {"anchor": "org/a", "anchor_revision": A, "donors": [{"repo": "org/d", "weight": 1.0, "revision": D}], "method": "ties"}
         self.assertEqual(api.normalize_spec(base)["density"], 0.5)
         self.assertEqual(api.normalize_spec({**base, "density": 0.2})["density"], 0.2)
         for bad in (0, 0.0, -0.1, 1.5, "half"):
@@ -55,7 +74,7 @@ class NormalizeSpecContract(HermeticTestCase):
                 api.normalize_spec({**base, "density": bad})
 
     def test_task_arithmetic_does_not_carry_a_density(self):
-        spec = api.normalize_spec({"anchor": "org/a", "donors": [{"repo": "org/d", "weight": 1.0}], "density": 0.3})
+        spec = api.normalize_spec({"anchor": "org/a", "anchor_revision": A, "donors": [{"repo": "org/d", "weight": 1.0, "revision": D}], "density": 0.3})
         self.assertIsNone(spec["density"])
 
     def test_typos_are_errors_that_name_the_key(self):
@@ -73,7 +92,7 @@ class NormalizeSpecContract(HermeticTestCase):
             ({"donors": [{"repo": "org/d"}]}, "weight"),
             ({"donors": [{"repo": "org/d", "weight": -1}]}, "weight"),
             ({"donors": [{"repo": "org/d", "weight": "x"}]}, "weight"),
-            ({"donors": [{"repo": "org/d", "weight": 1}, {"repo": "org/d", "weight": 2}]}, "twice"),
+            ({"donors": [{"repo": "org/d", "weight": 1, "revision": D}, {"repo": "org/d", "weight": 2, "revision": D}]}, "twice"),
             ({"donors": "org/d"}, "donors"),
             ({"lora": {"weight": 0.1}}, "repo"),
             ({"lora": {"repo": "org/l"}}, "weight"),
@@ -84,24 +103,24 @@ class NormalizeSpecContract(HermeticTestCase):
         )
         for extra, word in cases:
             with self.subTest(extra), self.assertRaisesRegex(api.ApiError, word):
-                api.normalize_spec({"anchor": "org/a", **extra})
+                api.normalize_spec({"anchor": "org/a", "anchor_revision": A, **extra})
 
     def test_licence_and_head_exclusions_apply_to_hand_written_specs_too(self):
         for repo in ("someone/Lychee-27B", "someone/amos-decider"):
             with self.subTest(repo), self.assertRaisesRegex(api.ApiError, "not allowed"):
-                api.normalize_spec({"anchor": "org/a", "donors": [{"repo": repo, "weight": 1.0}]})
+                api.normalize_spec({"anchor": "org/a", "anchor_revision": A, "donors": [{"repo": repo, "weight": 1.0, "revision": D}]})
 
     def test_reference_base_takes_the_base_from_the_config(self):
         cfg = make_cfg()
-        spec = api.normalize_spec({"anchor": "org/a", "reference": "base"}, cfg)
+        spec = api.normalize_spec({"anchor": "org/a", "anchor_revision": A, "reference": "base"}, cfg)
         self.assertEqual(spec["base"], {"repo": cfg.models.base.repo, "revision": cfg.models.base.revision})
-        own = api.normalize_spec({"anchor": "org/a", "reference": "base", "base": {"repo": "org/b", "revision": "r1"}}, cfg)
-        self.assertEqual(own["base"], {"repo": "org/b", "revision": "r1"})
+        own = api.normalize_spec({"anchor": "org/a", "anchor_revision": A, "reference": "base", "base": {"repo": "org/b", "revision": B}}, cfg)
+        self.assertEqual(own["base"], {"repo": "org/b", "revision": B})
         with self.assertRaisesRegex(api.ApiError, "base"):
-            api.normalize_spec({"anchor": "org/a", "reference": "base"})                # no config, no base
+            api.normalize_spec({"anchor": "org/a", "anchor_revision": A, "reference": "base"})                # no config, no base
 
     def test_a_normalised_spec_is_stable(self):
-        once = api.normalize_spec({"anchor": "org/a", "donors": [{"repo": "org/d", "weight": 1}], "lora": {"repo": "org/l", "weight": 0.1}})
+        once = api.normalize_spec({"anchor": "org/a", "anchor_revision": A, "donors": [{"repo": "org/d", "weight": 1, "revision": D}], "lora": {"repo": "org/l", "weight": 0.1, "revision": L}})
         self.assertEqual(api.normalize_spec(once), once)
 
 
@@ -119,8 +138,8 @@ class SpecForContract(HermeticTestCase):
         self.assertEqual((spec["method"], spec["lora"]), ("task_arithmetic", None))
 
     def test_two_donors_split_lambda_in_proportion_to_their_weights(self):
-        donors = [{"name": "d3", "repo": "vllm-sr/d3", "weight": 1.0, "enabled": True, "revision": None},
-                  {"name": "d3-turbo", "repo": "vllm-sr/d3-turbo", "weight": 0.5, "enabled": True, "revision": None}]
+        donors = [{"name": "d3", "repo": "vllm-sr/d3", "weight": 1.0, "enabled": True, "revision": D},
+                  {"name": "d3-turbo", "repo": "vllm-sr/d3-turbo", "weight": 0.5, "enabled": True, "revision": E}]
         cfg = make_cfg(models={"donors": donors}, merge={"max_candidates": 8})
         weights = {d["repo"]: d["weight"] for d in api.spec_for(cfg, "ta_l0.5")["donors"]}
         self.assertAlmostEqual(weights["vllm-sr/d3"], 0.5 * 1.0 / 1.5, places=9)
@@ -129,7 +148,7 @@ class SpecForContract(HermeticTestCase):
     def test_lora_candidates_carry_the_adapter_and_its_weight(self):
         cfg = make_cfg()
         spec = api.spec_for(cfg, "anchor+lora0.1")
-        self.assertEqual(spec["lora"], {"repo": cfg.models.lora.repo, "weight": 0.1, "revision": None})
+        self.assertEqual(spec["lora"], {"repo": cfg.models.lora.repo, "weight": 0.1, "revision": cfg.models.lora.revision})
         self.assertEqual(spec["donors"], [])
 
     def test_a_merge_plus_lora_name_works_for_any_weight(self):

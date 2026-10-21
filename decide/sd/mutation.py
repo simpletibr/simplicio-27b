@@ -5,7 +5,7 @@ merge math, the option-order inverse mapping, the temperature fit, the engine wi
 meant to guard that code, and reports KILLED (some test failed) or SURVIVED (every test passed: a hole in the tests).
 
     python -m decide.sd.mutation                      # every mutation
-    python -m decide.sd.mutation --only tta           # one group (merge, tta, calibrate, engine, loader, remote, state, vendor)
+    python -m decide.sd.mutation --only tta           # one group (merge, tta, calibrate, engine, loader, config, api, remote)
     python -m decide.sd.mutation --id k-bucket-boundary --id ta-sign-flip      # chosen mutations (to re-check a survivor)
     python -m decide.sd.mutation --list
     python -m decide.sd.mutation --json evidence.json
@@ -41,7 +41,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 ROOT = Path(__file__).resolve().parents[2]
 COPIED = ("decide", "tests", "notebooks/decide/requirements.txt")
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache")
-GROUPS = ("merge", "tta", "calibrate", "engine", "loader")
+GROUPS = ("merge", "tta", "calibrate", "engine", "loader", "config", "api", "remote")
 
 
 @dataclass(frozen=True)
@@ -59,12 +59,18 @@ MERGE_TESTS = ("test_contract_65.MergeMathContract",)
 TTA_TESTS = ("test_contract_65.TtaContract", "test_flow_65.EngineFlow")
 CAL_TESTS = ("test_contract_65.CalibrateContract",)
 ENGINE_TESTS = ("test_flow_65.EngineFlow", "test_flow_65_api.EngineExtrasFlow")
+CONFIG_TESTS = ("test_contract_65.ConfigContract",)
+API_TESTS = ("test_contract_65_api.NormalizeSpecContract", "test_contract_65_api.SpecForContract")
+REMOTE_TESTS = ("test_flow_65.RemoteFlow",)
 
 M = "decide/sd/merge.py"
 T = "decide/sd/tta.py"
 C = "decide/sd/calibrate.py"
 E = "decide/sd/engine.py"
 L = "decide/sd/loader.py"
+CF = "decide/sd/config.py"
+AP = "decide/sd/api.py"
+R = "decide/sd/remote.py"
 
 MUTATIONS: Tuple[Mutation, ...] = (
     # ---- merge math: task arithmetic, TIES, LoRA delta, how they are combined
@@ -146,6 +152,25 @@ MUTATIONS: Tuple[Mutation, ...] = (
     Mutation("engine", "oom-condemns-the-whole-batch", E, "return [out for job in jobs for out in self._run_jobs([job])]",
              "return [exc for _job in jobs]", ("test_flow_65.EngineFlow", "test_flow_65_evaluate.EvaluateFlow"),
              "one request that runs out of memory alone makes every request of its batch unsupported for good"),
+
+    # ---- the weights must be the ones that were measured: pinned commits, and a file that is the size it says
+    Mutation("config", "config-accepts-a-moving-branch", CF, "return isinstance(value, str) and REVISION.fullmatch(value) is not None",
+             'return isinstance(value, str) and (value == "main" or REVISION.fullmatch(value) is not None)', CONFIG_TESTS,
+             "'main' passes as a revision, so a push to the Hub changes the weights under a running sweep"),
+    Mutation("config", "config-skips-the-rehearsal-pins", CF, 'for key, entry in (models.get("rehearsal") or {}).items():', "for key, entry in {}.items():",
+             CONFIG_TESTS, "a model reached through the rehearsal section escapes the pin check"),
+    Mutation("config", "config-skips-the-published-datasets", CF, "for label, entry in dataset_entries(raw):", "for label, entry in []:", CONFIG_TESTS,
+             "the rows the fidelity check compares with can change under it"),
+    Mutation("api", "spec-accepts-an-unpinned-anchor", AP, 'return {"anchor": anchor, "anchor_revision": _revision(spec.get("anchor_revision"), f"spec.anchor_revision ({anchor})"), "donors": donors,',
+             'return {"anchor": anchor, "anchor_revision": spec.get("anchor_revision"), "donors": donors,', API_TESTS, "a hand-written spec reads the anchor from a moving branch"),
+    Mutation("api", "spec-accepts-an-unpinned-donor", AP, '"revision": _revision(raw.get("revision"), f"{what} ({repo}): revision")}', '"revision": raw.get("revision")}',
+             API_TESTS, "a donor or the LoRA is read from a moving branch"),
+    Mutation("remote", "file-size-unchecked", R, "if total is not None and total != self.implied_size:", "if total is None and total != self.implied_size:", REMOTE_TESTS,
+             "a truncated or padded shard is read as if it were sound"),
+    Mutation("remote", "manifest-bytes-unchecked", R, "if sf.implied_size != entry[\"bytes\"]:", "if False and sf.implied_size != entry[\"bytes\"]:", REMOTE_TESTS,
+             "the size the publisher listed is not compared with the file"),
+    Mutation("remote", "manifest-sha256-unchecked", R, "if SHA256.fullmatch(tag) and tag != entry[\"sha256\"]:", "if SHA256.fullmatch(tag) and tag != tag:", REMOTE_TESTS,
+             "the sha256 the publisher listed is not compared with the one the Hub holds"),
 
     # ---- the loader: which tensors are merged with which weights
     Mutation("loader", "donor-weights-misaligned", L, "[weights[i] for i in plan.donors]", "[weights[i] for i in reversed(plan.donors)]",

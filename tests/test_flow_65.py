@@ -162,6 +162,69 @@ class RemoteFlow(HermeticTestCase):
             for name, (_d, _s, data) in self.tensors.items():
                 self.assertEqual(bytes(sf.read_raw(name)), data)
 
+    # ---- integrity: the size the server states, and the manifest the publisher ships
+    def test_a_file_longer_than_its_header_says_is_refused(self):
+        self.hub.add("org/padded", "model.safetensors", self.blob + b"\0" * 16)
+        with self.assertRaisesRegex(remote.RemoteError, "header describes"):
+            self.repo("org/padded").shard("model.safetensors")
+
+    def test_a_file_shorter_than_its_header_says_is_refused(self):
+        self.hub.add("org/cut", "model.safetensors", self.blob[:-64])
+        with self.assertRaisesRegex(remote.RemoteError, "header describes"):
+            self.repo("org/cut").shard("model.safetensors")
+
+    def test_a_sound_file_records_its_size(self):
+        sf = self.repo().shard("model.safetensors")
+        self.assertEqual((sf.size, sf.implied_size), (len(self.blob), len(self.blob)))
+
+    def signed(self, repo="org/signed", **changes):
+        """A repo whose release-manifest.json lists model.safetensors; the Hub states the listed sha256 unless `changes` say otherwise."""
+        import hashlib
+
+        digest = hashlib.sha256(self.blob).hexdigest()
+        entry = {"bytes": len(self.blob), "sha256": digest}
+        entry.update({k: v for k, v in changes.items() if k in entry})
+        self.hub.add(repo, "model.safetensors", self.blob)
+        self.hub.add(repo, "release-manifest.json", json.dumps({"repo_id": repo, "files": {"model.safetensors": entry}}).encode())
+        self.hub.linked_etag[f"{repo}/model.safetensors"] = changes.get("hub_sha", digest)
+        return self.repo(repo)
+
+    def test_a_shard_the_manifest_lists_opens_when_size_and_hub_sha256_agree(self):
+        repo = self.signed()
+        self.assertEqual(repo.shard("model.safetensors").size, len(self.blob))
+        self.assertIn("org/signed/model.safetensors", self.hub.heads)            # the sha256 was asked of the Hub, not computed from a download
+
+    def test_a_shard_whose_size_differs_from_the_manifest_is_refused(self):
+        with self.assertRaisesRegex(remote.RemoteError, "release-manifest.json lists"):
+            self.signed(**{"bytes": len(self.blob) + 8}).shard("model.safetensors")
+
+    def test_a_shard_whose_hub_sha256_differs_from_the_manifest_is_refused(self):
+        with self.assertRaisesRegex(remote.RemoteError, "the Hub holds sha256"):
+            self.signed(hub_sha="0" * 64).shard("model.safetensors")
+
+    def test_a_hub_that_does_not_state_a_sha256_leaves_the_size_check_alone(self):
+        repo = self.signed()
+        self.hub.linked_etag.clear()
+        self.assertEqual(repo.shard("model.safetensors").size, len(self.blob))
+
+    def test_a_malformed_manifest_is_an_error_not_a_pass(self):
+        for text in ('{"files": []}', '{"files": {"model.safetensors": {"bytes": "x", "sha256": "ab"}}}', "[]"):
+            with self.subTest(text):
+                self.hub.add("org/odd", "model.safetensors", self.blob)
+                self.hub.add("org/odd", "release-manifest.json", text.encode())
+                with self.assertRaisesRegex(remote.RemoteError, "release-manifest.json"):
+                    self.repo("org/odd").shard("model.safetensors")
+
+    def test_a_repo_without_a_manifest_is_read_as_before(self):
+        repo = self.repo()
+        self.assertIsNone(repo.manifest())
+        self.assertEqual(self.hub.heads, [])
+
+    def test_files_the_manifest_does_not_list_are_not_checked_against_it(self):
+        repo = self.signed()
+        self.hub.add("org/signed", "extra.safetensors", self.blob)
+        self.assertEqual(repo.shard("extra.safetensors").size, len(self.blob))
+
     def test_dtype_table_covers_safetensors_dtypes(self):
         for k in ("F64", "F32", "F16", "BF16", "I64", "I32", "I16", "I8", "U8", "BOOL"):
             self.assertIn(k, remote.DTYPE_SIZES)

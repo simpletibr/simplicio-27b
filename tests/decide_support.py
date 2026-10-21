@@ -115,6 +115,8 @@ class FakeHub:
         self.ignore_range: set = set()             # keys served with 200 and the full body
         self.redirect: set = set()                 # keys served through a 302 to /cdn/<key>
         self.auth_seen: List[str] = []
+        self.linked_etag: Dict[str, str] = {}      # key -> the sha256 the Hub states in x-linked-etag for that file (HEAD only)
+        self.heads: List[str] = []                 # keys that were asked with HEAD
         self.require_token: Optional[str] = None
         self._lock = threading.Lock()
         hub = self
@@ -167,6 +169,21 @@ class FakeHub:
                     return self._send(206, body, extra={"Content-Range": f"bytes {a}-{b}/{len(data)}"}, cut=cut)
                 hub.log.append((key, rng or "", len(data)))
                 return self._send(200, data)
+
+            def do_HEAD(self):
+                path, key, _via_cdn = self._lookup()
+                hub.auth_seen.append(self.headers.get("Authorization", ""))
+                hub.heads.append(key or path)
+                if key is None or key not in hub.files:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(hub.files[key])))
+                if key in hub.linked_etag:
+                    self.send_header("X-Linked-ETag", f'"{hub.linked_etag[key]}"')
+                self.end_headers()
 
             def _send(self, code, body, extra=None, cut=None):
                 self.send_response(code)

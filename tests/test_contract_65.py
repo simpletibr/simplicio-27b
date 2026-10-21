@@ -149,22 +149,80 @@ class ConfigContract(HermeticTestCase):
                 with self.assertRaises(C.ConfigError):
                     C.validate(r)
 
+    # the commits the Hub reported on 2026-10-21 (read-only API calls; the review measured the same values)
+    PINS = {
+        "models.base": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+        "models.anchor": "cce0f3f80033e9d89d80831d5281fd72124aacce",
+        "models.donors[d3]": "cf15549a78fc52598ddd1951f321c58372bbd64f",
+        "models.donors[d3-turbo]": "a0f3e9e59ebd1202fe1d4de1c4c0f9a986758cbb",
+        "models.lora": "3c725e4fa45ca857a91e3e77c0156c36edbf7052",
+        "models.rehearsal.pplx_flash": "9ff7cf9838e59df461c276b7699d56b244d2af58",
+        "models.rehearsal.d3_mini": "bd0090dd758d32ba59ef5c749910a8e87fc4391f",
+        "models.d3": "cf15549a78fc52598ddd1951f321c58372bbd64f",
+    }
+
+    def test_every_model_the_config_names_is_pinned_to_the_commit_that_was_measured(self):
+        entries = dict(C.model_entries(C.load_config().models))
+        self.assertEqual({k: v["revision"] for k, v in entries.items()}, self.PINS)
+
+    def test_no_repo_in_the_models_section_escapes_the_pin_check(self):
+        def walk(node):
+            if isinstance(node, dict):
+                if "repo" in node:
+                    yield node
+                for child in node.values():
+                    yield from walk(child)
+            elif isinstance(node, list):
+                for child in node:
+                    yield from walk(child)
+
+        raw = self.raw()
+        self.assertEqual(len(list(walk(raw["models"]))), len(C.model_entries(raw["models"])))
+
+    def test_a_revision_that_is_not_a_full_commit_hash_is_refused_for_every_model(self):
+        raw = self.raw()
+        for label, _entry in C.model_entries(raw["models"]):
+            for bad in ("main", "", "1d4bf0f", "A" * 40, "g" * 40, "a" * 41, 123, None, "refs/heads/main"):
+                with self.subTest(f"{label}: {bad!r}"):
+                    r = self.raw()
+                    dict(C.model_entries(r["models"]))[label]["revision"] = bad
+                    with self.assertRaisesRegex(C.ConfigError, "revision"):
+                        C.validate(r)
+            with self.subTest(f"{label}: missing"):
+                r = self.raw()
+                dict(C.model_entries(r["models"]))[label].pop("revision")
+                with self.assertRaisesRegex(C.ConfigError, "revision"):
+                    C.validate(r)
+
+    def test_the_published_result_datasets_are_pinned_too_and_a_moving_one_is_refused(self):
+        entries = dict(C.dataset_entries(self.raw()))
+        self.assertEqual({k: v["revision"] for k, v in entries.items()},
+                         {"fidelity.published.d3_mini": "5f7068bacba93972219f721eb3e2b09cb33caf91",
+                          "fidelity.published.d3": "0cfbfd61699fd4c614658d0112616cd5fea11a89"})
+        for label in entries:
+            for bad in ("main", None, "5f7068b"):
+                with self.subTest(f"{label}: {bad!r}"):
+                    r = self.raw()
+                    dict(C.dataset_entries(r))[label]["revision"] = bad
+                    with self.assertRaisesRegex(C.ConfigError, "revision"):
+                        C.validate(r)
+
     def test_license_and_readout_exclusions_cannot_be_enabled(self):
         for name, repo in (("lychee", "someone/Lychee-27B"), ("amos", "mukaddamzaid/amos-1-large")):
             with self.subTest(name):
                 r = self.raw()
-                r["models"]["donors"].append({"name": name, "repo": repo, "weight": 1.0, "enabled": True})
+                r["models"]["donors"].append({"name": name, "repo": repo, "weight": 1.0, "enabled": True, "revision": "4" * 40})
                 with self.assertRaisesRegex(C.ConfigError, "not allowed"):
                     C.validate(r)
         r = self.raw()
-        r["models"]["donors"].append({"name": "amos", "repo": "mukaddamzaid/amos-1-large", "weight": 1.0, "enabled": False})
+        r["models"]["donors"].append({"name": "amos", "repo": "mukaddamzaid/amos-1-large", "weight": 1.0, "enabled": False, "revision": "4" * 40})
         C.validate(r)      # present but disabled is tolerated
 
     def test_candidates_are_deterministic_and_normalised(self):
         cfg = C.load_config(overrides={"models": {"donors": [
-            {"name": "d3", "repo": "a/b", "weight": 3.0, "enabled": True},
-            {"name": "t", "repo": "a/c", "weight": 1.0, "enabled": True},
-            {"name": "off", "repo": "a/d", "weight": 9.0, "enabled": False},
+            {"name": "d3", "repo": "a/b", "weight": 3.0, "enabled": True, "revision": "1" * 40},
+            {"name": "t", "repo": "a/c", "weight": 1.0, "enabled": True, "revision": "2" * 40},
+            {"name": "off", "repo": "a/d", "weight": 9.0, "enabled": False, "revision": "3" * 40},
         ]}})
         cands = C.enumerate_candidates(cfg)
         self.assertEqual(cands, C.enumerate_candidates(cfg))

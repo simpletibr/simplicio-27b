@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import struct
 import threading
 import time
@@ -66,10 +67,18 @@ class TensorInfo(NamedTuple):
 class LocalTransport:
     """Transport over local files; `url` is a path."""
 
-    def fetch(self, url: str, start: int, end: int) -> bytearray:
+    def fetch_total(self, url: str, start: int, end: int) -> Tuple[bytearray, Optional[int]]:
         with open(url, "rb") as f:
             f.seek(start)
-            return bytearray(f.read(end - start + 1))
+            data = bytearray(f.read(end - start + 1))
+            f.seek(0, 2)
+            return data, f.tell()
+
+    def fetch(self, url: str, start: int, end: int) -> bytearray:
+        return self.fetch_total(url, start, end)[0]
+
+    def head(self, url: str) -> Dict[str, str]:
+        return {}
 
     def get(self, url: str) -> bytes:
         with open(url, "rb") as f:
@@ -128,10 +137,15 @@ class HttpTransport:
     # -- public
     def fetch(self, url: str, start: int, end: int) -> bytearray:
         """Bytes [start, end] inclusive.  A range running past EOF is clipped (Content-Range tells where)."""
+        return self.fetch_total(url, start, end)[0]
+
+    def fetch_total(self, url: str, start: int, end: int) -> Tuple[bytearray, Optional[int]]:
+        """`fetch`, plus the size of the whole file as the server states it in Content-Range (None when it does not say)."""
         if start < 0 or end < start:
             raise ValueError(f"bad range {start}-{end}")
         buf = bytearray()
         want_end = end
+        file_size: Optional[int] = None
         attempt = 0
         retryable = self._retryable_exceptions()
         while start + len(buf) <= want_end:
@@ -149,7 +163,8 @@ class HttpTransport:
                         if a != cur:
                             raise RemoteError(f"server answered range starting at {a}, wanted {cur} ({url})")
                         if total.isdigit():
-                            want_end = min(want_end, int(total) - 1)
+                            file_size = int(total)
+                            want_end = min(want_end, file_size - 1)
                     before = len(buf)
                     try:
                         for chunk in resp.iter_content(1 << 20):
@@ -180,7 +195,35 @@ class HttpTransport:
                 if attempt > self.max_retries:
                     raise RemoteError(f"{exc} for {url} after {self.max_retries} retries") from exc
                 self.sleep(self._delay(attempt - 1, retry_after))
-        return buf
+        return buf, file_size
+
+    def head(self, url: str) -> Dict[str, str]:
+        """The headers of the Hub's own answer to a HEAD (lowercase names; redirects are not followed, so the token goes to one origin only).
+
+        For a file stored with Git LFS or Xet the Hub states its sha256 here (`x-linked-etag`) without sending the file.
+        """
+        attempt = 0
+        retryable = self._retryable_exceptions()
+        while True:
+            retry_after = None
+            try:
+                resp = self._session().head(url, headers=self._headers(), timeout=self.timeout, allow_redirects=False)
+                code = resp.status_code
+                headers = {k.lower(): v for k, v in resp.headers.items()}
+                resp.close()
+                if code in (200, 301, 302, 303, 307, 308):
+                    return headers
+                retry_after = headers.get("retry-after")
+                if code in RETRY_STATUS:
+                    raise _Retry(f"HTTP {code}")
+                raise RemoteError(f"HTTP {code} for HEAD {url}")
+            except RemoteError:
+                raise
+            except (_Retry, *retryable) as exc:
+                attempt += 1
+                if attempt > self.max_retries:
+                    raise RemoteError(f"{exc} for HEAD {url} after {self.max_retries} retries") from exc
+                self.sleep(self._delay(attempt - 1, retry_after))
 
     def get(self, url: str) -> bytes:
         """Whole small file (config.json, index.json ...)."""
@@ -214,13 +257,22 @@ class _Retry(Exception):
 
 # --------------------------------------------------------------------------- safetensors over Range
 
+def _fetch_total(transport, url: str, start: int, end: int) -> Tuple[bytearray, Optional[int]]:
+    """`(bytes, size of the whole file or None)`; a transport without `fetch_total` cannot say how big the file is."""
+    method = getattr(transport, "fetch_total", None)
+    if method is None:
+        return transport.fetch(url, start, end), None
+    return method(url, start, end)
+
+
 class SafetensorsFile:
     """One safetensors file addressed by URL (or path, with LocalTransport)."""
 
     def __init__(self, url: str, transport, probe: int = 1 << 18) -> None:
         self.url = url
         self.transport = transport
-        first = bytes(transport.fetch(url, 0, probe - 1))
+        raw, total = _fetch_total(transport, url, 0, probe - 1)
+        first = bytes(raw)
         if len(first) < 8:
             raise RemoteError(f"{url}: file too short to be safetensors")
         (n,) = struct.unpack("<Q", first[:8])
@@ -238,6 +290,11 @@ class SafetensorsFile:
                 raise RemoteError(f"{url}: unsupported dtype {h['dtype']} for {name}")
             a, b = h["data_offsets"]
             self._info[name] = TensorInfo(h["dtype"], tuple(h["shape"]), base + a, base + b)
+        self.implied_size = max((i.end for i in self._info.values()), default=base)      # where the last tensor ends = the size of a sound file
+        self.size = total
+        if total is not None and total != self.implied_size:
+            raise RemoteError(f"{url}: the server says the file has {total} bytes but its header describes {self.implied_size}; "
+                              "the file is truncated, padded or replaced")
 
     def names(self) -> List[str]:
         return list(self._info)
@@ -320,6 +377,23 @@ class SafetensorsFile:
 
 # --------------------------------------------------------------------------- a repo
 
+MANIFEST_NAME = "release-manifest.json"
+SHA256 = re.compile(r"[0-9a-f]{64}")
+_UNSET = object()
+
+
+def _manifest_files(data: Any, where: str) -> Dict[str, Dict[str, Any]]:
+    files = data.get("files") if isinstance(data, dict) else None
+    if not isinstance(files, dict):
+        raise RemoteError(f"{where}: {MANIFEST_NAME} has no 'files' table")
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, entry in files.items():
+        size, digest = (entry.get("bytes"), str(entry.get("sha256", "")).lower()) if isinstance(entry, dict) else (None, "")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0 or not SHA256.fullmatch(digest):
+            raise RemoteError(f"{where}: {MANIFEST_NAME} entry {name!r} needs an integer 'bytes' and a 64-hex 'sha256'")
+        out[name] = {"bytes": size, "sha256": digest}
+    return out
+
 class HubRepo:
     """A model repo read through Range requests.  `endpoint` is overridable for tests."""
 
@@ -332,6 +406,7 @@ class HubRepo:
         self.transport = transport or HttpTransport(token=token, **transport_kw)
         self._shards: Dict[str, SafetensorsFile] = {}
         self._weight_map: Optional[Dict[str, str]] = None
+        self._manifest: Any = _UNSET
         self._lock = threading.RLock()
 
     def url(self, filename: str) -> str:
@@ -352,11 +427,43 @@ class HubRepo:
                 return False
             raise
 
+    def manifest(self) -> Optional[Dict[str, Dict[str, Any]]]:
+        """`{file: {"bytes": int, "sha256": str}}` from the repo's `release-manifest.json` (pplx-decider ships one); None when there is none."""
+        with self._lock:
+            if self._manifest is _UNSET:
+                try:
+                    data = self.read_json(MANIFEST_NAME)
+                except RemoteError as exc:
+                    if "404" not in str(exc):
+                        raise
+                    data = None
+                self._manifest = None if data is None else _manifest_files(data, f"{self.repo_id}@{self.revision}")
+            return self._manifest
+
+    def _verify(self, filename: str, sf: SafetensorsFile) -> None:
+        """A shard the repo's manifest lists must be the file it describes: same size, and the sha256 the Hub holds for it.
+
+        The sha256 comes from the Hub's `x-linked-etag` (a HEAD, nothing is downloaded), so this proves the Hub serves the file
+        the publisher listed; it does not re-hash the bytes we read.  A transport that cannot say (a local file, a server
+        without the header) leaves the size check as the only one.
+        """
+        entry = (self.manifest() or {}).get(filename)
+        if entry is None:
+            return
+        where = f"{self.repo_id}@{self.revision}/{filename}"
+        if sf.implied_size != entry["bytes"]:
+            raise RemoteError(f"{where}: {sf.implied_size} bytes, but {MANIFEST_NAME} lists {entry['bytes']}")
+        head = getattr(self.transport, "head", None)
+        tag = str((head(self.url(filename)) if head else {}).get("x-linked-etag", "")).strip().removeprefix("W/").strip('"').lower()
+        if SHA256.fullmatch(tag) and tag != entry["sha256"]:
+            raise RemoteError(f"{where}: the Hub holds sha256 {tag}, but {MANIFEST_NAME} lists {entry['sha256']}")
+
     def shard(self, filename: str) -> SafetensorsFile:
         with self._lock:
             sf = self._shards.get(filename)
             if sf is None:
                 sf = SafetensorsFile(self.url(filename), self.transport, self.probe)
+                self._verify(filename, sf)
                 self._shards[filename] = sf
             return sf
 
