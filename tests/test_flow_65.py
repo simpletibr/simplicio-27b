@@ -333,6 +333,11 @@ class RemoteFlow(HermeticTestCase):
             "userinfo on our own host": "https://user:pass@huggingface.co/x",
             "a backslash before the at sign": "https://cdn.example.com\\@huggingface.co/x",
             "a backslash inside the host": "https://huggingface.co\\.cdn.example.com/x",
+            "a full-width at sign, which urlsplit refuses to read": "https://cdn.example.com\uff20huggingface.co/x",
+            "an escaped at sign in the host": "https://cdn.example.com%40huggingface.co/x",
+            "a backslash host with no at sign": "\\\\cdn.example.com/x",
+            "a single backslash in a path": "/x\\y",
+            "a backslash after the scheme": "https:\\\\cdn.example.com/x",
             "a tab inside the host": "https://huggingface.co\t.cdn.example.com/x",
             "a line feed before the at sign": "https://cdn.example.com\n@huggingface.co/x",
             "a control character in the path": "/x\x01y",
@@ -417,6 +422,10 @@ class RemoteFlow(HermeticTestCase):
             "the same with a letter after the backslash": f"http://127.0.0.1:{b_port}\\x@127.0.0.1:{a_port}",
             "the other host as userinfo of ours": f"http://127.0.0.1:{a_port}@127.0.0.1:{b_port}",
             "userinfo naming the other host": f"http://user:pass@127.0.0.1:{b_port}",
+            "an escaped at sign in the host": f"http://127.0.0.1%40:{b_port}",
+            "an escaped backslash in the host": f"http://127.0.0.1%5C:{b_port}",
+            "an escaped NUL in the host": f"http://127.0.0.1%00:{b_port}",
+            "a port out of range": "http://127.0.0.1:99999",
         }
         for name, base in hostile.items():
             with self.subTest(name), self.assertRaisesRegex(remote.RemoteError, "refusing a redirect"):

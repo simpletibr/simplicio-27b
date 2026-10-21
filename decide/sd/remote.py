@@ -169,11 +169,16 @@ class HttpTransport:
 
         if any(ord(c) < 0x20 or ord(c) == 0x7F for c in where):
             raise refuse("the location has a control character in it")
-        target = urllib.parse.urljoin(url, where)
-        parts = urllib.parse.urlsplit(target)
+        try:
+            target = urllib.parse.urljoin(url, where)
+            parts = urllib.parse.urlsplit(target)
+        except ValueError as exc:                                # a full-width at sign, an unbalanced bracket: not a URL
+            raise refuse(f"the location is not a URL ({exc})") from None
         scheme, was = parts.scheme, urllib.parse.urlsplit(url).scheme
         if scheme not in ("http", "https") or (was == "https" and scheme == "http"):
             raise RemoteError(f"refusing a redirect from {url} to {target.split('?')[0]}: it must stay on https")
+        if "%" in parts.netloc:                                  # an escaped @, backslash or NUL in a host: a name no server has, read differently by every client
+            raise refuse("the host has a percent escape in it")
         if "@" in parts.netloc or "\\" in where:                      # user@host is read differently by different parsers: nobody gets to use it
             raise refuse("the location has credentials or a backslash in it")
         try:
@@ -204,7 +209,11 @@ class HttpTransport:
             sent = dict(headers)
             if self._origin(url) != first:
                 sent.pop("Authorization", None)
-            resp = self._session().request(method, url, headers=sent, allow_redirects=False, **kw)
+            try:
+                resp = self._session().request(method, url, headers=sent, allow_redirects=False, **kw)
+            except ValueError as exc:                            # `requests` also prepares the next request of a redirect it was told not to follow, and
+                raise RemoteError(f"refusing a redirect from {url.split('?')[0]!r}: no request can be built for its location "   # fails on a bad one (InvalidURL,
+                                  f"({type(exc).__name__}: {exc})") from exc                                                       # LocationParseError, a port out of range)
             if resp.status_code not in (301, 302, 303, 307, 308):
                 return resp
             where = resp.headers.get("Location")
