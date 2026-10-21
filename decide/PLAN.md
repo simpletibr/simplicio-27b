@@ -1,6 +1,6 @@
 # Simplicio-Decide-27B — plano para o #1 do Jev Decision Index
 
-Versão 1 · 2026-10-21 · dono: Wesley · planejamento: Claude (Opus) · execução: squads.
+Versão 2 · 2026-10-21 (após Fase 0A e 0A-bis) · dono: Wesley · planejamento: Claude (Opus) · execução: squads.
 Regra de evidência: só número medido. Projeção ou estimativa leva a marca **UNVERIFIED**.
 Épico: [#64](https://github.com/simpletibr/simplicio-27b/issues/64). Uma issue por fase, na tabela da seção 5.
 
@@ -18,11 +18,15 @@ Transformar o Simplicio-27B num modelo de decisão no estilo Jev: recebe um esta
 - Receita comum do top: head de 255 códigos, atenção não-causal nas camadas de full-attention, soft cross-entropy, temperatura de calibração e média de pesos.
 - Fase 0B: pplx-decider-v1.2, d3 e d3-turbo têm o mesmo layout de backbone (rev 1d4bf0f2). Dá para fundir só o backbone; head e prompt ficam os do pplx. Amos é incompatível; Lychee é CC BY-NC e fica fora.
 - A rodada pública completa tem ~292 milhões de tokens de entrada (contagem do Jev no board).
+- Fase 0A (média de pesos iguais, 8 modelos do top 10; o rescore do kit bateu com o board em até 0,004 nos 8): a média de {d3, d3-turbo, Amos} fica 2,77 pontos abaixo do d3-turbo. Média de pesos iguais não supera o melhor membro.
+- Fase 0A-bis (combinadores calibrados, ajustados numa metade das linhas públicas e medidos na outra): nenhum (temperatura + média, pool log-linear, pesos por tipo de pergunta, roteamento por confiança) supera o melhor membro Apache; o pool colapsa no d3-turbo (pesos 0,85 / 0 / 0,18). Só o teto com os 8 modelos, que inclui modelos CC BY-NC, ganha +0,55 [+0,22, +0,89].
+- Notas brutas públicas do board: os melhores decisores (StartLux, pplx v1.2, d3-turbo, mammoth) têm GPQA Diamond de 52,0 a 61,7 e HLE de 15,8 a 19,4. O card do Qwen3.8-27B (thinking, reportado pelo fornecedor) tem GPQA Diamond 89,2 e HLE 30,8. O ambiente de avaliação é outro, então a comparação é **UNVERIFIED**: o F2b mede.
 
 ## 3. Desenho do modelo
 - **Protocolo:** o do pplx-decider-v1.2 — prompt conjunto, leitura nos marcadores `<|fim_suffix|>`, head [255, 5120], full-attention não-causal, DeltaNet causal, temperatura por tipo de pergunta.
-- **Pesos iniciais:** merge de backbones (pplx v1.2 como âncora + d3 [+ d3-turbo] + delta do LoRA do Simplicio, λ escolhido por varredura). Se o merge não passar o G3, o ponto de partida é o pplx v1.2 puro.
-- **Treino:** destilação de ensemble. Os professores (pplx v1.2 e d3) rotulam o corpus e o modelo aprende a média das probabilidades, misturada com o rótulo ouro quando existir. Opções embaralhadas por exemplo, 1 época, média de seeds.
+- **Ponto de partida:** pplx-decider-v1.2 (melhor Full entre os modelos Apache). O merge vira experimento opcional e barato.
+- **Treino:** fine-tune contínuo no corpus F2 com rótulo ouro + autodestilação do próprio pplx v1.2 para não esquecer. Sem destilação de ensemble (Fase 0A-bis). Opções embaralhadas por exemplo, 1 época, média de seeds.
+- **Pensar sob demanda (aposta principal, condicionada ao gate GT):** nas perguntas de raciocínio, o Qwen3.8-27B pensa (thinking) e o decisor lê estado + raciocínio e devolve as probabilidades; um gate decide quando pensar (confiança do decisor + tipo de pergunta). Cabe na GPU do lab (96 GB): pensador em FP8 (~27 GB) + decisor em bf16 (~52 GB) (**UNVERIFIED**: a conta não inclui o KV cache do raciocínio). Sem o GT, a entrega é o modo só-decisor. Ver [ADR 0004](../docs/adr/0004-pensar-sob-demanda.md).
 
 ## 4. Recursos
 Uma conta por plataforma. Várias contas para somar cota ficam fora: o FAQ do Colab proíbe usar múltiplas contas para contornar limites de recurso.
@@ -42,10 +46,11 @@ Uma conta por plataforma. Várias contas para somar cota ficam fora: o FAQ do Co
 | F0 setup | [#65](https://github.com/simpletibr/simplicio-27b/issues/65) | CPU | repo, kit, issues, ADR | `make check` verde |
 | F1 fidelidade | [#66](https://github.com/simpletibr/simplicio-27b/issues/66) | Kaggle T4 | d3-mini (4B) e d3 (27B) em 4-bit comparados com os resultados bf16 publicados | G0: argmax igual em ≥ 98% (4B) e ≥ 95% (27B 4-bit) em ≥ 500 linhas; limiar do 27B a recalibrar |
 | F2 dados | [#67](https://github.com/simpletibr/simplicio-27b/issues/67) | CPU | corpus: splits oficiais descontaminados + tasksource com licença comercial + domínios novos PT-BR/EN + traces do Simplicio-Loop; privado caseiro | G1: o privado caseiro ordena ≥ 6 modelos abertos como o Full do board (Spearman ≥ 0,8) |
-| F3 rotulagem | [#68](https://github.com/simpletibr/simplicio-27b/issues/68) | Modal free | probabilidades dos professores em bf16 | ≥ 95% do corpus rotulado |
+| F2b pensar | [#75](https://github.com/simpletibr/simplicio-27b/issues/75) | Kaggle T4, Modal ou API | Qwen3.8-27B com thinking numa amostra das provas de conhecimento, comparado linha a linha com d3-turbo e StartLux | GT: acerto ≥ +10 pontos sobre o melhor decisor na amostra, IC 95% acima de 0 |
+| F3 rotulagem | [#68](https://github.com/simpletibr/simplicio-27b/issues/68) | Modal free | autodestilação: logits do pplx v1.2 no corpus (+ traços do pensador se o GT passar) | ≥ 95% do corpus rotulado |
 | F4 ensaio 4B | [#69](https://github.com/simpletibr/simplicio-27b/issues/69) | Kaggle T4 | a mesma receita em 4B, partindo do pplx-decider-flash-v1.2 | G2: ≥ +1,0 sobre o pplx-flash no privado caseiro |
-| F5 merge 27B | [#70](https://github.com/simpletibr/simplicio-27b/issues/70) | Kaggle T4 (4-bit) | varredura de λ | G3: melhor merge ≥ pplx v1.2 no privado caseiro |
-| F6 dia alugado | [#71](https://github.com/simpletibr/simplicio-27b/issues/71) | GPU alugada | treino, média de seeds, temperatura, rodada pública completa | G4: ≥ pplx v1.2 + 1,5 no privado caseiro antes da rodada final |
+| F5 merge 27B (opcional) | [#70](https://github.com/simpletibr/simplicio-27b/issues/70) | Kaggle T4 (4-bit) | varredura de λ | G3: melhor merge ≥ pplx v1.2 no privado caseiro |
+| F6 dia alugado | [#71](https://github.com/simpletibr/simplicio-27b/issues/71) | GPU alugada | treino do decisor que lê raciocínio + gate, média de seeds, temperatura, rodada pública completa | G4: ≥ pplx v1.2 + 1,5 no privado caseiro antes da rodada final |
 | F7 submissão | [#72](https://github.com/simpletibr/simplicio-27b/issues/72) | HF + Space | pesos, resultados, PR no Space, card honesto | G5: concordância do lab ≥ 98,5% |
 
 ## 6. Dia alugado (estimativas, UNVERIFIED)
@@ -59,7 +64,7 @@ Uma conta por plataforma. Várias contas para somar cota ficam fora: o FAQ do Co
 - No econômico, a rotulagem roda antes, no crédito free do Modal (F3). Se o dia acabar antes da rodada final, ela vai para o crédito free do mês seguinte.
 
 ## 7. Calendário (UNVERIFIED)
-- Semana 1: F0, F1, F2; F3 começa no Modal.
+- Semana 1: F0, F1, F2, F2b; F3 começa no Modal.
 - Semana 2: F4 e F5.
 - Semana 3: F6 (dia alugado) e F7.
 
@@ -73,6 +78,8 @@ Uma conta por plataforma. Várias contas para somar cota ficam fora: o FAQ do Co
 | corte sobe antes da submissão | submeter assim que o G4 passar; v2 depois |
 | licença | só pesos Apache; só dados com licença comercial |
 | preempção no Modal | tudo em partes, com checkpoint no HF |
+| o board limitar raciocínio/latência | manter o modo só-decisor como entrega mínima |
+| testes privados com thinking demoram mais no lab | gate conservador e orçamento de tokens por pergunta |
 
 ## 9. Organização
 - Planejador (Opus): plano, contratos e revisão. Não executa.
