@@ -549,6 +549,25 @@ def safe_path(name: Any) -> bool:
     return isinstance(name, str) and SAFE_PATH.fullmatch(name) is not None and all(part not in (".", "..") for part in name.split("/"))
 
 
+def _plain_name(name: Any) -> bool:
+    """One part of a URL path that nothing can resolve to another place: `safe_path` without a `/`, a `..` anywhere, a `%` or a control character."""
+    return safe_path(name) and "/" not in name and ".." not in name
+
+
+def run_name_problem(run: Any) -> Optional[str]:
+    """Why `run` cannot be the one folder `runs/<run>` of a results dataset, or None.  An HTTP client resolves `..` before it sends the request."""
+    if _plain_name(run):
+        return None
+    return (f"{run!r} is not a plain folder name: use letters, digits, '.', '_' and '-', with no '..', '/', '\\', '%', space or control character, and not empty")
+
+
+def dataset_problem(dataset: Any) -> Optional[str]:
+    """Why `dataset` is not the `org/name` of a Hub dataset, or None."""
+    if isinstance(dataset, str) and len(dataset.split("/")) == 2 and all(_plain_name(part) for part in dataset.split("/")):
+        return None
+    return f"{dataset!r} is not org/name: two plain names (letters, digits, '.', '_' and '-', no '..') joined by one '/'"
+
+
 MANIFEST_NAME = "release-manifest.json"
 SHA256 = re.compile(r"[0-9a-f]{64}")
 _UNSET = object()

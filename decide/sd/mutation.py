@@ -5,7 +5,7 @@ merge math, the option-order inverse mapping, the temperature fit, the engine wi
 meant to guard that code, and reports KILLED (some test failed) or SURVIVED (every test passed: a hole in the tests).
 
     python -m decide.sd.mutation                      # every mutation
-    python -m decide.sd.mutation --only tta           # one group (merge, tta, calibrate, engine, loader, config, api, remote, budget, state)
+    python -m decide.sd.mutation --only tta           # one group (merge, tta, calibrate, engine, loader, config, api, remote, budget, state, fidelity)
     python -m decide.sd.mutation --id k-bucket-boundary --id ta-sign-flip      # chosen mutations (to re-check a survivor)
     python -m decide.sd.mutation --list
     python -m decide.sd.mutation --json evidence.json
@@ -41,7 +41,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 ROOT = Path(__file__).resolve().parents[2]
 COPIED = ("decide", "tests", "notebooks/decide/requirements.txt")
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache")
-GROUPS = ("merge", "tta", "calibrate", "engine", "loader", "config", "api", "remote", "budget", "state")
+GROUPS = ("merge", "tta", "calibrate", "engine", "loader", "config", "api", "remote", "budget", "state", "fidelity")
 
 
 @dataclass(frozen=True)
@@ -72,6 +72,10 @@ CONFIG_TESTS = ("test_contract_65.ConfigContract",)
 VIEWS_TESTS = ("test_flow_65_api.ApiFlow.test_the_number_of_views_follows_the_config_unless_the_caller_says_otherwise",)
 API_TESTS = ("test_contract_65_api.NormalizeSpecContract", "test_contract_65_api.SpecForContract")
 REMOTE_TESTS = ("test_flow_65.RemoteFlow",)
+FIDELITY_CONTRACT_TESTS = ("test_contract_66.CompareContract", "test_contract_66.GateContract", "test_contract_66.PublishedContract",
+                           "test_contract_66.ConfiguredContract")
+FIDELITY_TESTS = ("test_contract_66.CompareContract", "test_contract_66.PercentileContract", "test_contract_66.GateContract", "test_contract_66.PublishedContract",
+                  "test_contract_66.ConfiguredContract", "test_flow_66.FidelityFlow")
 
 M = "decide/sd/merge.py"
 T = "decide/sd/tta.py"
@@ -84,6 +88,7 @@ L = "decide/sd/loader.py"
 CF = "decide/sd/config.py"
 AP = "decide/sd/api.py"
 R = "decide/sd/remote.py"
+FD = "decide/sd/fidelity.py"
 
 MUTATIONS: Tuple[Mutation, ...] = (
     # ---- merge math: task arithmetic, TIES, LoRA delta, how they are combined
@@ -247,6 +252,111 @@ MUTATIONS: Tuple[Mutation, ...] = (
     Mutation("config", "config-anchor-as-its-own-donor", CF, 'need(not (d.get("enabled", True) and repo_key(d.get("repo", "")) == repo_key(anchor_repo)),',
              'need(not (False and d.get("enabled", True) and repo_key(d.get("repo", "")) == repo_key(anchor_repo)),', CONFIG_TESTS, "the config accepts the anchor as a donor"),
 
+    # ---- fidelity (F1): our answers against the published per-row results, the gate, the commit the published files are read at
+    Mutation("fidelity", "fid-noul-half-is-false", FD, '"true" if p >= 0.5 else "false"', '"true" if p > 0.5 else "false"', FIDELITY_TESTS,
+             "a noul of exactly one half reads as the other side"),
+    Mutation("fidelity", "fid-noul-margin-halved", FD, "return abs(probs[1] - 0.5) * 2.0", "return abs(probs[1] - 0.5)", FIDELITY_TESTS,
+             "the near-tie margin of a noul is half of what it should be"),
+    Mutation("fidelity", "fid-margin-to-the-last-option", FD, "return top[0] - top[1] if len(top) > 1 else 1.0", "return top[0] - top[-1] if len(top) > 1 else 1.0",
+             FIDELITY_TESTS, "with more than two options the margin is taken to the weakest, not the runner-up"),
+    Mutation("fidelity", "fid-payload-mismatch-compared", FD, 'if same != "same":', "if False:", FIDELITY_TESTS,
+             "rows that answered another request are compared as if they were the same one"),
+    Mutation("fidelity", "fid-published-not-ok-compared", FD, 'if mine.get("status") != "ok" or theirs.get("status") != "ok":', 'if mine.get("status") != "ok":',
+             FIDELITY_TESTS, "a row the authors could not answer is compared with ours"),
+    Mutation("fidelity", "fid-other-option-set-agrees", FD, "if a is None or b is None or a[0] != b[0] or a[1] != b[1]:", "if a is None or b is None or a[0] != b[0]:",
+             FIDELITY_TESTS, "two answers over different options are compared option by option"),
+    Mutation("fidelity", "fid-near-tie-inverted", FD, 'counters["disagree_near_tie" if margin < near_tie else "disagree_clear"] += 1',
+             'counters["disagree_near_tie" if margin > near_tie else "disagree_clear"] += 1', FIDELITY_TESTS, "a clear flip is excused as a coin toss"),
+    Mutation("fidelity", "fid-interval-tail-doubled", FD, "tail = (1.0 - level) / 2.0", "tail = 1.0 - level", FIDELITY_TESTS,
+             "the 95% interval is a 90% one"),
+    Mutation("fidelity", "percentile-without-interpolation", EV, "return ordered[lo] + (ordered[hi] - ordered[lo]) * (pos - lo)", "return ordered[lo]", FIDELITY_TESTS,
+             "the ends of a bootstrap interval snap to the lower rank"),
+    Mutation("fidelity", "percentile-rank-off-by-one", EV, "pos = (len(ordered) - 1) * q", "pos = len(ordered) * q", FIDELITY_TESTS,
+             "the top percentile reads past the last replicate"),
+    Mutation("fidelity", "gate-needs-one-row-more", FD, "if rows < min_rows or value is None:", "if rows <= min_rows or value is None:", FIDELITY_TESTS,
+             "exactly min_rows rows is not enough"),
+    Mutation("fidelity", "gate-threshold-exclusive", FD, 'out["status"] = "pass" if value >= threshold else "fail"', 'out["status"] = "pass" if value > threshold else "fail"',
+             FIDELITY_TESTS, "agreement exactly at the threshold fails"),
+    Mutation("fidelity", "gate-firm-from-the-upper-end", FD, 'out["firm"] = bool(ci and ci[0] >= threshold)', 'out["firm"] = bool(ci and ci[1] >= threshold)', FIDELITY_TESTS,
+             "a pass is called firm when only the top of the interval clears the threshold"),
+    Mutation("fidelity", "published-checksum-not-compared", FD, "if got != sums[key]:", "if False:", FIDELITY_TESTS, "a damaged download passes the SHA256SUMS check"),
+    Mutation("fidelity", "published-stale-copy-trusted", FD, "                verify_sha256(target, sums_text, RESULTS_FILE)", "                pass", FIDELITY_TESTS,
+             "a file already on disk is used without checking it against the SHA256SUMS of the pinned commit"),
+    Mutation("fidelity", "published-bad-download-kept", FD, "            verify_sha256(tmp, sums_text, RESULTS_FILE)", "            pass", FIDELITY_TESTS,
+             "a download that does not match the SHA256SUMS is moved into place"),
+    Mutation("fidelity", "published-commit-unchecked", FD, "if not isinstance(revision, str) or not COMMIT_SHA.fullmatch(revision):", "if not isinstance(revision, str):",
+             FIDELITY_TESTS, "a branch, a tag or a short hash is read as a commit"),
+    Mutation("fidelity", "published-url-reads-main", FD, '/resolve/{revision}/runs/{run}/{filename}"', '/resolve/main/runs/{run}/{filename}"', FIDELITY_TESTS,
+             "the pinned commit never reaches the URL: the published rows are read at main"),
+    Mutation("fidelity", "published-config-commit-unchecked", FD, 'revision = pinned(entry.get("revision"))', 'revision = entry.get("revision")', FIDELITY_TESTS,
+             "fidelity.published.<name>.revision may be a branch"),
+    Mutation("fidelity", "published-config-commit-ignored", FD, 'revision=entry["revision"], endpoint=where', 'revision="0" * 40, endpoint=where', FIDELITY_TESTS,
+             "the commit the config names is not the one that is read"),
+    Mutation("fidelity", "published-config-endpoint-ignored", FD, 'where = endpoint or (cfg.get("hub") or {}).get("endpoint") or ENDPOINT', "where = endpoint or ENDPOINT",
+             FIDELITY_TESTS, "hub.endpoint of the config is ignored"),
+    Mutation("fidelity", "published-unknown-name-is-a-key-error", FD, "    if name not in table:", "    if False:", FIDELITY_TESTS,
+             "a misspelled run name raises KeyError and does not say which names exist"),
+    Mutation("fidelity", "published-rows-not-filtered", FD, "if keep is not None and run_id not in keep:", "if False:", FIDELITY_TESTS,
+             "every row of a 47 MB file is kept in memory, not only the wanted ones"),
+    Mutation("fidelity", "fid-run-payload-mismatch-kept", FD, 'if same == "same":', "if True:", FIDELITY_TESTS,
+             "requests whose hash differs from the published row are run and compared"),
+    Mutation("fidelity", "fid-run-published-not-ok-kept", FD, 'elif theirs.get("status") != "ok":', "elif False:", FIDELITY_TESTS,
+             "requests the authors failed on are run and compared"),
+    Mutation("fidelity", "fid-sample-keeps-groups-not-ok", FD, 'theirs is None or theirs.get("status") != "ok" or payload_state(', "theirs is None or payload_state(", FIDELITY_TESTS,
+             "the common sample keeps a group whose published row was not ok"),
+    # ---- the gate looks at what the run covered (B1), the names and the endpoint that make the URL (N1, N4), the rows with no hash (N2)
+    Mutation("fidelity", "gate-ignores-requests-in-error", FD, 'if coverage["error"]:', "if False:", FIDELITY_CONTRACT_TESTS,
+             "400 requests in error out of 1000 and the gate passes on the 600 that answered"),
+    Mutation("fidelity", "gate-ignores-an-early-stop", FD, 'if not coverage["complete"]:', "if False:", FIDELITY_CONTRACT_TESTS,
+             "a run stopped by its budget, with the first rows of the file, is certified"),
+    Mutation("fidelity", "gate-ignores-requests-with-no-result", FD, 'if coverage["missing"]:', "if False:", FIDELITY_CONTRACT_TESTS,
+             "requests that were never run do not count against the verdict"),
+    Mutation("fidelity", "gate-hides-the-unsupported-requests", FD, '("unsupported", "unsupported"), ("abstained", "abstained"),', '("abstained", "abstained"),',
+             FIDELITY_CONTRACT_TESTS, "a pass over 600 rows does not say that 300 requests were not taken"),
+    Mutation("fidelity", "coverage-counts-everything-as-ok", FD, 'return {"requested": len(requested), "ok": status["ok"],', 'return {"requested": len(requested), "ok": len(seen),',
+             FIDELITY_TESTS, "the coverage in the report says every request that has a row was answered"),
+    Mutation("fidelity", "coverage-forgets-the-requests-not-run", FD, '"missing": len(requested) - len(seen),', '"missing": 0,', FIDELITY_TESTS,
+             "a run that stopped does not say how many requests it left"),
+    Mutation("fidelity", "coverage-says-the-run-finished", FD, 'coverage = coverage_of([i.run_id for i in usable], ours, run["status"] == "complete")',
+             'coverage = coverage_of([i.run_id for i in usable], ours, True)', FIDELITY_TESTS, "a run stopped by its budget is reported as finished to the gate"),
+    Mutation("fidelity", "gate-reads-no-coverage-from-the-run", FD, '"gate": gate(result, threshold=threshold, min_rows=min_rows, coverage=coverage)',
+             '"gate": gate(result, threshold=threshold, min_rows=min_rows, coverage=coverage_of([], {}, True))', FIDELITY_TESTS,
+             "the gate is given an empty, finished coverage instead of the run's"),
+    Mutation("fidelity", "published-url-takes-any-run", FD, '    check_names(dataset, run)                                     # the URL is only as good as these two names',
+             "    pass", FIDELITY_CONTRACT_TESTS, "a run called '../../x' makes a URL that the HTTP client resolves to another commit, or to main"),
+    Mutation("fidelity", "fetch-takes-any-run-before-the-folder", FD, '    check_names(dataset, run)                                     # and before the folder for the download exists',
+             "    pass", FIDELITY_CONTRACT_TESTS, "a refused name still leaves an empty download folder behind"),
+    Mutation("fidelity", "published-run-name-not-checked", FD, 'for what, problem in (("dataset", dataset_problem(dataset)), ("run", run_name_problem(run))):',
+             'for what, problem in (("dataset", dataset_problem(dataset)),):', FIDELITY_CONTRACT_TESTS, "the run name is never looked at"),
+    Mutation("fidelity", "published-dataset-not-checked", FD, 'for what, problem in (("dataset", dataset_problem(dataset)), ("run", run_name_problem(run))):',
+             'for what, problem in (("run", run_name_problem(run)),):', FIDELITY_CONTRACT_TESTS, "a dataset such as 'org/..' is built into the URL"),
+    Mutation("fidelity", "published-entry-run-not-checked", FD, 'for key, problem in (("dataset", dataset_problem(entry["dataset"])), ("run", run_name_problem(entry["run"]))):',
+             'for key, problem in (("dataset", dataset_problem(entry["dataset"])),):', FIDELITY_CONTRACT_TESTS, "the config entry of a published run is not looked at"),
+    Mutation("fidelity", "config-run-name-not-checked", CF, 'for key, problem in (("dataset", dataset_problem(entry.get("dataset"))), ("run", run_name_problem(entry.get("run")))):',
+             'for key, problem in (("dataset", dataset_problem(entry.get("dataset"))),):', FIDELITY_CONTRACT_TESTS,
+             "fidelity.published.<name>.run: '../..' passes the config"),
+    Mutation("fidelity", "config-dataset-not-checked", CF, 'for key, problem in (("dataset", dataset_problem(entry.get("dataset"))), ("run", run_name_problem(entry.get("run")))):',
+             'for key, problem in (("run", run_name_problem(entry.get("run"))),):', FIDELITY_CONTRACT_TESTS, "fidelity.published.<name>.dataset: 'org/..' passes the config"),
+    Mutation("fidelity", "run-name-may-hold-a-slash", R, 'return safe_path(name) and "/" not in name and ".." not in name', 'return safe_path(name) and ".." not in name',
+             FIDELITY_CONTRACT_TESTS, "the run 'a/b' is a name, and so is 'x/../y'"),
+    Mutation("fidelity", "run-name-may-hold-dotdot", R, 'return safe_path(name) and "/" not in name and ".." not in name', 'return safe_path(name) and "/" not in name',
+             FIDELITY_CONTRACT_TESTS, "the run 'a..b' is a name"),
+    Mutation("fidelity", "dataset-may-have-more-than-two-parts", R, 'if isinstance(dataset, str) and len(dataset.split("/")) == 2 and',
+             'if isinstance(dataset, str) and len(dataset.split("/")) >= 2 and', FIDELITY_CONTRACT_TESTS, "'org/pub/extra' is a dataset"),
+    Mutation("fidelity", "payload-state-compares-with-one-hash", FD, "    if not mine or not theirs:", "    if not mine and not theirs:", FIDELITY_CONTRACT_TESTS,
+             "a row with a hash on one side only is compared, so a different request can pass for the same one"),
+    Mutation("fidelity", "unmatched-rows-counted-as-mismatch", FD, 'counters["payload_mismatch" if same == "different" else "unmatched"] += 1',
+             'counters["payload_mismatch"] += 1', FIDELITY_CONTRACT_TESTS, "rows with no hash are reported as rows with another hash"),
+    Mutation("fidelity", "run-unmatched-rows-kept", FD, 'if same == "same":', 'if same != "different":', FIDELITY_TESTS,
+             "requests with no hash on either side are run and compared as if they matched"),
+    Mutation("fidelity", "run-unmatched-rows-not-counted", FD, 'skipped["payload_mismatch" if same == "different" else "unmatched"] += 1',
+             'skipped["payload_mismatch"] += 1', FIDELITY_TESTS, "rows with no hash vanish from the report instead of being counted"),
+    Mutation("fidelity", "sample-keeps-groups-with-no-hash", FD, 'payload_state(row["_evaluation"].get("payload_sha256"), theirs.get("payload_sha256")) != "same":',
+             'payload_state(row["_evaluation"].get("payload_sha256"), theirs.get("payload_sha256")) == "different":', FIDELITY_TESTS,
+             "the common sample keeps a group with a row whose hash is missing"),
+    Mutation("fidelity", "fetch-sends-the-token-over-plain-http", FD, '        raise FidelityError(f"endpoint {problem}")', "        pass", FIDELITY_CONTRACT_TESTS,
+             "a plain http endpoint on another host gets the token and the SHA256SUMS that vouch for the download"),
+
     # ---- the time budget: a session that is over must not start another step
     Mutation("budget", "spent-budget-still-affords-a-free-step", BU, "return left > 0.0 and left >= float(next_cost)",
              "return left >= float(next_cost)", BUDGET_TESTS, "a chunk of unknown cost runs although the session is inside its reserve"),
@@ -267,7 +377,7 @@ MUTATIONS: Tuple[Mutation, ...] = (
     Mutation("config", "calibration-grid-unordered", CF, "0 < window[0] < window[1]", "0 < window[0]", CONFIG_TESTS, "a search window [4, 0.5] only fails at the fit"),
     Mutation("config", "text-passes-as-a-number", CF, 'return isinstance(x, (int, float)) and not isinstance(x, bool) and x == x and x not in (float("inf"), float("-inf"))',
              "return True", CONFIG_TESTS, "a weight written as '0.5' ends in a TypeError instead of a config error"),
-    Mutation("config", "plain-http-endpoint-accepted", CF, "need(problem is None,", "need(True or problem is None,", CONFIG_TESTS,
+    Mutation("config", "plain-http-endpoint-accepted", CF, 'need(problem is None, f"hub.endpoint {problem}")', 'need(True or problem is None, f"hub.endpoint {problem}")', CONFIG_TESTS,
              "an http:// endpoint on another machine passes the config"),
     Mutation("remote", "token-over-plain-http", R, "            if problem:", "            if False and problem:", REMOTE_TESTS,
              "the reader builds a client that would send the token unencrypted to another machine"),

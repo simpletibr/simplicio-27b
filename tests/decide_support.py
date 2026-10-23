@@ -131,7 +131,7 @@ class FakeHub:
 
             def _lookup(self):
                 path = self.path.split("?")[0]
-                m = re.match(r"^/([^/]+/[^/]+)/resolve/([^/]+)/(.+)$", path)
+                m = re.match(r"^/(?:datasets/)?([^/]+/[^/]+)/resolve/([^/]+)/(.+)$", path)         # models and datasets share the keys
                 if m:
                     hub.requested.add((m.group(1), m.group(2)))
                     return path, f"{m.group(1)}/{m.group(3)}", False
