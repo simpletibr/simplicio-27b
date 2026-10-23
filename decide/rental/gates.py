@@ -149,10 +149,10 @@ def proxy_to_requests(proxy_path: "str | os.PathLike[str]", out_path: "str | os.
     return count
 
 
-def _units(requests: Sequence[Request], results: Iterable[Mapping[str, Any]]) -> Dict[str, Dict[Tuple[str, str], Tuple[int, float]]]:
-    """source -> {(example_id, question_id): (right, chance)} with the rules of ``proxy_private.score_rows``."""
+def _units(requests: Sequence[Request], results: Iterable[Mapping[str, Any]]) -> Dict[str, Dict[Tuple[str, str], Tuple[float, float]]]:
+    """source -> {(example_id, question_id): (credit, chance)} (a tie for the top counts 1/m) with the rules of ``proxy_private.score_rows``."""
     table, conflicting = PP.result_table(results)
-    units: Dict[str, Dict[Tuple[str, str], Tuple[int, float]]] = {}
+    units: Dict[str, Dict[Tuple[str, str], Tuple[float, float]]] = {}
     for eid, request, gold, source in requests:
         for qid, key in gold.items():
             if key is None:
@@ -161,7 +161,7 @@ def _units(requests: Sequence[Request], results: Iterable[Mapping[str, Any]]) ->
             probs = table.get((eid, qid))
             if (eid, qid) in conflicting or probs is None or len(probs) != len(keys) or sum(probs) <= 0 or any(p < 0 or not math.isfinite(p) for p in probs):
                 continue
-            right = 1 if max(range(len(probs)), key=probs.__getitem__) == keys.index(key) else 0
+            right, _ = PP.top_credit(probs, keys.index(key))
             units.setdefault(source, {})[(eid, qid)] = (right, 1.0 / len(keys))
     return units
 
@@ -175,7 +175,7 @@ def _macro_skill(sources: Mapping[str, Tuple[float, float, int]]) -> float:
 
 
 def _score_view(scored: Mapping[str, Any], scale: float) -> Dict[str, Any]:
-    return {"proxy_points": None if scored["proxy"] is None else scale * scored["proxy"], "n": scored["n"], "missing": scored["missing"], "bad": scored["bad"], "conflicting": scored["conflicting"],
+    return {"proxy_points": None if scored["proxy"] is None else scale * scored["proxy"], "n": scored["n"], "missing": scored["missing"], "bad": scored["bad"], "conflicting": scored["conflicting"], "ties": scored["ties"],
             "per_source": scored["per_source"], "nll": scored["nll"], "brier": scored["brier"]}
 
 

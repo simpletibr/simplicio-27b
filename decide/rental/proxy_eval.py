@@ -106,6 +106,7 @@ def cmd_run(args: argparse.Namespace, kit: Any) -> int:
 def cmd_score(args: argparse.Namespace) -> int:
     scores: Dict[str, float] = {}
     incomplete: List[str] = []
+    others = repeated = False                       # some run lacks or has malformed rows / some run answers a question twice with different numbers
     for name, folder in map(parse_pair, args.results):
         scored = _score(args.proxy, folder)
         points = None if scored["proxy"] is None else 100 * scored["proxy"]
@@ -114,10 +115,13 @@ def cmd_score(args: argparse.Namespace) -> int:
               f"{scored['missing']} without a row, {invalid}, NLL {scored['nll'] if scored['nll'] is None else round(scored['nll'], 4)}")
         if scored["missing"] or scored["bad"] or scored["proxy"] is None:
             incomplete.append(f"{name} ({scored['missing']} without a row, {invalid})")
+            repeated = repeated or bool(scored["conflicting"])
+            others = others or bool(scored["missing"] or scored["bad"] > scored["conflicting"] or scored["proxy"] is None)
         else:
             scores[name] = scored["proxy"]
     if incomplete:
-        print("INVALID: " + "; ".join(incomplete) + ". Run `run` again for them (it resumes); nothing was written.", file=sys.stderr)
+        advice = (["Run `run` again for them (it resumes)"] if others else []) + (["Remove the repeated rows (running again does not take them out)"] if repeated else [])
+        print("INVALID: " + "; ".join(incomplete) + ". " + "; ".join(advice) + "; nothing was written.", file=sys.stderr)
         return EXIT_STOPPED
     if args.out:
         target = Path(args.out)
@@ -144,6 +148,9 @@ def cmd_compare(args: argparse.Namespace) -> int:
               f"(margin {args.margin}); paired bootstrap 95% interval [{low:+.3f}, {high:+.3f}] over {verdict['questions']} questions")
     if verdict["reasons"]:
         print("reasons: " + ", ".join(verdict["reasons"]))
+    for label in ("new", "baseline"):
+        if verdict[label]["conflicting"]:
+            print(f"{label}: {verdict[label]['conflicting']} questions answered twice with different numbers (remove the repeated rows)")
     if verdict["notes"]:
         print("notes: " + ", ".join(verdict["notes"]))
     print(verdict["scope"])

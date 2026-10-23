@@ -973,12 +973,69 @@ class ProxyContract(unittest.TestCase):
             self.assertEqual((conflict["n"], conflict["bad"], conflict["missing"], conflict["conflicting"]), (1, 1, 0, 1), "no answer is picked for the user: neither the first nor the last")
         self.assertEqual(once["conflicting"], 0)
 
+    def test_a_tie_for_the_top_probability_counts_one_over_the_options_that_share_it(self) -> None:
+        """A model that cannot tell the options apart must not get the questions whose answer is the first option for free (``max`` returns the first index of a tie)."""
+        reqs = [(f"e{i}", choice_request(), {"q1": gold}, "s1") for i, gold in enumerate("ABCDAC")]
+        row = lambda i, probs: {"example_id": f"e{i}", "question_id": "q1", "codes": ["A", "B", "C", "D"], "probs": probs}      # noqa: E731
+        uniform = P.score_rows(reqs[:4], [row(i, [0.25, 0.25, 0.25, 0.25]) for i in range(4)])
+        self.assertAlmostEqual(uniform["per_source"]["s1"]["accuracy"], 0.25, places=12, msg="the gold option was A, B, C and D once each: the same as chance whichever the tie-break")
+        first_always = P.score_rows([reqs[0], reqs[4]], [row(0, [0.25] * 4), row(4, [0.25] * 4)])         # gold A twice: the first-index rule says 100%
+        last_always = P.score_rows([reqs[3], reqs[3]], [row(3, [0.25] * 4), row(3, [0.25] * 4)])          # the same row twice, gold D
+        self.assertAlmostEqual(first_always["per_source"]["s1"]["accuracy"], 0.25, places=12)
+        self.assertAlmostEqual(last_always["per_source"]["s1"]["accuracy"], 0.25, places=12)
+        self.assertEqual((first_always["proxy"], uniform["proxy"]), (0.0, 0.0), "no skill above chance")
+        mixed = P.score_rows(reqs[:2] + reqs[4:], [row(0, [0.4, 0.4, 0.1, 0.1]), row(1, [0.4, 0.4, 0.1, 0.1]), row(4, [0.1, 0.4, 0.4, 0.1]), row(5, [0.1, 0.4, 0.4, 0.1])])
+        # gold A and B are in the tied pair {A, B}: 1/2 each; gold A is not in {B, C}: 0; gold C is in it: 1/2
+        self.assertAlmostEqual(mixed["per_source"]["s1"]["accuracy"], (0.5 + 0.5 + 0.0 + 0.5) / 4, places=12)
+
+    def test_the_score_says_how_many_answers_had_a_shared_top(self) -> None:
+        reqs = [(f"e{i}", choice_request(), {"q1": "A"}, "s1") for i in range(3)]
+        row = lambda i, probs: {"example_id": f"e{i}", "question_id": "q1", "codes": ["A", "B", "C", "D"], "probs": probs}      # noqa: E731
+        out = P.score_rows(reqs, [row(0, [0.7, 0.1, 0.1, 0.1]), row(1, [0.1, 0.1, 0.4, 0.4]), row(2, [0.25, 0.25, 0.25, 0.25])])
+        self.assertEqual((out["n"], out["ties"]), (3, 2), "a shared top counts even when the gold option is not one of the tied ones")
+        self.assertEqual(P.score_rows(reqs[:1], [row(0, [0.7, 0.1, 0.1, 0.1])])["ties"], 0)
+
+    def test_the_score_does_not_depend_on_the_order_in_which_the_options_are_written(self) -> None:
+        """The comparison of two models on the same rows must not change because the author of the set wrote the options in another order."""
+        import random
+
+        rng = random.Random(7)
+        for _ in range(300):
+            probs = [rng.choice((0.1, 0.2, 0.2, 0.4)) for _ in range(4)]            # ties are common with these values
+            gold, order = rng.randrange(4), rng.sample(range(4), 4)
+            self.assertEqual(P.top_credit(probs, gold), P.top_credit([probs[i] for i in order], order.index(gold)), (probs, gold, order))
+        keys, golds = "ABCD", [rng.randrange(4) for _ in range(60)]
+        table = [[rng.choice((0.1, 0.2, 0.2, 0.4)) for _ in range(4)] for _ in golds]
+        written = lambda flip: P.score_rows(                                                              # noqa: E731
+            [(f"e{i}", choice_request(), {"q1": keys[3 - g if flip else g]}, "s1") for i, g in enumerate(golds)],
+            [{"example_id": f"e{i}", "question_id": "q1", "codes": list(keys), "probs": p[::-1] if flip else p} for i, p in enumerate(table)])
+        self.assertEqual(written(False)["proxy"], written(True)["proxy"])
+        self.assertEqual(written(False)["ties"], written(True)["ties"])
+
+    def test_top_credit(self) -> None:
+        self.assertEqual(P.top_credit([0.7, 0.1, 0.1, 0.1], 0), (1.0, False))
+        self.assertEqual(P.top_credit([0.7, 0.1, 0.1, 0.1], 1), (0.0, False))
+        self.assertEqual(P.top_credit([0.1, 0.4, 0.4, 0.1], 2), (0.5, True))
+        self.assertEqual(P.top_credit([0.1, 0.4, 0.4, 0.1], 0), (0.0, True))
+        self.assertEqual(P.top_credit([0.25, 0.25, 0.25, 0.25], 3), (0.25, True))
+        self.assertEqual(P.top_credit([1, 1], 1), (0.5, True), "integers too")
+
     def test_result_table_says_which_questions_were_answered_twice_differently(self) -> None:
         row = lambda eid, qid, probs: {"example_id": eid, "question_id": qid, "probs": probs}      # noqa: E731
         table, conflicting = P.result_table([row("e1", "q1", [1, 0]), row("e1", "q1", [1, 0]), row("e2", "q1", [1, 0]), row("e2", "q1", [0, 1]), row("e3", 7, [1, 0]),
                                               {"example_id": "e4", "question_id": "q1"}, {"question_id": "q1", "probs": [1, 0]}])
         self.assertEqual(conflicting, {("e2", "q1")})
         self.assertEqual(sorted(table), [("e1", "q1"), ("e2", "q1"), ("e3", "7")], "rows without probabilities or an id are not answers")
+
+
+    def test_the_same_row_twice_is_not_a_conflict_even_when_its_numbers_are_not_numbers(self) -> None:
+        """NaN != NaN, and each NaN read from a file is its own object: a row with NaN written twice is one answer (malformed either way, but not answered twice with different numbers)."""
+        nan = lambda: float("nan")      # noqa: E731
+        row = lambda probs: {"example_id": "e1", "question_id": "q1", "probs": probs}      # noqa: E731
+        self.assertEqual(P.result_table([row([nan(), 1.0]), row([nan(), 1.0])])[1], set())
+        self.assertEqual(P.result_table([row([nan(), 1.0]), row([1.0, nan()])])[1], {("e1", "q1")})
+        self.assertEqual(P.result_table([row([nan(), 1.0]), row([1.0, 1.0])])[1], {("e1", "q1")})
+        self.assertEqual(P.result_table([row([1.0, 2.0]), row([1.0])])[1], {("e1", "q1")}, "a different length is a different answer")
 
 
 class GeneratorAndLoopContract(unittest.TestCase):

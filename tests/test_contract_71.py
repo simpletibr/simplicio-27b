@@ -1083,6 +1083,54 @@ class G4Contract(unittest.TestCase):
         self.assertEqual(sum(len(per_source) for per_source in units.values()), scored["n"])
         self.assertNotIn((new[0]["run_id"], "q1"), units[new[0]["run_id"].split(":")[0]])
 
+    def test_a_model_that_answers_the_same_for_every_option_gets_no_credit_for_the_first_one(self) -> None:
+        """The gold answer of the fixture is always A, the first option: the first-index tie-break gave a uniform model 100% on it."""
+        from decide.data import proxy_private as PP
+        from decide.rental import gates as G
+
+        requests, new, base = self.fixture(50, 0, 40)
+        uniform = [dict(row, probs=[0.25, 0.25, 0.25, 0.25]) for row in new]
+        got = self.verdict(requests, uniform, base)
+        self.assertAlmostEqual(got["new"]["proxy_points"], 0.0, places=9, msg="chance, not a perfect score")
+        self.assertEqual((got["new"]["ties"], got["baseline"]["ties"], got["new"]["n"]), (100, 0, 100))
+        self.assertEqual(got["status"], "FAIL")
+        self.assertEqual(got["reasons"], ["delta_below_margin"])
+        units = G._units(requests, uniform)
+        self.assertEqual({value for per_source in units.values() for value in per_source.values()}, {(0.25, 0.25)}, "the units follow the scorer: a quarter of a right answer")
+        self.assertEqual(PP.score_rows(requests, uniform)["ties"], 100)
+
+    def test_a_tie_that_includes_the_gold_option_is_worth_one_over_the_tied_options_wherever_it_is(self) -> None:
+        from decide.rental import gates as G
+
+        requests, new, base = self.fixture(50, 0, 0)
+        requests = [(eid, request, {"q1": "C"}, source) for eid, request, _, source in requests]              # the gold option is the third, tied with the second
+        tied = [dict(row, probs=[0.1, 0.4, 0.4, 0.1]) for row in new]
+        got = self.verdict(requests, tied, base)
+        self.assertAlmostEqual(got["new"]["proxy_points"], 100 * (0.5 - 0.25) / 0.75, places=9, msg="half a right answer on every question")
+        self.assertEqual({value for per_source in G._units(requests, tied).values() for value in per_source.values()}, {(0.5, 0.25)})
+
+    def test_the_bootstrap_still_agrees_with_the_scorer_when_some_answers_are_ties(self) -> None:
+        requests, new, base = self.fixture(60, 45, 30)
+        tied = [dict(row, probs=[0.4, 0.4, 0.1, 0.1]) if i % 5 == 0 else row for i, row in enumerate(new)]        # gold A is one of the two tied options
+        got = self.verdict(requests, tied, base)
+        self.assertIn(got["status"], ("PASS", "FAIL"), got)             # not INVALID, and no AssertionError from the units / scorer cross-check
+        self.assertEqual(got["new"]["ties"], 24)
+
+    def test_a_longer_second_answer_that_starts_like_the_first_is_a_different_answer(self) -> None:
+        requests, new, base = self.fixture(50, 40, 20)
+        longer = dict(new[0], probs=list(new[0]["probs"]) + [0.0])
+        got = self.verdict(requests, new + [longer], base)
+        self.assertEqual((got["status"], got["reasons"]), ("INVALID", ["new_bad_rows"]))
+        self.assertEqual((got["new"]["bad"], got["new"]["conflicting"]), (1, 1))
+
+    def test_a_malformed_row_written_twice_is_malformed_not_conflicting(self) -> None:
+        """NaN != NaN: the same NaN row twice is one malformed answer, not an answer given twice with different numbers."""
+        requests, new, base = self.fixture(50, 40, 20)
+        broken = [dict(new[0], probs=[float("nan"), 0.1, 0.1, 0.1]), dict(new[0], probs=[float("nan"), 0.1, 0.1, 0.1])]
+        got = self.verdict(requests, new[1:] + broken, base)
+        self.assertEqual((got["status"], got["reasons"]), ("INVALID", ["new_bad_rows"]))
+        self.assertEqual((got["new"]["bad"], got["new"]["conflicting"]), (1, 0))
+
     def test_a_duplicate_of_a_question_nobody_scores_does_not_matter(self) -> None:
         requests, new, base = self.fixture(50, 40, 20)
         stray = [{"run_id": "not-in-the-proxy", "question_id": "q1", "probs": [1, 0, 0, 0]}, {"run_id": "not-in-the-proxy", "question_id": "q1", "probs": [0, 1, 0, 0]}]
@@ -2987,6 +3035,22 @@ class ProxyEvalContract(unittest.TestCase):
         self.assertEqual(code, 3)
         self.assertIn("1 of them answered twice with different numbers", out + err)
         self.assertFalse((self.root / "scores.json").exists())
+        self.assertNotIn("Run `run` again", err, "running again does not take a repeated row out")
+        self.assertIn("repeated rows (running again does not take them out)", err)
+
+    def test_compare_says_how_many_questions_were_answered_twice_with_different_numbers(self) -> None:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        self.make_runs(flash=2, novo=3)
+        rows = pq.read_table(self.root / "runs" / "novo" / "results.parquet").to_pylist()
+        rows.append(dict(rows[0], probs=[0.1, 0.1, 0.1, 0.7]))
+        pq.write_table(pa.Table.from_pylist(rows), str(self.root / "runs" / "novo" / "results.parquet"))
+        code, out, _ = self.main(*self.compare_args("--min-rows", 10))
+        self.assertEqual(code, 3)
+        self.assertIn("new_bad_rows", out)
+        self.assertIn("new: 1 questions answered twice with different numbers", out)
+        self.assertNotIn("baseline: ", out)
 
     def test_a_folder_without_a_result_table_says_what_is_missing(self) -> None:
         (self.root / "empty").mkdir()
