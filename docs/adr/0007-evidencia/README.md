@@ -52,11 +52,11 @@ Ficaram de fora 7 benchmarks do índice: HLE (fechado, pede login), HoVer (banco
 
 ## Como repetir
 
-Em uma pasta temporária, com `KIT` apontando para o kit extraído no commit acima e `WORK` para uma pasta vazia:
+Em uma pasta temporária, com `KIT` apontando para o kit extraído no commit acima e `WORK` para uma pasta vazia. As versões dos pacotes são as que o estudo usou, com Python 3.12.13:
 
 ```sh
 uv venv --python 3.12 venv
-uv pip install --python venv/bin/python "pyarrow>=20" numpy "huggingface_hub>=0.34,<2" "httpx>=0.27,<1" scipy mido python-chess tiktoken
+uv pip install --python=venv/bin/python pyarrow==26.0.1 numpy==2.5.4 huggingface_hub==1.33.0 httpx==0.28.1 scipy==1.18.1 mido==1.3.3 python-chess==1.999 chess==1.11.2 tiktoken==0.14.0
 
 # 1. linhas e gabarito (os seis "added" primeiro: ponha as fontes fixadas onde adapters_added.py as espera, dentro de WORK)
 venv/bin/python -I build_gold.py "$KIT" "$WORK" gold.jsonl
