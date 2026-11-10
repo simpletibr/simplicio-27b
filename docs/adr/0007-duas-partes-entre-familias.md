@@ -84,7 +84,10 @@ Fatos medidos em 2026-11-10, com a fonte de cada um.
    - **Não há regra escrita** sobre submissão de duas partes nem sobre servir ajustes publicados por terceiros. Quem aceita é a revisão do PR.
    - **Empate:** modelos a até 0,9 ponto do primeiro do grupo dividem o posto (página de metodologia).
    - **Reasoning board:** a página inicial do placar o anuncia como "coming soon", para modelos que podem pensar antes de responder.
-   - **Placa:** o `hf-job` do kit roda por padrão no Hugging Face Jobs, no sabor `rtx-pro-6000` (uma RTX PRO 6000 de 96 GB), com limite de 72 horas; o `run` manda 8 pedidos ao mesmo tempo por padrão. A API de hardware do Hugging Face Jobs dá US$ 0,045833 por minuto para esse sabor, ou US$ 2,75 por hora.
+   - **Placa no Hugging Face:** o `hf-job` do kit roda por padrão no Hugging Face Jobs, no sabor `rtx-pro-6000` (uma RTX PRO 6000 de 96 GB), com limite de 72 horas; o `run` manda 8 pedidos ao mesmo tempo por padrão. A API de hardware do Hugging Face Jobs dá US$ 0,045833 por minuto para esse sabor, ou US$ 2,75 por hora.
+   - **Placa no Vast.ai** (o dono apontou em 2026-11-10 que o Vast.ai e o Salad saem mais baratos; API pública do mercado, lida às 18:31 UTC, uma GPU, sob demanda, com 250 GB de disco no preço): as variantes S e WS da RTX PRO 6000 de 96 GB tinham 44 ofertas. Em host verificado, com confiabilidade ≥ 0,98, download ≥ 500 Mbps e disco ≥ 250 GB, eram 14, de US$ 1,47 a US$ 2,56 por hora, mediana US$ 1,85; 9 custavam até US$ 2,00. As três em datacenter verificado custavam de US$ 2,36 a US$ 2,56. O limite de potência declarado variava de 420 a 600 W. O mercado muda de minuto a minuto: uma oferta de US$ 1,25 lida dois minutos antes já não estava lá.
+   - **Salad** (página de preços, lida no mesmo dia): sob demanda, a maior placa é a RTX 5090 de 32 GB (US$ 0,25 a US$ 0,60 por hora, conforme a prioridade); a RTX 4090 de 24 GB custa de US$ 0,16 a US$ 0,44. A RTX PRO 6000 só aparece no Salad Dedicated, por contrato e sem preço público. O par não cabe em 32 GB: o cartão do REAX 1.3 fala em pico de 88,5 GiB (contexto 2).
+   - **Placas de treino no Vast.ai** (mesma leitura): B200 com 4 ofertas, a partir de US$ 7,50 por hora; H200 com 7, a partir de US$ 2,99 (verificadas a partir de US$ 5,26); H100 SXM com 9, a partir de US$ 2,07 (verificadas a partir de US$ 2,20).
 
 ## Decisão
 
@@ -108,8 +111,8 @@ Fatos medidos em 2026-11-10, com a fonte de cada um.
     - **O v0 não se apresenta como modelo treinado.** Antes da rodada pública completa, os mantenedores são consultados na discussão do Space, porque nenhuma regra escrita trata de um par de modelos de terceiros sem treino (contexto 9). Se não aceitarem, o v0 não vai ao placar.
     - **Licença:** "só Apache-2.0" fica, com o custo medido nas consequências.
     - **Kit do pensador:** guardado e congelado; reabre por ADR nova quando o Reasoning board existir.
-    - **GPU e orçamento:** Hugging Face Jobs, `rtx-pro-6000`, a US$ 2,75 por hora (contexto 9). Até 12 horas para o GE (US$ 33,00) e até 40 horas para a rodada pública completa do v0 (US$ 110,00). O tempo de cada etapa não foi medido (**UNVERIFIED**).
-    - **Continua com o dono:** pedir acesso ao HLE no Hub, confirmar cada compra de GPU e aprovar o texto de tudo que sai em nome dele.
+    - **GPU e orçamento:** uma RTX PRO 6000 de 96 GB alugada no Vast.ai, em host verificado, variante S ou WS, sem limite de potência abaixo de 500 W, até US$ 2,00 por hora (contexto 9). O Hugging Face Jobs, a US$ 2,75 por hora, fica como reserva. O Salad não tem placa de 96 GB sob demanda e não entra nestes passos. Até 12 horas para o GE (no máximo US$ 24,00) e até 40 horas para a rodada pública completa do v0 (no máximo US$ 80,00). O tempo de cada etapa não foi medido (**UNVERIFIED**). O dia de treino continua no Modal; a comparação de preços se repete antes de cada compra.
+    - **Continua com o dono:** pedir acesso ao HLE no Hub, criar e revogar o token de escopo fino da máquina alugada, confirmar cada compra de GPU e aprovar o texto de tudo que sai em nome dele.
 
 ## Consequências
 
@@ -121,7 +124,8 @@ Fatos medidos em 2026-11-10, com a fonte de cada um.
 - **O nome.** Duas partes somam 57 bilhões de parâmetros servidos; "Simplicio-Decide-27B" descreve só a parte Q. Por isso o modelo de duas partes se chama `Simplicio-Decide-Duo` (decisão 10).
 - **O decisor não substitui o Simplicio-27B de conversa.** Um modelo de decisão devolve probabilidades e não gera texto: não serve pelo Ollama, pelo GGUF nem pelo `deploy/serve_vllm.sh`. Ele vai para repositório próprio (`wesleysimplicio/Simplicio-Decide-27B`, que já é o `hub.winner_repo` do `decide/config.yaml`), e o cartão do Simplicio-27B ganha um link quando esse repositório existir.
 - **A primeira entrada no placar pode não ser um modelo nosso.** O v0 é um par de modelos de terceiros; se os mantenedores o aceitarem, ele aparece com o nome Simplicio e o cartão é o que diz de quem são os pesos. Pela regra de uma linha por modelo, a rodada do v1 aposenta a do v0 (contexto 9).
-- **Há gasto novo fora do dia alugado:** até US$ 143,00 no caminho do v0, somando o GE e a rodada pública completa, se os dois tetos forem atingidos.
+- **Há gasto novo fora do dia alugado:** até US$ 104,00 no caminho do v0, somando o GE e a rodada pública completa, se os dois tetos forem atingidos; US$ 143,00 se for preciso usar a reserva do Hugging Face Jobs.
+- **A máquina alugada é de terceiros.** No Vast.ai o host vê o token do Hugging Face e a cópia privada da suíte. Por isso só host verificado, token de escopo fino criado para a sessão e revogado depois, e instância apagada ao fim. Quem quiser datacenter paga perto do preço do Hugging Face (contexto 9).
 - Esta ADR só muda por outra ADR. Os números do plano mudam por nova versão do `decide/PLAN.md`, com a data e o que foi medido.
 
 ## O que não foi medido (UNVERIFIED)
@@ -134,7 +138,8 @@ Fatos medidos em 2026-11-10, com a fonte de cada um.
 - Os 7 benchmarks do índice que ficaram de fora do estudo (HLE, HoVer, Amazon ESCI, BRIGHT, ToolRet, API-Bank, ChessBench) e o pplx-decider-v1.2, que não publica resultados por linha.
 - Se os mantenedores aceitam uma submissão de duas partes com pesos de terceiros e sem treino, e como a classificam: nenhuma regra escrita trata do caso (contexto 9).
 - O tempo da sessão de GPU do GE e da rodada pública de duas partes. O preço por hora foi lido (contexto 9); os tetos da decisão 10 são escolhas.
-- Se a conta do dono no Hugging Face tem acesso ao Jobs e ao HLE.
+- Se a conta do dono no Hugging Face tem acesso ao HLE, e ao Jobs, caso a reserva seja usada.
+- Se a latência medida numa placa alugada de terceiros representa a do lab: a variante da placa, o limite de potência e a CPU do host variam de oferta para oferta.
 - Se o FP8 de cada parte pode ser feito na carga, sem publicar cópia dos pesos.
 
 ## Apêndice: revisões e fontes lidas
@@ -162,5 +167,7 @@ Regras e preço lidos em 2026-11-10 (contexto 9), sem credencial.
 | mesmo Space, `methodology.html` | regra de empate (0,9 ponto) | mesma revisão; sha256 `d909efacc573b174d00fc999674cb311e27d64bbe3bc66be16a652f839432174` |
 | mesmo Space, `index.html` | Reasoning board como "coming soon" | mesma revisão; sha256 `2e65add99dedeabd8b4f28160006d988e5665e651f07b4c51de5ac93806cfc1e` |
 | `https://huggingface.co/api/jobs/hardware` | sabor `rtx-pro-6000`: 96 GB de VRAM, 23 vCPU, 256 GB de RAM, 475 GB de disco, US$ 0,045833 por minuto | resposta de 2026-11-10 |
+| `https://console.vast.ai/api/v0/bundles/` | ofertas de uma GPU, sob demanda, por modelo de placa (`gpu_name`), com `allocated_storage` de 250 GB para a RTX PRO 6000; campos `dph_total`, `verification`, `reliability2`, `inet_down`, `disk_space`, `hosting_type` e `gpu_max_power` | respostas de 2026-11-10, entre 18:29 e 18:31 UTC |
+| `https://salad.com/pricing` | tabela de classes de GPU, VRAM e preço por hora em quatro níveis de prioridade; Salad Dedicated | página de 2026-11-10 |
 
 O `data/methodology.json` traz `generated_utc` de 2026-09-28, lista 70 participantes e não inclui o REAX 1.3; por isso a contagem de participantes por categoria do contexto 9 vem do `index.json` de 2026-11-06.

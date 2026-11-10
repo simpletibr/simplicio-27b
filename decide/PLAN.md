@@ -46,7 +46,9 @@ Uma conta por plataforma. Várias contas para somar cota ficam fora: o FAQ do Co
 | Modal (US$ 30/mês) | rotulagem pelos professores 27B em bf16, em partes que retomam |
 | Hugging Face Hub | estado dos estágios, datasets, pesos |
 | 1 dia de GPU alugada | treino do 27B, calibração e rodada final |
-| Hugging Face Jobs, `rtx-pro-6000` (uma RTX PRO 6000 de 96 GB, o modelo de placa em que o lab mede a latência; US$ 2,75 por hora, lido em 2026-11-10) | gate GE (E4) e rodada pública completa da rota 2 |
+| Vast.ai, uma RTX PRO 6000 de 96 GB (o modelo de placa em que o lab mede a latência) em host verificado; de US$ 1,47 a US$ 2,56 por hora com 250 GB de disco, lido em 2026-11-10 | gate GE (E4) e rodada pública completa da rota 2 |
+| Hugging Face Jobs, `rtx-pro-6000` (a mesma placa; US$ 2,75 por hora, lido em 2026-11-10) | reserva do E4 e da rodada pública |
+| Salad (sob demanda, até 32 GB por placa; RTX 4090 de 24 GB de US$ 0,16 a US$ 0,44 por hora, lido em 2026-11-10) | reserva barata para o que couber em 24 a 32 GB, se a cota do Kaggle faltar |
 
 ## 5. Fases e gates
 | fase | issue | onde | entrega | gate (medido) |
@@ -93,6 +95,7 @@ A rota 2 (seção 11) acrescenta o gate GE e os passos E0 a E6. As fases acima c
 | a média de latência de duas partes passa de 1.000 ms (KnowLine 605 ms + d3-ultra 424 ms em sequência) | rodar as partes em paralelo em FP8, como o REAX 1.3 (790 ms no placar), ou trocar a parte G por uma mais rápida (Turion, 299 ms); o GE mede |
 | o índice público engana na escolha das partes (Spearman 0,41 com o Full entre os 13 modelos do estudo) | escolher pelo Full do placar; no treino, decidir pelo privado caseiro (G1 e G4) |
 | qualquer um monta o mesmo par de modelos públicos | o par chega ao nível do líder no índice público parcial; ficar à frente depende de treinar pelo menos uma parte |
+| a máquina alugada no Vast.ai é de terceiros e vê o token do Hugging Face e a cópia privada da suíte | só host verificado; token de escopo fino, criado para a sessão e revogado depois; apagar a instância ao fim; se isso não bastar, datacenter verificado (US$ 2,36 a US$ 2,56 por hora) ou Hugging Face Jobs (US$ 2,75) |
 | nenhuma regra escrita do placar trata de uma submissão de duas partes com pesos de terceiros (README do kit e metodologia do Space, lidos em 2026-11-10); quem aceita é a revisão do PR | perguntar aos mantenedores na discussão do Space antes de pagar a rodada pública completa; se não aceitarem, o v0 não vai ao placar (seção 11) |
 
 ## 9. Organização
@@ -121,7 +124,7 @@ Evidência, decisão e o que não foi medido: [ADR 0007](../docs/adr/0007-duas-p
 - Pensar sob demanda (F2b) sai do caminho crítico.
 - Duas partes Apache públicas, sem treino, chegam ao nível do líder no índice público parcial: KnowLine Gen1.5 + d3-ultra faz 80,77 e Sieve v3 + d3-ultra 81,00, contra 80,97 do REAX 1.3. Ficar à frente depende de treinar pelo menos uma parte. O Full de qualquer par é **UNVERIFIED**.
 
-**Gate GE (duas partes numa placa de 96 GB).** Limiares escolhidos, não medidos: cada parte reproduz o argmax do seu resultado publicado em ≥ 95% de ≥ 500 linhas; pico de memória abaixo de 96 GB; mediana, média e p80 de latência ≤ 1.000 ms em ≥ 750 pedidos; índice parcial do par ≥ o do melhor membro + 1,0 nas mesmas linhas. A sessão roda numa `rtx-pro-6000` do Hugging Face Jobs, o mesmo modelo de placa em que o lab mede a latência.
+**Gate GE (duas partes numa placa de 96 GB).** Limiares escolhidos, não medidos: cada parte reproduz o argmax do seu resultado publicado em ≥ 95% de ≥ 500 linhas; pico de memória abaixo de 96 GB; mediana, média e p80 de latência ≤ 1.000 ms em ≥ 750 pedidos; índice parcial do par ≥ o do melhor membro + 1,0 nas mesmas linhas. A sessão roda numa RTX PRO 6000 de 96 GB, o modelo de placa em que o lab mede a latência (decisão 9 do E0), e o resultado registra a variante da placa e o limite de potência.
 
 **Caminho até publicar**
 
@@ -131,7 +134,7 @@ Evidência, decisão e o que não foi medido: [ADR 0007](../docs/adr/0007-duas-p
 | E1 dados diversos (F2, [#67](https://github.com/simpletibr/simplicio-27b/issues/67)) | fontes do `tasksource/tasksource-jev-typed-decisions` no `sources.yaml`, com a licença conferida fonte a fonte, e descontaminação | CPU | o código de ingestão existe (`decide/data`); as fontes não estão no registro |
 | E2 suíte pública local | reconstruir a suíte com o kit, para a descontaminação e para medir | CPU | 30 de 37 benchmarks reconstruídos em 2026-11-10 com menos de 1,5 GB de fontes, o que basta para o E4; a completa, que a rodada pública exige, pede cerca de 17 GB de trabalho e acesso ao HLE (fechado), e não cabe na máquina do estudo (20 GB livres); o `decide.modal.suite_requests` que o RUNBOOK cita não está na `main` |
 | E3 motor de duas partes | carregar as duas partes em FP8, tirar a média das probabilidades e servir no formato do kit | código novo | não existe. Cada parte tem código de inferência publicado pelos autores e o motor do REAX é público (licença MIT, segundo o cartão); o reuso não foi avaliado (**UNVERIFIED**) |
-| E4 primeira sessão de GPU | G0 de cada parte, GE e as alavancas sem treino da ADR 0007 | Hugging Face Jobs, `rtx-pro-6000` (96 GB) | nada rodou numa GPU; teto de 12 horas (US$ 33,00); o tempo que a sessão leva é **UNVERIFIED** |
+| E4 primeira sessão de GPU | G0 de cada parte, GE e as alavancas sem treino da ADR 0007 | uma RTX PRO 6000 de 96 GB, alugada no Vast.ai | nada rodou numa GPU; teto de 12 horas e de US$ 24,00; o tempo que a sessão leva é **UNVERIFIED** |
 | E5 treino da parte Q (F4 e F6) | ensaio 4B (G2) e dia alugado (G4) com o corpus do E1 | Kaggle e GPU alugada | o código existe (`decide/train`, `decide/rental`) e nunca rodou numa GPU |
 | E6 publicação (F7, [#72](https://github.com/simpletibr/simplicio-27b/issues/72)) | rodada pública completa (140.178 pedidos pontuáveis: 109.759 da base e 30.419 dos benchmarks acrescentados, pelo kit), pesos e resultados no Hugging Face, cartão com a licença de cada parte, PR no Space | GPU, Hugging Face e Space | a fase `publish` do `decide.rental.run` existe e nunca rodou contra o Hub de verdade; o gerador de cartão que o RUNBOOK cita (`report/README.preview.md`) não está na `main`; nenhuma regra escrita do placar trata de duas partes com pesos de terceiros, então a pergunta aos mantenedores vem antes da rodada completa |
 
@@ -151,7 +154,11 @@ O dono delegou estas decisões ao planejador em 2026-11-10. Elas valem até outr
 6. **Metas:** as da seção 1. Mínima, Full acima do melhor Full entre os modelos públicos de que a submissão parte. Alvo, Full ≥ o do líder menos 0,9 no dia da submissão (73,08 em 2026-11-06).
 7. **Licença:** "só Apache-2.0" fica. Deixa de fora o GLiDE 27B (Full 73,37; licença Fastino Community) e o FlexDM-LoRA 2.1 (71,61; CC BY-SA 4.0).
 8. **Kit do pensador (`decide/think`):** guardado e congelado. Fica na árvore com os testes e não recebe trabalho novo nem GPU antes da primeira publicação. Reabre por ADR nova quando o Reasoning board existir; em 2026-11-06 a página do placar o anuncia como "coming soon".
-9. **GPU do E4 e da rodada pública:** Hugging Face Jobs, `rtx-pro-6000`. É o padrão do `hf-job` do kit e o mesmo modelo de placa em que o lab mede a latência. Preço lido em 2026-11-10: US$ 0,045833 por minuto, ou US$ 2,75 por hora. O dia alugado no Modal continua sendo o do treino (E5).
-10. **Orçamento, além do dia alugado:** até 12 horas para o E4 (US$ 33,00) e até 40 horas para a rodada pública completa do v0 (US$ 110,00). O teto de 40 horas vem de 140.178 pedidos a 1.000 ms, um por vez (38,9 horas); o `run` do kit manda 8 pedidos ao mesmo tempo por padrão, então o tempo real deve ser menor (**UNVERIFIED**). Job que chega ao teto para, e o que foi medido até ali é registrado.
+9. **GPU do E4 e da rodada pública:** uma RTX PRO 6000 de 96 GB, o modelo de placa em que o lab mede a latência, alugada no Vast.ai. O dono apontou em 2026-11-10 que o Vast.ai e o Salad saem mais baratos que o Hugging Face, e os preços lidos no mesmo dia confirmam isso para o Vast.ai: host verificado, com confiabilidade ≥ 0,98, download ≥ 500 Mbps e 250 GB de disco, sai de US$ 1,47 a US$ 2,56 por hora nas variantes S e WS (14 ofertas, mediana US$ 1,85), contra US$ 2,75 no Hugging Face Jobs.
+   - **Regra de escolha:** variante S ou WS, host verificado com esses mínimos, até US$ 2,00 por hora. A variante Max-Q e os hosts com limite de potência declarado abaixo de 500 W ficam de fora, porque distorcem o critério de latência. Das 14 ofertas lidas, 9 custavam até US$ 2,00 e 6 dessas não tinham esse limite de potência.
+   - **Reserva:** o Hugging Face Jobs (`rtx-pro-6000`, o padrão do `hf-job` do kit), se não houver oferta assim.
+   - **Salad:** não entra nestes passos. Sob demanda ele vai até 32 GB por placa (RTX 5090), e a RTX PRO 6000 só existe por contrato. Fica como opção barata para o que couber em 24 a 32 GB.
+   - **Dia de treino (E5):** continua no Modal. No Vast.ai a B200 parte de US$ 7,50 por hora, acima do que a seção 6 supõe (cerca de US$ 90 por 14 horas). A comparação de preços se repete antes de cada compra.
+10. **Orçamento, além do dia alugado:** até 12 horas para o E4 e até 40 horas para a rodada pública completa do v0, com o preço limitado a US$ 2,00 por hora: no máximo US$ 24,00 e US$ 80,00. Na reserva do Hugging Face Jobs seriam US$ 33,00 e US$ 110,00. O teto de 40 horas vem de 140.178 pedidos a 1.000 ms, um por vez (38,9 horas); o `run` do kit manda 8 pedidos ao mesmo tempo por padrão, então o tempo real deve ser menor (**UNVERIFIED**). Sessão que chega ao teto para, e o que foi medido até ali é registrado.
 
-**O que continua com o dono,** porque só ele pode fazer: pedir acesso ao HLE no Hub (a suíte completa depende dele), confirmar cada compra de GPU com item e total, e aprovar o texto de tudo que sai em nome dele (a pergunta aos mantenedores, o cartão e o PR no Space).
+**O que continua com o dono,** porque só ele pode fazer: pedir acesso ao HLE no Hub (a suíte completa depende dele); criar um token do Hugging Face de escopo fino para a máquina alugada e revogá-lo depois; confirmar cada compra de GPU com item e total; e aprovar o texto de tudo que sai em nome dele (a pergunta aos mantenedores, o cartão e o PR no Space).
